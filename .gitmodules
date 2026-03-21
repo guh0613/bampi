@@ -1,0 +1,3 @@
+[submodule "bampy"]
+	path = bampy
+	url = https://github.com/guh0613/bampy.git
