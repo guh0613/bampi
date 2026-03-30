@@ -1,10 +1,56 @@
-# Python-generated files
+# Python
 __pycache__/
-*.py[oc]
-build/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
 dist/
-wheels/
-*.egg-info
+build/
+*.whl
 
-# Virtual environments
-.venv
+# uv / venv
+.venv/
+.python-version
+
+# env
+.env
+.env.*
+!.env.example
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ruff
+.ruff_cache/
+
+# mypy / type checkers
+.mypy_cache/
+.dmypy.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# dist / packaging
+*.tar.gz
+MANIFEST
+
+# Agent Instructions
+CLAUDE.md
+AGENTS.md
+docs/
+
+# specific
+references/
+data/
+app/

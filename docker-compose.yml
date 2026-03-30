@@ -1,0 +1,46 @@
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: napcat
+    restart: always
+    network_mode: bridge
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - NAPCAT_UID=${NAPCAT_UID}
+      - NAPCAT_GID=${NAPCAT_GID}
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+      - "6099:6099"
+    volumes:
+      - ./app/.config/QQ:/app/.config/QQ
+      - ./app/napcat/config:/app/napcat/config
+
+  bampi-sandbox:
+    build:
+      context: .
+      dockerfile: docker/bampi-sandbox/Dockerfile
+    container_name: bampi-sandbox
+    restart: unless-stopped
+    init: true
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+    environment:
+      HOME: /tmp/bampi-home
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    command:
+      - bash
+      - -lc
+      - mkdir -p /tmp/bampi-home /workspace/inbox /workspace/outbox && exec sleep infinity
+    volumes:
+      - ./data/bampi/workspace:/workspace
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "test -d /workspace/inbox && test -d /workspace/outbox"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -66,6 +66,7 @@ dependencies = [
     { name = "bampy" },
     { name = "nonebot-adapter-onebot" },
     { name = "nonebot2", extra = ["fastapi"] },
+    { name = "openai" },
 ]
 
 [package.metadata]
@@ -73,6 +74,7 @@ requires-dist = [
     { name = "bampy", editable = "bampy" },
     { name = "nonebot-adapter-onebot", specifier = ">=2.4.6" },
     { name = "nonebot2", extras = ["fastapi"], specifier = ">=2.4.4" },
+    { name = "openai", specifier = ">=1.0" },
 ]
 
 [[package]]
