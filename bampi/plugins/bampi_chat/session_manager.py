@@ -14,8 +14,13 @@ from bampy.app import AgentSession, SessionManager
 
 from .config import BampiChatConfig
 from .prompt import build_system_prompt
+from .skills import build_prompt_skills, load_chat_skills
 from .tools import create_agent_tools
-from .tools.workspace import ensure_workspace_dirs
+from .tools.workspace import (
+    reset_workspace_files,
+    resolve_group_container_workspace,
+    resolve_group_workspace_dir,
+)
 
 
 @dataclass(slots=True)
@@ -49,14 +54,16 @@ class InteractionReservation:
 class GroupSessionManager:
     def __init__(self, config: BampiChatConfig) -> None:
         self._config = config
-        self._workspace_dir = str(ensure_workspace_dirs(config.bampi_workspace_dir))
+        workspace_root = Path(config.bampi_workspace_dir).resolve()
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        self._workspace_root_dir = str(workspace_root)
         self._session_dir = Path(config.bampi_session_dir).resolve()
         self._session_dir.mkdir(parents=True, exist_ok=True)
         self._sessions: dict[str, ManagedGroupSession] = {}
         self._guard = asyncio.Lock()
         logger.info(
             f"bampi_chat session manager initialized "
-            f"workspace_dir={self._workspace_dir} "
+            f"workspace_root_dir={self._workspace_root_dir} "
             f"session_dir={self._session_dir} "
             f"bash_mode={config.bampi_bash_mode} "
             f"bash_container={config.bampi_bash_container_name} "
@@ -66,7 +73,16 @@ class GroupSessionManager:
 
     @property
     def workspace_dir(self) -> str:
-        return self._workspace_dir
+        return self._workspace_root_dir
+
+    def workspace_dir_for_group(self, group_id: str) -> str:
+        return str(resolve_group_workspace_dir(self._workspace_root_dir, group_id))
+
+    def container_workspace_dir_for_group(self, group_id: str) -> str:
+        return resolve_group_container_workspace(
+            self._config.bampi_bash_container_workdir,
+            group_id,
+        )
 
     async def get_or_create(self, group_id: str) -> ManagedGroupSession:
         await self.close_idle()
@@ -161,37 +177,65 @@ class GroupSessionManager:
             await self._dispose_session(managed, reason="shutdown", clear_history=False)
 
     def _build_session(self, group_id: str) -> AgentSession:
+        workspace_dir = self.workspace_dir_for_group(group_id)
+        container_workspace_dir = self.container_workspace_dir_for_group(group_id)
         model = self._build_model()
-        tools = create_agent_tools(self._config, self._workspace_dir)
+        tools = create_agent_tools(
+            self._config,
+            workspace_dir,
+            container_root=container_workspace_dir,
+        )
         tool_names = [tool.name for tool in tools]
-        system_prompt = build_system_prompt(self._config, tool_names)
+        loaded_skills = load_chat_skills(workspace_dir)
+        prompt_cwd = (
+            container_workspace_dir
+            if self._config.bampi_bash_mode != "local"
+            else workspace_dir
+        )
+        system_prompt = build_system_prompt(
+            self._config,
+            tool_names,
+            skills=build_prompt_skills(loaded_skills.skills, workspace_dir=workspace_dir),
+            prompt_cwd=prompt_cwd,
+        )
         stream_options = SimpleStreamOptions(api_key=self._config.bampi_api_key or None)
 
         session_file = str((self._session_dir / f"group-{group_id}.jsonl").resolve())
         session_manager = SessionManager(
-            self._workspace_dir,
+            workspace_dir,
             session_file=session_file,
             persist=True,
         )
 
         logger.info(
             f"bampi_chat building session group_id={group_id} "
+            f"workspace_dir={workspace_dir} "
+            f"container_workspace_dir={container_workspace_dir} "
             f"provider={model.provider} "
             f"model={model.id} "
             f"session_file={session_file} "
             f"bash_mode={self._config.bampi_bash_mode} "
             f"bash_container={self._config.bampi_bash_container_name} "
-            f"bash_workdir={self._config.bampi_bash_container_workdir} "
-            f"tools={tool_names}"
+            f"bash_workdir={container_workspace_dir} "
+            f"tools={tool_names} "
+            f"skills={[skill.name for skill in loaded_skills.skills]}"
         )
+        for diagnostic in loaded_skills.diagnostics:
+            logger.warning(
+                f"bampi_chat skill diagnostic group_id={group_id} "
+                f"type={diagnostic.type} "
+                f"path={diagnostic.path} "
+                f"message={diagnostic.message}"
+            )
 
         return AgentSession(
-            cwd=self._workspace_dir,
+            cwd=workspace_dir,
             model=model,
             thinking_level=self._config.bampi_thinking_level,
             tools=tools,
             session_manager=session_manager,
             custom_system_prompt=system_prompt,
+            augment_custom_system_prompt=False,
             stream_options=stream_options,
             get_api_key=self._resolve_api_key,
             max_turns=self._config.bampi_max_turns,
@@ -353,6 +397,22 @@ class GroupSessionManager:
                     f"bampi_chat failed to clear session history group_id={managed.group_id} "
                     f"session_file={path}"
                 )
+        if clear_history:
+            async with self._guard:
+                if managed.group_id in self._sessions:
+                    return
+                try:
+                    workspace_dir = self.workspace_dir_for_group(managed.group_id)
+                    reset_workspace_files(workspace_dir)
+                    logger.info(
+                        f"bampi_chat reset workspace files group_id={managed.group_id} "
+                        f"workspace_dir={workspace_dir}"
+                    )
+                except OSError:
+                    logger.warning(
+                        f"bampi_chat failed to reset workspace files group_id={managed.group_id} "
+                        f"workspace_dir={self.workspace_dir_for_group(managed.group_id)}"
+                    )
 
     def _build_model(self) -> Model:
         model = get_model(self._config.bampi_model_id, provider=self._config.bampi_model_provider)

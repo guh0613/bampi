@@ -11,6 +11,7 @@ RUN apt-get update \
         bash \
         ca-certificates \
         curl \
+        file \
         git \
         jq \
         less \
@@ -18,6 +19,11 @@ RUN apt-get update \
         npm \
         procps \
         ripgrep \
+        tar \
+        tree \
+        unzip \
+        xz-utils \
+        zip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace

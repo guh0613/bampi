@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+from bampy.app import Skill, format_skills_for_prompt
+
 from .config import BampiChatConfig
 
 
-def build_system_prompt(config: BampiChatConfig, tool_names: list[str]) -> str:
+def build_system_prompt(
+    config: BampiChatConfig,
+    tool_names: list[str],
+    *,
+    skills: list[Skill] | None = None,
+    prompt_cwd: str | None = None,
+) -> str:
     persona = config.bampi_persona.strip() or (
         "你是 Bampi，一个在 QQ 群里协作的中文 AI 助手。"
         "你需要在多人聊天环境中保持自然、可靠、简洁，必要时再展开。"
     )
+    effective_prompt_cwd = (prompt_cwd or ".").replace("\\", "/")
+    current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     # ── 运行环境 ──
     env_lines: list[str] = []
@@ -15,7 +27,7 @@ def build_system_prompt(config: BampiChatConfig, tool_names: list[str]) -> str:
         env_lines.extend(
             [
                 f"- 操作系统：Python 3.12 slim（Debian 系 Docker 容器），工作目录 `{config.bampi_bash_container_workdir}`。",
-                "- 预装软件：bash, curl, git, jq, less, node, npm, procps, python, python3, pip, pip3, ripgrep。",
+                "- 预装软件：bash, curl, file, git, jq, less, node, npm, procps, python, python3, pip, pip3, ripgrep, tar, tree, unzip, xz, zip。",
                 "- 语言环境：C.UTF-8，HOME 为 /tmp/bampi-home。",
                 "- 已预装默认 Node.js 环境；没有预装编译器(gcc/g++)、Go 等，需要时可通过 apt 安装，但要提前告知用户可能耗时。",
                 f"- workspace 挂载在容器内 `{config.bampi_bash_container_workdir}`，与宿主机同步。",
@@ -70,6 +82,10 @@ def build_system_prompt(config: BampiChatConfig, tool_names: list[str]) -> str:
         f"{persona}\n\n"
         "## 运行环境\n"
         f"{env_section}\n\n"
+        "## Skills\n"
+        "- 已安装的 skill 会在系统提示后追加为可用列表，模型可按描述自行选择。\n"
+        "- 如果用户在消息里写了 `$skill-name`，表示这一轮明确要求使用该 skill；看到显式 skill payload 时，必须优先遵循。\n"
+        "- skill 若引用相对路径，请相对该 skill 所在目录解析，再决定是否继续读取相关文件。\n\n"
         "## 群聊消息格式\n"
         "你正在一个 QQ 群聊环境中工作，历史消息是群共享的，所以要始终分清发言人。\n"
         "每条用户消息都采用以下结构化格式（各字段按行排列）：\n"
@@ -91,9 +107,12 @@ def build_system_prompt(config: BampiChatConfig, tool_names: list[str]) -> str:
         "- <文件相对路径>\n"
         "reply_media_notes:                      # 仅在回复引用媒体有备注时出现\n"
         "- <备注内容>\n"
+        "requested_skills:                       # 仅在用户显式要求使用 skill 时出现\n"
+        "- <skill-name>\n"
         "```\n"
         "请把这些元信息当作上下文来理解，但不要机械复读给群友。\n"
         "如果有 image block，它们会跟在这段结构化文本后面，顺序是：当前消息图片在前，回复引用图片在后。\n"
+        "如果后续还有一个 `explicit_skill_payloads` 文本块，那是用户本轮强制要求使用的 skill 正文。\n"
         "QQ 文件通常是单独一条消息，所以 `message_text` 可能为空而 `workspace_attachments` 有值；这表示用户单独发来了媒体/文件。\n\n"
         "## 工作区约定\n"
         f"{workspace_section}\n\n"
@@ -103,5 +122,8 @@ def build_system_prompt(config: BampiChatConfig, tool_names: list[str]) -> str:
         "- 不要伪造看不见的图片内容、文件内容或联网结果。\n"
         "- 当用户请求代码、排障、搜索或文件操作时，优先通过工具获取事实。\n\n"
         "## 工具使用提示\n"
-        f"{tool_section}\n"
+        f"{tool_section}\n\n"
+        f"{format_skills_for_prompt(skills or [])}\n\n"
+        f"Current date: {current_date}\n"
+        f"Current working directory: {effective_prompt_cwd}\n"
     )
