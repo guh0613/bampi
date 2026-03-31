@@ -70,6 +70,16 @@ class ResponseDispatchResult:
 class ProgressMessage:
     text: str
     quote: bool = False
+    tool_call_id: str | None = None
+
+
+@dataclass(slots=True)
+class ToolProgressNotice:
+    message_id: int | None = None
+    sent_at: float = 0.0
+    finished: bool = False
+    should_recall: bool = False
+    send_failed: bool = False
 
 
 @dataclass(slots=True)
@@ -150,6 +160,26 @@ def summarize_segments(message: Message) -> str:
     return ",".join(f"{segment_type}:{counts[segment_type]}" for segment_type in sorted(counts))
 
 
+def extract_api_message_id(response: Any) -> int | None:
+    candidate: Any = None
+    if isinstance(response, dict):
+        candidate = response.get("message_id")
+        if candidate is None:
+            nested = response.get("data")
+            if isinstance(nested, dict):
+                candidate = nested.get("message_id")
+    elif response is not None:
+        candidate = getattr(response, "message_id", response)
+
+    if candidate is None:
+        return None
+    try:
+        return int(candidate)
+    except (TypeError, ValueError):
+        logger.warning(f"bampi_chat got non-numeric message_id from api: {candidate!r}")
+        return None
+
+
 class LiveProgressReporter:
     def __init__(
         self,
@@ -175,7 +205,8 @@ class LiveProgressReporter:
         self._streamed_any_text = False
         self._last_seen_text = ""
         self._pending_text = ""
-        self._pending_tools: dict[str, str] = {}
+        self._tool_notices: dict[str, ToolProgressNotice] = {}
+        self._recall_tasks: set[asyncio.Task[None]] = set()
         self._last_text_flush_at = 0.0
 
     @property
@@ -221,12 +252,19 @@ class LiveProgressReporter:
                 if item.quote:
                     message += MessageSegment.reply(self._event.message_id)
                 message += MessageSegment.text(item.text)
-                await self._bot.call_api(
+                response = await self._bot.call_api(
                     "send_group_msg",
                     group_id=self._event.group_id,
                     message=message,
                 )
+                if item.tool_call_id:
+                    self._mark_tool_notice_sent(
+                        item.tool_call_id,
+                        extract_api_message_id(response),
+                    )
             except Exception:
+                if item is not None and item.tool_call_id:
+                    self._mark_tool_notice_send_failed(item.tool_call_id)
                 logger.exception(
                     f"bampi_chat failed to send live progress "
                     f"group_id={self._event.group_id} "
@@ -287,29 +325,32 @@ class LiveProgressReporter:
         self._enqueue(format_skill_load_message(skill_names))
 
     def _handle_tool_start(self, event: Any) -> None:
+        limit = self._config.bampi_live_progress_max_tool_updates
+        if limit > 0 and self._tool_updates_sent >= limit:
+            return
         if self._config.bampi_live_text_stream_enabled:
             self._flush_pending_text(force=True)
 
         tool_call_id = getattr(event, "tool_call_id", "")
-        self._pending_tools[tool_call_id] = format_tool_progress_message(
+        self._tool_updates_sent += 1
+        progress_msg = format_tool_progress_message(
             getattr(event, "tool_name", ""),
             getattr(event, "args", None),
         )
+        if tool_call_id:
+            self._tool_notices[tool_call_id] = ToolProgressNotice()
+        self._enqueue(progress_msg, tool_call_id=tool_call_id or None)
 
     def _handle_tool_end(self, event: Any) -> None:
-        limit = self._config.bampi_live_progress_max_tool_updates
-        if limit > 0 and self._tool_updates_sent >= limit:
-            return
-
         tool_call_id = getattr(event, "tool_call_id", "")
-        progress_msg = self._pending_tools.pop(tool_call_id, None)
-        if progress_msg is None:
+        if not tool_call_id:
             return
-
-        self._tool_updates_sent += 1
-        if getattr(event, "is_error", False):
-            progress_msg += "（失败）"
-        self._enqueue(progress_msg)
+        notice = self._tool_notices.get(tool_call_id)
+        if notice is None:
+            return
+        notice.finished = True
+        notice.should_recall = bool(getattr(event, "is_error", False))
+        self._finalize_tool_notice(tool_call_id)
 
     def _handle_message_update(self, event: Any) -> None:
         message = getattr(event, "message", None)
@@ -375,7 +416,13 @@ class LiveProgressReporter:
         self._last_seen_text = current_text
         return delta
 
-    def _enqueue(self, text: str, *, preserve_whitespace: bool = False) -> None:
+    def _enqueue(
+        self,
+        text: str,
+        *,
+        preserve_whitespace: bool = False,
+        tool_call_id: str | None = None,
+    ) -> None:
         if self._closed:
             return
         if not text.strip():
@@ -384,7 +431,104 @@ class LiveProgressReporter:
         quote = not self._visible_update_sent
         if quote:
             self._visible_update_sent = True
-        self._queue.put_nowait(ProgressMessage(text=payload, quote=quote))
+        self._queue.put_nowait(
+            ProgressMessage(
+                text=payload,
+                quote=quote,
+                tool_call_id=tool_call_id,
+            )
+        )
+
+    def _mark_tool_notice_sent(self, tool_call_id: str, message_id: int | None) -> None:
+        notice = self._tool_notices.get(tool_call_id)
+        if notice is None:
+            return
+        notice.message_id = message_id
+        notice.sent_at = time.monotonic()
+        self._finalize_tool_notice(tool_call_id)
+
+    def _mark_tool_notice_send_failed(self, tool_call_id: str) -> None:
+        notice = self._tool_notices.get(tool_call_id)
+        if notice is None:
+            return
+        notice.send_failed = True
+        self._finalize_tool_notice(tool_call_id)
+
+    def _finalize_tool_notice(self, tool_call_id: str) -> None:
+        notice = self._tool_notices.get(tool_call_id)
+        if notice is None or not notice.finished:
+            return
+        if notice.sent_at <= 0 and not notice.send_failed:
+            return
+        if notice.should_recall and notice.message_id is not None:
+            self._schedule_tool_notice_recall(
+                tool_call_id=tool_call_id,
+                message_id=notice.message_id,
+                sent_at=notice.sent_at,
+            )
+        elif notice.should_recall and notice.sent_at > 0 and not notice.send_failed:
+            logger.warning(
+                f"bampi_chat cannot recall tool progress without message_id "
+                f"group_id={self._event.group_id} "
+                f"message_id={self._event.message_id} "
+                f"tool_call_id={tool_call_id}"
+            )
+        self._tool_notices.pop(tool_call_id, None)
+
+    def _schedule_tool_notice_recall(
+        self,
+        *,
+        tool_call_id: str,
+        message_id: int,
+        sent_at: float,
+    ) -> None:
+        task = asyncio.create_task(
+            self._recall_tool_notice(
+                tool_call_id=tool_call_id,
+                message_id=message_id,
+                sent_at=sent_at,
+            )
+        )
+        self._recall_tasks.add(task)
+
+        def _cleanup(done: asyncio.Task[None]) -> None:
+            self._recall_tasks.discard(done)
+            if done.cancelled():
+                return
+            exc = done.exception()
+            if exc is not None:
+                logger.error(
+                    f"bampi_chat tool progress recall task failed "
+                    f"group_id={self._event.group_id} "
+                    f"message_id={self._event.message_id} "
+                    f"tool_call_id={tool_call_id} "
+                    f"error={exc!r}"
+                )
+
+        task.add_done_callback(_cleanup)
+
+    async def _recall_tool_notice(
+        self,
+        *,
+        tool_call_id: str,
+        message_id: int,
+        sent_at: float,
+    ) -> None:
+        min_visible = max(
+            0.0,
+            self._config.bampi_live_progress_error_recall_min_visible_seconds,
+        )
+        remaining = sent_at + min_visible - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        await self._bot.call_api("delete_msg", message_id=message_id)
+        logger.info(
+            f"bampi_chat recalled failed tool progress "
+            f"group_id={self._event.group_id} "
+            f"message_id={self._event.message_id} "
+            f"tool_call_id={tool_call_id} "
+            f"recalled_message_id={message_id}"
+        )
 
 
 def format_tool_progress_message(tool_name: str, args: Any) -> str:

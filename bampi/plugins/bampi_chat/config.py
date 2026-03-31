@@ -43,6 +43,7 @@ class BampiChatConfig(BaseModel):
     bampi_at_sender: bool = False
     bampi_live_progress_enabled: bool = True
     bampi_live_progress_max_tool_updates: int = 0
+    bampi_live_progress_error_recall_min_visible_seconds: float = 1.0
     bampi_live_text_stream_enabled: bool = True
     bampi_live_text_stream_min_chars: int = 80
     bampi_live_text_stream_force_chars: int = 220

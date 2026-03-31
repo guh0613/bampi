@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -243,7 +244,6 @@ async def test_live_progress_reporter_sends_emoji_tool_update():
     reporter.start(session)
     assert session.listener is not None
     session.listener(SimpleNamespace(type="tool_execution_start", tool_name="grep", args={"pattern": "TODO"}, tool_call_id="tc1"))
-    session.listener(SimpleNamespace(type="tool_execution_end", tool_name="grep", tool_call_id="tc1", is_error=False, result=None))
     await reporter.prepare_final_reply()
     await reporter.close()
 
@@ -371,10 +371,21 @@ async def test_live_progress_reporter_allows_unlimited_tool_updates_when_limit_z
 
 
 @pytest.mark.asyncio
-async def test_live_progress_reporter_appends_failure_suffix_on_tool_error():
-    bot = FakeBot()
+async def test_live_progress_reporter_recalls_failed_tool_update_after_min_visible_delay():
+    call_times: dict[str, list[float]] = {}
+
+    def responder(action: str, params: dict[str, object]) -> dict[str, object]:
+        call_times.setdefault(action, []).append(time.monotonic())
+        if action == "send_group_msg":
+            return {"message_id": 5566}
+        return {}
+
+    bot = FakeBot(responder=responder)
     event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
-    config = BampiChatConfig(bampi_live_progress_enabled=True)
+    config = BampiChatConfig(
+        bampi_live_progress_enabled=True,
+        bampi_live_progress_error_recall_min_visible_seconds=0.05,
+    )
     reporter = LiveProgressReporter(bot=bot, event=event, config=config)
     session = FakeSession()
 
@@ -383,13 +394,13 @@ async def test_live_progress_reporter_appends_failure_suffix_on_tool_error():
     session.listener(SimpleNamespace(type="tool_execution_start", tool_name="bash", args={"command": "make test"}, tool_call_id="tc1"))
     session.listener(SimpleNamespace(type="tool_execution_end", tool_name="bash", tool_call_id="tc1", is_error=True, result=None))
     await reporter.prepare_final_reply()
+    await asyncio.sleep(0.08)
     await reporter.close()
 
-    assert len(bot.calls) == 1
-    _, params = bot.calls[0]
-    msg_text = str(params["message"])
-    assert "正在执行命令：make test" in msg_text
-    assert "（失败）" in msg_text
+    assert [action for action, _ in bot.calls] == ["send_group_msg", "delete_msg"]
+    assert bot.calls[1][1] == {"message_id": 5566}
+    assert "正在执行命令：make test" in str(bot.calls[0][1]["message"])
+    assert call_times["delete_msg"][0] - call_times["send_group_msg"][0] >= 0.045
 
 
 @pytest.mark.asyncio
