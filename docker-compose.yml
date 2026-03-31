@@ -1,7 +1,7 @@
 services:
-  napcat:
+  napcat2:
     image: mlikiowa/napcat-docker:latest
-    container_name: napcat
+    container_name: napcat2
     restart: always
     network_mode: bridge
     extra_hosts:
@@ -10,9 +10,9 @@ services:
       - NAPCAT_UID=${NAPCAT_UID}
       - NAPCAT_GID=${NAPCAT_GID}
     ports:
-      - "3000:3000"
-      - "3001:3001"
-      - "6099:6099"
+      - "3003:3000"
+      - "3004:3001"
+      - "6111:6099"
     volumes:
       - ./app/.config/QQ:/app/.config/QQ
       - ./app/napcat/config:/app/napcat/config
