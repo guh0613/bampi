@@ -32,6 +32,7 @@ else:
         f"model={plugin_config.bampi_model_id} "
         f"prefixes={plugin_config.bampi_trigger_prefix} "
         f"keywords={plugin_config.bampi_trigger_keywords} "
+        f"group_whitelist={plugin_config.bampi_group_whitelist} "
         f"workspace_dir={plugin_config.bampi_workspace_dir} "
         f"session_dir={plugin_config.bampi_session_dir} "
         f"idle_session_ttl={plugin_config.bampi_session_idle_ttl_seconds}s "

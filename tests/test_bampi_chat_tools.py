@@ -6,9 +6,10 @@ import pytest
 
 from bampi.plugins.bampi_chat.config import BampiChatConfig
 from bampi.plugins.bampi_chat.prompt import build_system_prompt
+from bampi.plugins.bampi_chat.tools import create_agent_tools
 from bampi.plugins.bampi_chat.tools.files import WorkspaceEditTool, WorkspaceReadTool, WorkspaceWriteTool
 from bampi.plugins.bampi_chat.tools.safe_bash import SafeBashTool
-from bampi.plugins.bampi_chat.tools.web_search import parse_duckduckgo_results
+from bampi.plugins.bampi_chat.tools import web_search as web_search_module
 
 
 @pytest.mark.asyncio
@@ -50,6 +51,13 @@ def test_bampi_chat_defaults_use_docker_sandbox():
     assert config.bampi_bash_container_name == "bampi-sandbox"
     assert config.bampi_bash_container_workdir == "/workspace"
     assert config.bampi_bash_container_shell == "/bin/bash"
+    assert config.bampi_group_whitelist == []
+
+
+def test_bampi_chat_group_whitelist_normalizes_entries():
+    config = BampiChatConfig(bampi_group_whitelist=[" 1001 ", 1002, "", "  "])
+
+    assert config.bampi_group_whitelist == ["1001", "1002"]
 
 
 def test_system_prompt_mentions_docker_workspace():
@@ -59,6 +67,19 @@ def test_system_prompt_mentions_docker_workspace():
     assert "/workspace" in prompt
     assert "Node.js" in prompt
     assert "unzip" in prompt
+
+
+def test_system_prompt_mentions_browser_tool():
+    prompt = build_system_prompt(BampiChatConfig(), ["browser", "web_search"])
+
+    assert "真实打开网页" in prompt
+    assert "outbox/browser/" in prompt
+
+
+def test_create_agent_tools_includes_browser_by_default(tmp_path: Path):
+    tools = create_agent_tools(BampiChatConfig(), str(tmp_path), container_root="/workspace")
+
+    assert "browser" in [tool.name for tool in tools]
 
 
 def test_safe_bash_tool_uses_container_bash_shell(monkeypatch: pytest.MonkeyPatch):
@@ -76,16 +97,137 @@ def test_safe_bash_tool_uses_container_bash_shell(monkeypatch: pytest.MonkeyPatc
     assert tool._local_command("pwd") == ["/bin/zsh", "-lc", "pwd"]
 
 
-def test_parse_duckduckgo_results_extracts_links():
-    html = """
-    <html>
-      <body>
-        <a href="https://example.com/a">Result A</a>
-        <a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fb">Result B</a>
-        <a href="https://duckduckgo.com/about">Ignore Me</a>
-      </body>
-    </html>
-    """
-    results = parse_duckduckgo_results(html, 5)
-    assert [item.title for item in results] == ["Result A", "Result B"]
-    assert [item.url for item in results] == ["https://example.com/a", "https://example.com/b"]
+def test_web_search_normalize_base_url_adds_v1():
+    assert web_search_module._normalize_base_url("https://api.example.com") == "https://api.example.com/v1"
+    assert web_search_module._normalize_base_url("https://api.example.com/v1/") == "https://api.example.com/v1"
+
+
+@pytest.mark.asyncio
+async def test_web_search_tool_uses_chat_completions(monkeypatch: pytest.MonkeyPatch):
+    state: dict[str, object] = {}
+
+    class _FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/event-stream"}
+        text = ""
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_lines(self):
+            lines = [
+                'data: {"choices":[{"delta":{"role":"assistant","content":""}}]}',
+                'data: {"choices":[{"delta":{"content":"<think>Thinking about your request\\n[WebSearch] example query\\nbrowse_page {\\"url\\":\\"https://example.com/page\\",\\"instructions\\":\\"Summarize\\"}\\nCalling web_search tool to fetch current details.\\n</think>Summary: latest info\\nSources:\\n- Example | https://example.com"}}]}',
+                "data: [DONE]",
+            ]
+            for line in lines:
+                yield line
+
+    class _FakeStreamContext:
+        async def __aenter__(self) -> _FakeResponse:
+            state["stream_entered"] = True
+            return _FakeResponse()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            state["stream_exited"] = True
+
+    class _FakeAsyncClient:
+        def __init__(self, **kwargs: object) -> None:
+            state["client_kwargs"] = kwargs
+
+        async def __aenter__(self) -> "_FakeAsyncClient":
+            state["client_entered"] = True
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            state["client_exited"] = True
+
+        def stream(self, method: str, url: str, *, headers: dict[str, str], json: dict[str, object]) -> _FakeStreamContext:
+            state["request"] = {
+                "method": method,
+                "url": url,
+                "headers": headers,
+                "json": json,
+            }
+            return _FakeStreamContext()
+
+    monkeypatch.setattr(web_search_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    tool = web_search_module.create_web_search_tool(
+        12.0,
+        base_url="https://api.example.com",
+        api_key="secret",
+    )
+    result = await tool.execute("call-1", {"query": "最新模型信息"})
+
+    assert result.content[0].text.startswith("Web search results for: 最新模型信息")
+    assert "Search trace:" in result.content[0].text
+    assert "- [WebSearch] example query" in result.content[0].text
+    assert "- browse_page: https://example.com/page" in result.content[0].text
+    assert "- tool_call: web_search" in result.content[0].text
+    assert "Summary: latest info" in result.content[0].text
+    assert state["client_kwargs"] == {
+        "timeout": 12.0,
+    }
+    assert state["request"] == {
+        "method": "POST",
+        "url": "https://api.example.com/v1/chat/completions",
+        "headers": {
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "User-Agent": web_search_module.DEFAULT_WEB_SEARCH_USER_AGENT,
+        },
+        "json": {
+            "model": web_search_module.DEFAULT_WEB_SEARCH_MODEL,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "最新模型信息",
+                },
+            ],
+        },
+    }
+    assert state["client_entered"] is True
+    assert state["client_exited"] is True
+    assert state["stream_entered"] is True
+    assert state["stream_exited"] is True
+
+
+@pytest.mark.asyncio
+async def test_web_search_reads_sse_and_compacts_thinking_trace():
+    class _FakeResponse:
+        async def aiter_lines(self):
+            lines = [
+                'data: {"choices":[{"delta":{"content":"<think>Thinking...\\n[WebSearch] OpenAI latest models 2026\\n- Planning to search for \\"OpenAI latest models\\"\\nbrowse_page {\\"url\\":\\"https://developers.openai.com/api/docs/models\\",\\"instructions\\":\\"Summarize\\"}\\nCalling web_search tool to fetch current OpenAI model details.\\n</think>"}}]}',
+                'data: {"choices":[{"delta":{"content":"Answer with source"}}]}',
+                "data: [DONE]",
+            ]
+            for line in lines:
+                yield line
+
+    text = await web_search_module._read_sse_text(_FakeResponse())
+
+    assert web_search_module._compact_response_text(text) == (
+        "Search trace:\n"
+        "- [WebSearch] OpenAI latest models 2026\n"
+        "- browse_page: https://developers.openai.com/api/docs/models\n"
+        "- tool_call: web_search\n\n"
+        "Answer with source"
+    )
+
+
+@pytest.mark.asyncio
+async def test_web_search_tool_reports_configuration_errors():
+    tool = web_search_module.create_web_search_tool(
+        12.0,
+        base_url="",
+        api_key="secret",
+    )
+
+    result = await tool.execute("call-1", {"query": "最新模型信息"})
+
+    assert result.content[0].text == (
+        "Web search failed for: 最新模型信息\n"
+        "Error: web_search is not configured: bampi_base_url is empty"
+    )

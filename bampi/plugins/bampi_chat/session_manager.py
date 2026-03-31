@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import time
 from dataclasses import dataclass, field
@@ -383,6 +384,7 @@ class GroupSessionManager:
             f"reason={reason} "
             f"clear_history={clear_history}"
         )
+        await self._close_session_tools(managed.session)
         await managed.session.close()
         if clear_history and session_file:
             path = Path(session_file)
@@ -413,6 +415,21 @@ class GroupSessionManager:
                         f"bampi_chat failed to reset workspace files group_id={managed.group_id} "
                         f"workspace_dir={self.workspace_dir_for_group(managed.group_id)}"
                     )
+
+    async def _close_session_tools(self, session: AgentSession) -> None:
+        for tool in session.get_all_tools():
+            close = getattr(tool, "close", None)
+            if not callable(close):
+                continue
+            try:
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.exception(
+                    f"bampi_chat failed to close tool "
+                    f"tool={getattr(tool, 'name', type(tool).__name__)}"
+                )
 
     def _build_model(self) -> Model:
         model = get_model(self._config.bampi_model_id, provider=self._config.bampi_model_provider)

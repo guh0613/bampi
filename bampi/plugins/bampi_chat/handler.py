@@ -94,6 +94,7 @@ TOOL_PROGRESS_EMOJIS: dict[str, str] = {
     "write": "📝",
     "edit": "🛠️",
     "web_search": "🌐",
+    "browser": "🧭",
 }
 
 STOP_COMMAND = "/stop"
@@ -128,6 +129,11 @@ class GroupRateLimiter:
             return False
         bucket.append(now)
         return True
+
+
+def is_group_allowed(group_id: str, config: BampiChatConfig) -> bool:
+    whitelist = config.bampi_group_whitelist
+    return not whitelist or group_id in whitelist
 
 
 def log_preview(text: str | None, *, limit: int = 160) -> str:
@@ -460,6 +466,17 @@ def describe_tool_progress(tool_name: str, args: Any) -> str:
     if tool_name == "web_search":
         query = render_tool_progress_value(payload.get("query") or payload.get("q"), "查询内容")
         return f"正在搜索网页：{query}"
+    if tool_name == "browser":
+        action = render_tool_progress_value(payload.get("action"), "操作")
+        url = render_tool_progress_value(payload.get("url"), "")
+        selector = render_tool_progress_value(payload.get("selector"), "")
+        if action in {"open", "goto"} and url:
+            return f"正在浏览网页（{action}）：{url}"
+        if action in {"click", "type", "wait", "extract", "screenshot"} and selector:
+            return f"正在操作网页（{action}）：{selector}"
+        if action in {"pages", "switch", "close_page", "reload", "back", "forward", "scroll", "reset"}:
+            return f"正在操作浏览器：{action}"
+        return f"正在操作浏览器：{action}"
     display_name = render_tool_progress_value(tool_name, "unknown", limit=40)
     return f"正在执行工具：{display_name}"
 
@@ -632,10 +649,18 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
         if not isinstance(event, GroupMessageEvent):
             return
 
-        original_text = (event.get_plaintext() or "").strip()
-        raw_text = normalize_text(original_text)
         group_id = str(event.group_id)
         user_id = str(event.user_id)
+        if not is_group_allowed(group_id, config):
+            logger.info(
+                f"bampi_chat ignored unauthorized group group_id={group_id} "
+                f"user_id={user_id} "
+                f"message_id={event.message_id}"
+            )
+            return
+
+        original_text = (event.get_plaintext() or "").strip()
+        raw_text = normalize_text(original_text)
         workspace_dir = session_manager.workspace_dir_for_group(group_id)
         logger.info(
             f"bampi_chat received group_id={event.group_id} "

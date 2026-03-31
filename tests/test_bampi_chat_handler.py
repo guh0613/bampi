@@ -1099,3 +1099,149 @@ async def test_register_handlers_clears_owner_after_successful_turn(monkeypatch:
 
     assert session_manager.complete_calls == 2
     assert second_matcher.sent == []
+
+
+@pytest.mark.asyncio
+async def test_register_handlers_rejects_group_outside_whitelist(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class CapturingMatcherRegistration:
+        def handle(self):
+            def decorator(func):
+                captured["handler"] = func
+                return func
+
+            return decorator
+
+    monkeypatch.setattr(handler_module, "on_message", lambda **kwargs: CapturingMatcherRegistration())
+    monkeypatch.setattr(handler_module, "GroupMessageEvent", FakeGroupEvent)
+
+    class FakeSessionManagerForWhitelist:
+        def __init__(self) -> None:
+            self.workspace_dir_calls: list[str] = []
+            self.inspect_calls: list[str] = []
+            self.reserve_calls: list[tuple[str, str]] = []
+
+        def workspace_dir_for_group(self, group_id: str) -> str:
+            self.workspace_dir_calls.append(group_id)
+            return "."
+
+        async def inspect_interaction(self, group_id: str):
+            self.inspect_calls.append(group_id)
+            return SimpleNamespace(is_active=False, is_streaming=False, managed=None, active_user_id=None)
+
+        async def reserve_interaction(self, group_id: str, user_id: str):
+            self.reserve_calls.append((group_id, user_id))
+            raise AssertionError("unexpected reserve_interaction call")
+
+    session_manager = FakeSessionManagerForWhitelist()
+    config = BampiChatConfig(bampi_group_whitelist=["1002"])
+    handler_module.register_handlers(config, session_manager)
+    handler = captured["handler"]
+
+    bot = FakeBot()
+    bot.self_id = 42
+
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99, message=Message("@bot 帮我写个脚本"))
+    event.to_me = True
+    matcher = FakeMatcher()
+    await handler(bot, event, matcher)
+
+    assert matcher.sent == []
+    assert bot.calls == []
+    assert session_manager.workspace_dir_calls == []
+    assert session_manager.inspect_calls == []
+    assert session_manager.reserve_calls == []
+
+
+@pytest.mark.asyncio
+async def test_register_handlers_accepts_group_inside_whitelist(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class CapturingMatcherRegistration:
+        def handle(self):
+            def decorator(func):
+                captured["handler"] = func
+                return func
+
+            return decorator
+
+    monkeypatch.setattr(handler_module, "on_message", lambda **kwargs: CapturingMatcherRegistration())
+    monkeypatch.setattr(handler_module, "GroupMessageEvent", FakeGroupEvent)
+    monkeypatch.setattr(handler_module, "collect_incoming_media", lambda *args, **kwargs: asyncio.sleep(0, result=IncomingMedia()))
+    monkeypatch.setattr(handler_module, "snapshot_outbox", lambda workspace_dir: {})
+    monkeypatch.setattr(
+        handler_module,
+        "send_agent_response",
+        lambda **kwargs: asyncio.sleep(0, result=ResponseDispatchResult(delivered=True)),
+    )
+
+    class FakeManagedSessionRuntime:
+        def __init__(self) -> None:
+            self.is_processing = False
+            self.messages = [AssistantMessage(content=[TextContent(text="ok")])]
+            self.session_manager = SimpleNamespace(leaf_id=None)
+
+        async def prompt(self, user_message, *, source: str) -> None:
+            self.is_processing = True
+            await asyncio.sleep(0)
+            self.is_processing = False
+
+        def subscribe(self, listener):
+            def unsubscribe() -> None:
+                return None
+
+            return unsubscribe
+
+    class FakeSessionManagerForAllowedGroup:
+        def __init__(self) -> None:
+            self.workspace_dir = "."
+            self.workspace_dir_calls: list[str] = []
+            self.managed = SimpleNamespace(
+                session=FakeManagedSessionRuntime(),
+                lock=asyncio.Lock(),
+                last_used_at=0.0,
+            )
+            self.active_user_id: str | None = None
+            self.complete_calls = 0
+
+        def workspace_dir_for_group(self, group_id: str) -> str:
+            self.workspace_dir_calls.append(group_id)
+            return self.workspace_dir
+
+        async def inspect_interaction(self, group_id: str):
+            return SimpleNamespace(
+                is_active=self.active_user_id is not None,
+                active_user_id=self.active_user_id,
+                is_streaming=self.managed.session.is_processing,
+                managed=self.managed,
+            )
+
+        async def reserve_interaction(self, group_id: str, user_id: str):
+            if self.active_user_id is None:
+                self.active_user_id = user_id
+                return SimpleNamespace(action="start", managed=self.managed, active_user_id=user_id)
+            if self.active_user_id == user_id and self.managed.session.is_processing:
+                return SimpleNamespace(action="steer", managed=self.managed, active_user_id=user_id)
+            return SimpleNamespace(action="busy", managed=self.managed, active_user_id=self.active_user_id)
+
+        async def complete_interaction(self, group_id: str) -> None:
+            self.complete_calls += 1
+            self.active_user_id = None
+
+    session_manager = FakeSessionManagerForAllowedGroup()
+    config = BampiChatConfig(bampi_group_whitelist=["1001"])
+    handler_module.register_handlers(config, session_manager)
+    handler = captured["handler"]
+
+    bot = FakeBot()
+    bot.self_id = 42
+
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99, message=Message("第一条"))
+    event.to_me = True
+    matcher = FakeMatcher()
+    await handler(bot, event, matcher)
+
+    assert session_manager.workspace_dir_calls == ["1001"]
+    assert session_manager.complete_calls == 1
+    assert matcher.sent == []

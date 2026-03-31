@@ -15,7 +15,7 @@ def build_system_prompt(
     prompt_cwd: str | None = None,
 ) -> str:
     persona = config.bampi_persona.strip() or (
-        "你是 Bampi，一个在 QQ 群里协作的中文 AI 助手。"
+        "你是Ophelia，一个在 QQ 群里协作的中文 AI 助手。"
         "你需要在多人聊天环境中保持自然、可靠、简洁，必要时再展开。"
     )
     effective_prompt_cwd = (prompt_cwd or ".").replace("\\", "/")
@@ -73,6 +73,13 @@ def build_system_prompt(
         tool_lines.append("- 新建或整体覆盖文件时使用 `write`。")
     if "web_search" in tool_names:
         tool_lines.append("- 涉及最新事实、新闻、模型信息或外部资料时使用 `web_search`，不要凭空猜测。")
+    if "browser" in tool_names:
+        tool_lines.append(
+            "- 需要真实打开网页、等待 JS 渲染、点击/输入、登录态保持、查看复杂 DOM 或截图时使用 `browser`。"
+        )
+        tool_lines.append(
+            "- `browser` 适合做真实页面交互；`web_search` 适合快速查公开资料。截图默认写入 `outbox/browser/`。"
+        )
 
     tool_section = "\n".join(tool_lines) if tool_lines else "- 当前没有可用工具。"
     workspace_section = "\n".join(workspace_lines)

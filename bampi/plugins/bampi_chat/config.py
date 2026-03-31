@@ -27,6 +27,7 @@ class BampiChatConfig(BaseModel):
 
     bampi_trigger_prefix: list[str] = Field(default_factory=lambda: ["@bot"])
     bampi_trigger_keywords: list[str] = Field(default_factory=list)
+    bampi_group_whitelist: list[str] = Field(default_factory=list)
     bampi_random_reply_prob: float = 0.0
     bampi_rate_limit: int = 30
     bampi_rate_limit_window_seconds: int = 60
@@ -55,14 +56,26 @@ class BampiChatConfig(BaseModel):
     bampi_bash_timeout: float = 30.0
 
     bampi_web_search_timeout: float = 15.0
-    bampi_web_search_max_results: int = 5
+    bampi_browser_enabled: bool = True
+    bampi_browser_headless: bool = True
+    bampi_browser_block_images: bool = False
+    bampi_browser_launch_timeout: float = 45.0
+    bampi_browser_action_timeout: float = 20.0
+    bampi_browser_idle_ttl_seconds: int = 5 * 60
+    bampi_browser_max_pages: int = 6
+    bampi_browser_inline_image_max_bytes: int = 1_000_000
 
     bampi_max_inline_image_size: int = 5 * 1024 * 1024
     bampi_max_download_size: int = 50 * 1024 * 1024
     bampi_group_file_upload_host_dir: str = "app/.config/QQ/temp"
     bampi_group_file_upload_container_dir: str = "/app/.config/QQ/temp"
 
-    @field_validator("bampi_trigger_prefix", "bampi_trigger_keywords", mode="before")
+    @field_validator(
+        "bampi_trigger_prefix",
+        "bampi_trigger_keywords",
+        "bampi_group_whitelist",
+        mode="before",
+    )
     @classmethod
     def _normalize_string_list(cls, value: object) -> list[str]:
         if value is None:
