@@ -10,17 +10,19 @@ import pytest
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
 from bampy.ai import AssistantMessage, ImageContent, TextContent
-from bampy.ai.types import TextDeltaEvent
+from bampy.ai.types import StopReason, TextDeltaEvent
 
 from bampi.plugins.bampi_chat.config import BampiChatConfig
 from bampi.plugins.bampi_chat import handler as handler_module
 from bampi.plugins.bampi_chat.handler import (
     IncomingMedia,
     LiveProgressReporter,
+    ResponseDispatchResult,
     TriggerDecision,
     build_user_message,
     collect_incoming_media,
     format_tool_progress_message,
+    is_stop_command,
     matched_prefix,
     prepare_group_file_upload,
     send_agent_response,
@@ -141,6 +143,12 @@ def test_should_not_random_reply_when_probability_misses():
 
 def test_matched_prefix_returns_first_match():
     assert matched_prefix("@bot hello", ["@bot", "/bot"]) == "@bot"
+
+
+def test_is_stop_command_accepts_normalized_command():
+    assert is_stop_command("/stop") is True
+    assert is_stop_command("  /STOP  ") is True
+    assert is_stop_command("/stop now") is False
 
 
 def test_format_tool_progress_message_uses_emoji_style():
@@ -834,3 +842,135 @@ async def test_send_agent_response_stages_large_image_for_napcat(tmp_path: Path)
     assert not image_file.exists()
     assert staging_dir.exists()
     assert list(staging_dir.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_send_agent_response_skips_aborted_reply(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    outbox = workspace / "outbox"
+    outbox.mkdir(parents=True)
+
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(workspace),
+        bampi_reply_with_quote=False,
+        bampi_at_sender=False,
+    )
+    bot = FakeBot()
+    matcher = FakeMatcher()
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
+    assistant_message = AssistantMessage(
+        content=[TextContent(text="这段内容不会被发送")],
+        stop_reason=StopReason.ABORTED,
+        error_message="stopped by session owner",
+    )
+
+    result = await send_agent_response(
+        bot=bot,
+        event=event,
+        matcher=matcher,
+        config=config,
+        workspace_dir=str(workspace),
+        assistant_message=assistant_message,
+        outbox_before={},
+    )
+
+    assert result.delivered is False
+    assert result.rollback_context is True
+    assert matcher.sent == []
+    assert bot.calls == []
+
+
+@pytest.mark.asyncio
+async def test_register_handlers_clears_owner_after_successful_turn(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class CapturingMatcherRegistration:
+        def handle(self):
+            def decorator(func):
+                captured["handler"] = func
+                return func
+
+            return decorator
+
+    monkeypatch.setattr(handler_module, "on_message", lambda **kwargs: CapturingMatcherRegistration())
+    monkeypatch.setattr(handler_module, "GroupMessageEvent", FakeGroupEvent)
+    monkeypatch.setattr(handler_module, "collect_incoming_media", lambda *args, **kwargs: asyncio.sleep(0, result=IncomingMedia()))
+    monkeypatch.setattr(handler_module, "snapshot_outbox", lambda workspace_dir: {})
+    monkeypatch.setattr(
+        handler_module,
+        "send_agent_response",
+        lambda **kwargs: asyncio.sleep(0, result=ResponseDispatchResult(delivered=True)),
+    )
+
+    class FakeManagedSessionRuntime:
+        def __init__(self) -> None:
+            self.is_processing = False
+            self.messages = [AssistantMessage(content=[TextContent(text="ok")])]
+            self.session_manager = SimpleNamespace(leaf_id=None)
+
+        async def prompt(self, user_message, *, source: str) -> None:
+            self.is_processing = True
+            await asyncio.sleep(0)
+            self.is_processing = False
+
+        def subscribe(self, listener):
+            def unsubscribe() -> None:
+                return None
+
+            return unsubscribe
+
+    class FakeSessionManagerForHandler:
+        def __init__(self) -> None:
+            self.workspace_dir = "."
+            self.managed = SimpleNamespace(
+                session=FakeManagedSessionRuntime(),
+                lock=asyncio.Lock(),
+                last_used_at=0.0,
+            )
+            self.active_user_id: str | None = None
+            self.complete_calls = 0
+
+        async def inspect_interaction(self, group_id: str):
+            return SimpleNamespace(
+                is_active=self.active_user_id is not None,
+                active_user_id=self.active_user_id,
+                is_streaming=self.managed.session.is_processing,
+                managed=self.managed,
+            )
+
+        async def reserve_interaction(self, group_id: str, user_id: str):
+            if self.active_user_id is None:
+                self.active_user_id = user_id
+                return SimpleNamespace(action="start", managed=self.managed, active_user_id=user_id)
+            if self.active_user_id == user_id and self.managed.session.is_processing:
+                return SimpleNamespace(action="steer", managed=self.managed, active_user_id=user_id)
+            return SimpleNamespace(action="busy", managed=self.managed, active_user_id=self.active_user_id)
+
+        async def complete_interaction(self, group_id: str) -> None:
+            self.complete_calls += 1
+            self.active_user_id = None
+
+    session_manager = FakeSessionManagerForHandler()
+    config = BampiChatConfig()
+    handler_module.register_handlers(config, session_manager)
+    handler = captured["handler"]
+
+    bot = FakeBot()
+    bot.self_id = 42
+
+    first_event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99, message=Message("第一条"))
+    first_event.to_me = True
+    first_matcher = FakeMatcher()
+    await handler(bot, first_event, first_matcher)
+
+    assert session_manager.active_user_id is None
+    assert session_manager.complete_calls == 1
+    assert first_matcher.sent == []
+
+    second_event = FakeGroupEvent(group_id=1001, user_id=42, message_id=100, message=Message("第二条"))
+    second_event.to_me = True
+    second_matcher = FakeMatcher()
+    await handler(bot, second_event, second_matcher)
+
+    assert session_manager.complete_calls == 2
+    assert second_matcher.sent == []

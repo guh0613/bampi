@@ -1,8 +1,10 @@
-FROM ubuntu:24.04
+FROM python:3.12-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
+ENV NPM_CONFIG_PREFIX=/tmp/bampi-home/.npm-global
+ENV PATH=${NPM_CONFIG_PREFIX}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -12,10 +14,9 @@ RUN apt-get update \
         git \
         jq \
         less \
+        nodejs \
+        npm \
         procps \
-        python3 \
-        python3-pip \
-        python3-venv \
         ripgrep \
     && rm -rf /var/lib/apt/lists/*
 

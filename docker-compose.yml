@@ -34,7 +34,7 @@ services:
     command:
       - bash
       - -lc
-      - mkdir -p /tmp/bampi-home /workspace/inbox /workspace/outbox && exec sleep infinity
+      - mkdir -p /tmp/bampi-home /tmp/bampi-home/.npm-global /workspace/inbox /workspace/outbox && exec sleep infinity
     volumes:
       - ./data/bampi/workspace:/workspace
     tmpfs:

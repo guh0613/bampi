@@ -31,6 +31,37 @@ async def test_group_session_manager_reuses_session(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_group_session_manager_reserve_interaction_enforces_owner(tmp_path: Path):
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+    )
+    manager = GroupSessionManager(config)
+
+    try:
+        first = await manager.reserve_interaction("1001", "42")
+        assert first.action == "start"
+
+        status = await manager.inspect_interaction("1001")
+        assert status.is_active is True
+        assert status.active_user_id == "42"
+        assert status.is_streaming is False
+
+        first.managed.session.agent.state.is_streaming = True
+        same_owner = await manager.reserve_interaction("1001", "42")
+        other_user = await manager.reserve_interaction("1001", "7")
+
+        assert same_owner.action == "steer"
+        assert other_user.action == "busy"
+
+        await manager.complete_interaction("1001")
+        cleared = await manager.inspect_interaction("1001")
+        assert cleared.is_active is False
+    finally:
+        await manager.close_all()
+
+
+@pytest.mark.asyncio
 async def test_group_session_manager_releases_idle_sessions(tmp_path: Path):
     config = BampiChatConfig(
         bampi_workspace_dir=str(tmp_path / "workspace"),

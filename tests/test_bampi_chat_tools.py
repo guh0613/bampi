@@ -57,6 +57,8 @@ def test_system_prompt_mentions_docker_workspace():
 
     assert "Docker 容器" in prompt
     assert "/workspace" in prompt
+    assert "Node.js" in prompt
+    assert "break-system-packages" in prompt
 
 
 def test_safe_bash_tool_uses_container_bash_shell(monkeypatch: pytest.MonkeyPatch):

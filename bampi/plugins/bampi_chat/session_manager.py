@@ -5,7 +5,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from nonebot import get_driver, logger
 
@@ -25,6 +25,25 @@ class ManagedGroupSession:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_used_at: float = field(default_factory=time.monotonic)
     idle_reset_task: asyncio.Task[None] | None = None
+    active_user_id: str | None = None
+
+
+@dataclass(slots=True)
+class GroupInteractionStatus:
+    managed: ManagedGroupSession | None = None
+    active_user_id: str | None = None
+    is_streaming: bool = False
+
+    @property
+    def is_active(self) -> bool:
+        return self.active_user_id is not None
+
+
+@dataclass(slots=True)
+class InteractionReservation:
+    managed: ManagedGroupSession
+    action: Literal["start", "steer", "busy"]
+    active_user_id: str | None = None
 
 
 class GroupSessionManager:
@@ -52,32 +71,59 @@ class GroupSessionManager:
     async def get_or_create(self, group_id: str) -> ManagedGroupSession:
         await self.close_idle()
         async with self._guard:
-            managed = self._sessions.get(group_id)
-            if managed is not None:
-                self._touch_session(managed)
-                logger.info(
-                    f"bampi_chat reusing session group_id={group_id} "
-                    f"message_count={len(managed.session.messages)}"
-                )
-                return managed
+            return await self._get_or_create_locked(group_id)
 
-            session = self._build_session(group_id)
-            self._attach_session_debug_logging(session, group_id)
-            await session.start()
-            managed = ManagedGroupSession(group_id=group_id, session=session)
-            self._touch_session(managed)
-            self._sessions[group_id] = managed
-            logger.info(
-                f"bampi_chat created session group_id={group_id} "
-                f"restored_message_count={len(session.messages)}"
+    async def inspect_interaction(self, group_id: str) -> GroupInteractionStatus:
+        await self.close_idle()
+        async with self._guard:
+            managed = self._sessions.get(group_id)
+            if managed is None:
+                return GroupInteractionStatus()
+            return GroupInteractionStatus(
+                managed=managed,
+                active_user_id=managed.active_user_id,
+                is_streaming=managed.session.is_processing,
             )
-            return managed
+
+    async def reserve_interaction(self, group_id: str, user_id: str) -> InteractionReservation:
+        await self.close_idle()
+        async with self._guard:
+            managed = await self._get_or_create_locked(group_id)
+            self._touch_session(managed)
+            if managed.active_user_id is None and not managed.lock.locked():
+                managed.active_user_id = user_id
+                logger.info(
+                    f"bampi_chat reserved interaction group_id={group_id} "
+                    f"user_id={user_id} action=start"
+                )
+                return InteractionReservation(
+                    managed=managed,
+                    action="start",
+                    active_user_id=user_id,
+                )
+
+            action: Literal["steer", "busy"] = "busy"
+            if managed.active_user_id == user_id and managed.session.is_processing:
+                action = "steer"
+
+            logger.info(
+                f"bampi_chat inspected interaction group_id={group_id} "
+                f"user_id={user_id} action={action} "
+                f"active_user_id={managed.active_user_id} "
+                f"is_streaming={managed.session.is_processing}"
+            )
+            return InteractionReservation(
+                managed=managed,
+                action=action,
+                active_user_id=managed.active_user_id,
+            )
 
     async def complete_interaction(self, group_id: str) -> None:
         async with self._guard:
             managed = self._sessions.get(group_id)
             if managed is None:
                 return
+            managed.active_user_id = None
             managed.last_used_at = time.monotonic()
             self._schedule_idle_reset_locked(managed)
 
@@ -150,6 +196,28 @@ class GroupSessionManager:
             get_api_key=self._resolve_api_key,
             max_turns=self._config.bampi_max_turns,
         )
+
+    async def _get_or_create_locked(self, group_id: str) -> ManagedGroupSession:
+        managed = self._sessions.get(group_id)
+        if managed is not None:
+            self._touch_session(managed)
+            logger.info(
+                f"bampi_chat reusing session group_id={group_id} "
+                f"message_count={len(managed.session.messages)}"
+            )
+            return managed
+
+        session = self._build_session(group_id)
+        self._attach_session_debug_logging(session, group_id)
+        await session.start()
+        managed = ManagedGroupSession(group_id=group_id, session=session)
+        self._touch_session(managed)
+        self._sessions[group_id] = managed
+        logger.info(
+            f"bampi_chat created session group_id={group_id} "
+            f"restored_message_count={len(session.messages)}"
+        )
+        return managed
 
     def _attach_session_debug_logging(self, session: AgentSession, group_id: str) -> None:
         def _listener(event: Any) -> None:
@@ -264,6 +332,7 @@ class GroupSessionManager:
         clear_history: bool = True,
     ) -> None:
         self._cancel_idle_reset_task(managed)
+        managed.active_user_id = None
         session_file = managed.session.session_manager.session_file
         logger.info(
             f"bampi_chat disposing session group_id={managed.group_id} "

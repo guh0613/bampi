@@ -14,10 +14,10 @@ def build_system_prompt(config: BampiChatConfig, tool_names: list[str]) -> str:
     if config.bampi_bash_mode != "local":
         env_lines.extend(
             [
-                f"- 操作系统：Ubuntu 24.04 LTS (Docker 容器)，工作目录 `{config.bampi_bash_container_workdir}`。",
-                "- 预装软件：bash, curl, git, jq, less, procps, python3, pip, ripgrep。",
+                f"- 操作系统：Python 3.12 slim（Debian 系 Docker 容器），工作目录 `{config.bampi_bash_container_workdir}`。",
+                "- 预装软件：bash, curl, git, jq, less, node, npm, procps, python, python3, pip, pip3, ripgrep。",
                 "- 语言环境：C.UTF-8，HOME 为 /tmp/bampi-home。",
-                "- 没有预装编译器(gcc/g++)、Node.js、Go 等——需要时可通过 apt 安装，但要提前告知用户可能耗时。",
+                "- 已预装默认 Node.js 环境；没有预装编译器(gcc/g++)、Go 等，需要时可通过 apt 安装，但要提前告知用户可能耗时。",
                 f"- workspace 挂载在容器内 `{config.bampi_bash_container_workdir}`，与宿主机同步。",
             ]
         )

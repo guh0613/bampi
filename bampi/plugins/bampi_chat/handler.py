@@ -21,7 +21,7 @@ from nonebot.matcher import Matcher
 from nonebot.plugin import on_message
 
 from bampy.ai import ImageContent, TextContent, UserMessage
-from bampy.ai.types import AssistantMessage
+from bampy.ai.types import AssistantMessage, StopReason
 from bampy.app import AgentSession
 
 from .config import BampiChatConfig
@@ -81,6 +81,13 @@ TOOL_PROGRESS_EMOJIS: dict[str, str] = {
     "edit": "🛠️",
     "web_search": "🌐",
 }
+
+STOP_COMMAND = "/stop"
+ACTIVE_SESSION_BUSY_MESSAGE = "当前群里已有进行中的会话，只有发起者可以继续跟进；如需中止，请让发起者发送 /stop。"
+ACTIVE_SESSION_WINDING_DOWN_MESSAGE = "当前会话正在收尾，请稍等结果发出。"
+STOP_NO_ACTIVE_MESSAGE = "当前没有你发起的进行中会话。"
+STOP_NOT_OWNER_MESSAGE = "当前会话不是你发起的，不能由你停止；如需中止，请让发起者发送 /stop。"
+STOPPED_SESSION_MESSAGE = "已停止你发起的当前会话。"
 
 
 class PlaintextEvent(Protocol):
@@ -408,6 +415,10 @@ def describe_tool_progress(tool_name: str, args: Any) -> str:
     return f"正在执行工具：{display_name}"
 
 
+def is_stop_command(text: str) -> bool:
+    return normalize_text(text).lower() == STOP_COMMAND
+
+
 def register_handlers(config: BampiChatConfig, session_manager: GroupSessionManager) -> None:
     limiter = GroupRateLimiter(
         config.bampi_rate_limit,
@@ -421,6 +432,8 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
             return
 
         raw_text = normalize_text(event.get_plaintext())
+        group_id = str(event.group_id)
+        user_id = str(event.user_id)
         logger.info(
             f"bampi_chat received group_id={event.group_id} "
             f"user_id={event.user_id} "
@@ -429,6 +442,46 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
             f"segments={summarize_segments(event.message)} "
             f"text={log_preview(raw_text)!r}"
         )
+
+        if is_stop_command(raw_text):
+            status = await session_manager.inspect_interaction(group_id)
+            if not status.is_active:
+                await matcher.send(STOP_NO_ACTIVE_MESSAGE)
+                return
+            if status.active_user_id != user_id:
+                await matcher.send(STOP_NOT_OWNER_MESSAGE)
+                return
+            if not status.is_streaming or status.managed is None:
+                await matcher.send(ACTIVE_SESSION_WINDING_DOWN_MESSAGE)
+                return
+
+            status.managed.session.clear_all_queues()
+            status.managed.session.abort("stopped by session owner")
+            logger.info(
+                f"bampi_chat abort requested group_id={group_id} "
+                f"user_id={user_id} "
+                f"message_id={event.message_id}"
+            )
+            await matcher.send(STOPPED_SESSION_MESSAGE)
+            return
+
+        active_status = await session_manager.inspect_interaction(group_id)
+        if active_status.is_active and active_status.active_user_id == user_id and active_status.is_streaming:
+            logger.info(
+                f"bampi_chat owner follow-up accepted group_id={group_id} "
+                f"user_id={user_id} "
+                f"message_id={event.message_id}"
+            )
+            try:
+                media = await collect_incoming_media(bot, event, config, session_manager.workspace_dir)
+            except Exception:
+                logger.exception("bampi_chat failed to collect follow-up media")
+                await matcher.send("这条跟进消息处理失败了，你可以重新发一次。")
+                return
+            user_message = build_user_message(event, raw_text, media)
+            active_status.managed.session.steer(user_message)
+            return
+
         decision = should_respond(
             event,
             bot_self_id=str(bot.self_id),
@@ -444,7 +497,6 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
             )
             return
 
-        group_id = str(event.group_id)
         logger.info(
             f"bampi_chat triggered group_id={group_id} "
             f"message_id={event.message_id} "
@@ -452,6 +504,24 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
             f"direct={decision.direct} "
             f"cleaned_text={log_preview(decision.cleaned_text)!r}"
         )
+
+        if active_status.is_active:
+            logger.info(
+                f"bampi_chat rejected concurrent trigger group_id={group_id} "
+                f"user_id={user_id} "
+                f"message_id={event.message_id} "
+                f"active_user_id={active_status.active_user_id} "
+                f"is_streaming={active_status.is_streaming}"
+            )
+            if decision.direct:
+                message = (
+                    ACTIVE_SESSION_WINDING_DOWN_MESSAGE
+                    if active_status.active_user_id == user_id
+                    else ACTIVE_SESSION_BUSY_MESSAGE
+                )
+                await matcher.send(message)
+            return
+
         if not limiter.allow(group_id):
             logger.warning(
                 f"bampi_chat rate limited group_id={group_id} "
@@ -462,75 +532,104 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 await matcher.send("这会儿有点忙，稍后再戳我一下。")
             return
 
-        media = await collect_incoming_media(bot, event, config, session_manager.workspace_dir)
-        logger.info(
-            f"bampi_chat media collected group_id={group_id} "
-            f"message_id={event.message_id} "
-            f"inline_images={len(media.inline_images)} "
-            f"saved_paths={media.saved_paths} "
-            f"reply_inline_images={len(media.reply_inline_images)} "
-            f"reply_saved_paths={media.reply_saved_paths} "
-            f"notes={media.notes} "
-            f"reply_notes={media.reply_notes}"
-        )
-        user_message = build_user_message(event, decision.cleaned_text, media)
         try:
-            managed = await session_manager.get_or_create(group_id)
+            reservation = await session_manager.reserve_interaction(group_id, user_id)
         except Exception:
             logger.exception("bampi_chat failed to create or restore group session")
             await matcher.send("agent 会话初始化失败了，先检查模型配置、API Key 或会话目录。")
             return
-        outbox_before = snapshot_outbox(session_manager.workspace_dir)
-        logger.info(
-            f"bampi_chat session ready group_id={group_id} "
-            f"message_id={event.message_id} "
-            f"session_message_count={len(managed.session.messages)}"
-        )
 
-        async with managed.lock:
-            managed.last_used_at = time.monotonic()
-            started_at = time.monotonic()
-            baseline_leaf_id = managed.session.session_manager.leaf_id
-            reporter = LiveProgressReporter(bot=bot, event=event, config=config)
-            reporter.start(managed.session)
+        if reservation.action == "busy":
             logger.info(
-                f"bampi_chat prompt start group_id={group_id} "
+                f"bampi_chat rejected reservation group_id={group_id} "
+                f"user_id={user_id} "
                 f"message_id={event.message_id} "
-                f"content_blocks={len(user_message.content)}"
+                f"active_user_id={reservation.active_user_id}"
             )
-            try:
-                await managed.session.prompt(user_message, source="qq_group")
-            except Exception:
-                await reporter.close()
-                rollback_session_context(managed.session, baseline_leaf_id)
-                await session_manager.complete_interaction(group_id)
-                logger.exception("bampi_chat session prompt failed")
-                await matcher.send("这次调用 agent 失败了，检查一下模型配置、网络或工具环境。")
+            await matcher.send(ACTIVE_SESSION_BUSY_MESSAGE)
+            return
+
+        managed = reservation.managed
+        try:
+            media = await collect_incoming_media(bot, event, config, session_manager.workspace_dir)
+            logger.info(
+                f"bampi_chat media collected group_id={group_id} "
+                f"message_id={event.message_id} "
+                f"inline_images={len(media.inline_images)} "
+                f"saved_paths={media.saved_paths} "
+                f"reply_inline_images={len(media.reply_inline_images)} "
+                f"reply_saved_paths={media.reply_saved_paths} "
+                f"notes={media.notes} "
+                f"reply_notes={media.reply_notes}"
+            )
+            user_message = build_user_message(event, decision.cleaned_text, media)
+
+            if reservation.action == "steer":
+                managed.session.steer(user_message)
+                logger.info(
+                    f"bampi_chat queued steer group_id={group_id} "
+                    f"user_id={user_id} "
+                    f"message_id={event.message_id} "
+                    f"content_blocks={len(user_message.content)}"
+                )
                 return
 
-            managed.last_used_at = time.monotonic()
+            outbox_before = snapshot_outbox(session_manager.workspace_dir)
             logger.info(
-                f"bampi_chat prompt finished group_id={group_id} "
+                f"bampi_chat session ready group_id={group_id} "
                 f"message_id={event.message_id} "
-                f"duration={time.monotonic() - started_at:.2f}s "
-                f"total_messages={len(managed.session.messages)}"
+                f"session_message_count={len(managed.session.messages)}"
             )
-            await reporter.prepare_final_reply()
-            result = await send_agent_response(
-                bot=bot,
-                event=event,
-                matcher=matcher,
-                config=config,
-                workspace_dir=session_manager.workspace_dir,
-                assistant_message=find_last_assistant_message(managed.session.messages),
-                outbox_before=outbox_before,
-                streamed_text=reporter.streamed_text,
-                streamed_any_text=reporter.streamed_any_text,
-            )
-            await reporter.close()
-            if result.rollback_context:
-                rollback_session_context(managed.session, baseline_leaf_id)
-            await session_manager.complete_interaction(group_id)
+
+            async with managed.lock:
+                managed.last_used_at = time.monotonic()
+                started_at = time.monotonic()
+                baseline_leaf_id = managed.session.session_manager.leaf_id
+                reporter = LiveProgressReporter(bot=bot, event=event, config=config)
+                reporter.start(managed.session)
+                logger.info(
+                    f"bampi_chat prompt start group_id={group_id} "
+                    f"message_id={event.message_id} "
+                    f"content_blocks={len(user_message.content)}"
+                )
+                try:
+                    await managed.session.prompt(user_message, source="qq_group")
+                except Exception:
+                    await reporter.close()
+                    rollback_session_context(managed.session, baseline_leaf_id)
+                    logger.exception("bampi_chat session prompt failed")
+                    await matcher.send("这次调用 agent 失败了，检查一下模型配置、网络或工具环境。")
+                    return
+
+                managed.last_used_at = time.monotonic()
+                logger.info(
+                    f"bampi_chat prompt finished group_id={group_id} "
+                    f"message_id={event.message_id} "
+                    f"duration={time.monotonic() - started_at:.2f}s "
+                    f"total_messages={len(managed.session.messages)}"
+                )
+                await reporter.prepare_final_reply()
+                result = await send_agent_response(
+                    bot=bot,
+                    event=event,
+                    matcher=matcher,
+                    config=config,
+                    workspace_dir=session_manager.workspace_dir,
+                    assistant_message=find_last_assistant_message(managed.session.messages),
+                    outbox_before=outbox_before,
+                    streamed_text=reporter.streamed_text,
+                    streamed_any_text=reporter.streamed_any_text,
+                )
+                await reporter.close()
+                if result.rollback_context:
+                    rollback_session_context(managed.session, baseline_leaf_id)
+        except Exception:
+            logger.exception("bampi_chat failed while preparing or delivering interaction")
+            await matcher.send("处理这条消息时出了点问题，请稍后再试一次。")
+            return
+        finally:
+            if reservation.action == "start":
+                await session_manager.complete_interaction(group_id)
 
 
 def should_respond(
@@ -1158,6 +1257,13 @@ async def send_agent_response(
         f"stop_reason={stop_reason} "
         f"error={log_preview(error_message)!r}"
     )
+
+    if stop_reason in {StopReason.ABORTED, "aborted"}:
+        logger.info(
+            f"bampi_chat skipped aborted reply group_id={event.group_id} "
+            f"message_id={event.message_id}"
+        )
+        return ResponseDispatchResult(delivered=False, rollback_context=True)
 
     if not text and not files:
         if error_message:
