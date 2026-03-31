@@ -60,7 +60,7 @@ def build_system_prompt(
         else:
             tool_lines.append("- 需要执行命令时使用 `bash`，默认在当前宿主机 workspace 中工作。")
     if "read" in tool_names:
-        tool_lines.append("- 查看文件优先使用 `read`。")
+        tool_lines.append("- 查看文件优先使用 `read`。特别值得一提的是，你也可以使用read来读取一张图片。")
     if "grep" in tool_names:
         tool_lines.append("- 需要搜索内容时使用 `grep`。")
     if "find" in tool_names:
