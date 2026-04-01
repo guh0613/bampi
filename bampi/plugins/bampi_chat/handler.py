@@ -849,35 +849,6 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
             return
 
         active_status = await session_manager.inspect_interaction(group_id)
-        if active_status.is_active and active_status.active_user_id == user_id and active_status.is_streaming:
-            logger.info(
-                f"bampi_chat owner follow-up accepted group_id={group_id} "
-                f"user_id={user_id} "
-                f"message_id={event.message_id}"
-            )
-            try:
-                media = await collect_incoming_media(bot, event, config, workspace_dir)
-            except Exception:
-                logger.exception("bampi_chat failed to collect follow-up media")
-                await matcher.send("这条跟进消息处理失败了，你可以重新发一次。")
-                return
-            explicit_skills = resolve_explicit_skills(
-                raw_text,
-                workspace_dir=workspace_dir,
-            )
-            if explicit_skills.missing_names:
-                await matcher.send(_format_missing_skills_message(explicit_skills.missing_names))
-                return
-            user_message = build_user_message(
-                event,
-                raw_text,
-                media,
-                workspace_dir=workspace_dir,
-                explicit_skills=explicit_skills,
-            )
-            active_status.managed.session.steer(user_message)
-            return
-
         decision = should_respond(
             event,
             bot_self_id=str(bot.self_id),
@@ -891,6 +862,36 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 f"reason=no_trigger "
                 f"text={log_preview(raw_text)!r}"
             )
+            return
+
+        if active_status.is_active and active_status.active_user_id == user_id and active_status.is_streaming:
+            logger.info(
+                f"bampi_chat owner follow-up accepted group_id={group_id} "
+                f"user_id={user_id} "
+                f"message_id={event.message_id} "
+                f"reason={decision.reason}"
+            )
+            try:
+                media = await collect_incoming_media(bot, event, config, workspace_dir)
+            except Exception:
+                logger.exception("bampi_chat failed to collect follow-up media")
+                await matcher.send("这条跟进消息处理失败了，你可以重新发一次。")
+                return
+            explicit_skills = resolve_explicit_skills(
+                decision.cleaned_text,
+                workspace_dir=workspace_dir,
+            )
+            if explicit_skills.missing_names:
+                await matcher.send(_format_missing_skills_message(explicit_skills.missing_names))
+                return
+            user_message = build_user_message(
+                event,
+                decision.cleaned_text,
+                media,
+                workspace_dir=workspace_dir,
+                explicit_skills=explicit_skills,
+            )
+            active_status.managed.session.steer(user_message)
             return
 
         logger.info(

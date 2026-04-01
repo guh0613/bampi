@@ -1014,6 +1014,143 @@ async def test_send_agent_response_skips_aborted_reply(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_register_handlers_does_not_steer_owner_without_trigger(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class CapturingMatcherRegistration:
+        def handle(self):
+            def decorator(func):
+                captured["handler"] = func
+                return func
+
+            return decorator
+
+    async def unexpected_collect_incoming_media(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("collect_incoming_media should not be called without trigger")
+
+    monkeypatch.setattr(handler_module, "on_message", lambda **kwargs: CapturingMatcherRegistration())
+    monkeypatch.setattr(handler_module, "GroupMessageEvent", FakeGroupEvent)
+    monkeypatch.setattr(handler_module, "collect_incoming_media", unexpected_collect_incoming_media)
+
+    class FakeManagedSessionRuntime:
+        def __init__(self) -> None:
+            self.is_processing = True
+            self.messages = [AssistantMessage(content=[TextContent(text="processing")])]
+            self.session_manager = SimpleNamespace(leaf_id=None)
+            self.steer_calls: list[object] = []
+
+        def steer(self, user_message) -> None:
+            self.steer_calls.append(user_message)
+
+    class FakeSessionManagerForActiveOwner:
+        def __init__(self) -> None:
+            self.workspace_dir = "."
+            self.managed = SimpleNamespace(
+                session=FakeManagedSessionRuntime(),
+                lock=asyncio.Lock(),
+                last_used_at=0.0,
+            )
+            self.active_user_id = "42"
+
+        def workspace_dir_for_group(self, group_id: str) -> str:
+            return self.workspace_dir
+
+        async def inspect_interaction(self, group_id: str):
+            return SimpleNamespace(
+                is_active=True,
+                active_user_id=self.active_user_id,
+                is_streaming=self.managed.session.is_processing,
+                managed=self.managed,
+            )
+
+        async def reserve_interaction(self, group_id: str, user_id: str):
+            raise AssertionError("reserve_interaction should not be called without trigger")
+
+    session_manager = FakeSessionManagerForActiveOwner()
+    config = BampiChatConfig()
+    handler_module.register_handlers(config, session_manager)
+    handler = captured["handler"]
+
+    bot = FakeBot()
+    bot.self_id = 99
+
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99, message=Message("随便说一句"))
+    event.to_me = False
+    matcher = FakeMatcher()
+    await handler(bot, event, matcher)
+
+    assert session_manager.managed.session.steer_calls == []
+    assert matcher.sent == []
+
+
+@pytest.mark.asyncio
+async def test_register_handlers_allows_owner_to_steer_when_trigger_matches(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class CapturingMatcherRegistration:
+        def handle(self):
+            def decorator(func):
+                captured["handler"] = func
+                return func
+
+            return decorator
+
+    monkeypatch.setattr(handler_module, "on_message", lambda **kwargs: CapturingMatcherRegistration())
+    monkeypatch.setattr(handler_module, "GroupMessageEvent", FakeGroupEvent)
+    monkeypatch.setattr(handler_module, "collect_incoming_media", lambda *args, **kwargs: asyncio.sleep(0, result=IncomingMedia()))
+
+    class FakeManagedSessionRuntime:
+        def __init__(self) -> None:
+            self.is_processing = True
+            self.messages = [AssistantMessage(content=[TextContent(text="processing")])]
+            self.session_manager = SimpleNamespace(leaf_id=None)
+            self.steer_calls: list[object] = []
+
+        def steer(self, user_message) -> None:
+            self.steer_calls.append(user_message)
+
+    class FakeSessionManagerForActiveOwner:
+        def __init__(self) -> None:
+            self.workspace_dir = "."
+            self.managed = SimpleNamespace(
+                session=FakeManagedSessionRuntime(),
+                lock=asyncio.Lock(),
+                last_used_at=0.0,
+            )
+            self.active_user_id = "42"
+
+        def workspace_dir_for_group(self, group_id: str) -> str:
+            return self.workspace_dir
+
+        async def inspect_interaction(self, group_id: str):
+            return SimpleNamespace(
+                is_active=True,
+                active_user_id=self.active_user_id,
+                is_streaming=self.managed.session.is_processing,
+                managed=self.managed,
+            )
+
+        async def reserve_interaction(self, group_id: str, user_id: str):
+            raise AssertionError("reserve_interaction should not be called for active owner steer")
+
+    session_manager = FakeSessionManagerForActiveOwner()
+    config = BampiChatConfig()
+    handler_module.register_handlers(config, session_manager)
+    handler = captured["handler"]
+
+    bot = FakeBot()
+    bot.self_id = 99
+
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99, message=Message("继续看这个"))
+    event.to_me = True
+    matcher = FakeMatcher()
+    await handler(bot, event, matcher)
+
+    assert len(session_manager.managed.session.steer_calls) == 1
+    assert matcher.sent == []
+
+
+@pytest.mark.asyncio
 async def test_register_handlers_clears_owner_after_successful_turn(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, object] = {}
 
