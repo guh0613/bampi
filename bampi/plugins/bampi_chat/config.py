@@ -32,7 +32,7 @@ class BampiChatConfig(BaseModel):
     bampi_rate_limit: int = 30
     bampi_rate_limit_window_seconds: int = 60
 
-    bampi_max_turns: int = 15
+    bampi_max_turns: int = 30
     bampi_session_idle_ttl_seconds: int = 30 * 60
 
     bampi_workspace_dir: str = DEFAULT_WORKSPACE_DIR

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from bampi.plugins.bampi_chat.config import BampiChatConfig
+from bampi.plugins.bampi_chat import prompt as prompt_module
 from bampi.plugins.bampi_chat.prompt import build_system_prompt
 from bampi.plugins.bampi_chat.tools import create_agent_tools
 from bampi.plugins.bampi_chat.tools.files import WorkspaceEditTool, WorkspaceReadTool, WorkspaceWriteTool
@@ -74,6 +76,20 @@ def test_system_prompt_mentions_browser_tool():
 
     assert "真实打开网页" in prompt
     assert "outbox/browser/" in prompt
+
+
+def test_system_prompt_uses_utc_plus_8_date(monkeypatch: pytest.MonkeyPatch):
+    class _FakeDatetime:
+        @classmethod
+        def now(cls, tz):
+            assert tz.utcoffset(None) == timedelta(hours=8)
+            return datetime(2026, 4, 1, 0, 30, tzinfo=tz)
+
+    monkeypatch.setattr(prompt_module, "datetime", _FakeDatetime)
+
+    prompt = build_system_prompt(BampiChatConfig(), ["bash", "read"])
+
+    assert "Current date: 2026-04-01" in prompt
 
 
 def test_create_agent_tools_includes_browser_by_default(tmp_path: Path):
@@ -160,12 +176,7 @@ async def test_web_search_tool_uses_chat_completions(monkeypatch: pytest.MonkeyP
     )
     result = await tool.execute("call-1", {"query": "最新模型信息"})
 
-    assert result.content[0].text.startswith("Web search results for: 最新模型信息")
-    assert "Search trace:" in result.content[0].text
-    assert "- [WebSearch] example query" in result.content[0].text
-    assert "- browse_page: https://example.com/page" in result.content[0].text
-    assert "- tool_call: web_search" in result.content[0].text
-    assert "Summary: latest info" in result.content[0].text
+    assert result.content[0].text == "Summary: latest info\nSources:\n- Example | https://example.com"
     assert state["client_kwargs"] == {
         "timeout": 12.0,
     }
@@ -208,13 +219,7 @@ async def test_web_search_reads_sse_and_compacts_thinking_trace():
 
     text = await web_search_module._read_sse_text(_FakeResponse())
 
-    assert web_search_module._compact_response_text(text) == (
-        "Search trace:\n"
-        "- [WebSearch] OpenAI latest models 2026\n"
-        "- browse_page: https://developers.openai.com/api/docs/models\n"
-        "- tool_call: web_search\n\n"
-        "Answer with source"
-    )
+    assert web_search_module._compact_response_text(text) == "Answer with source"
 
 
 @pytest.mark.asyncio

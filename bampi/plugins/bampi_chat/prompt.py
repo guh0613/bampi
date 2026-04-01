@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from bampy.app import Skill, format_skills_for_prompt
 
 from .config import BampiChatConfig
+
+PROMPT_TIMEZONE = timezone(timedelta(hours=8), name="UTC+8")
 
 
 def build_system_prompt(
@@ -19,7 +21,7 @@ def build_system_prompt(
         "你需要在多人聊天环境中保持自然、可靠、简洁，必要时再展开。"
     )
     effective_prompt_cwd = (prompt_cwd or ".").replace("\\", "/")
-    current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    current_date = datetime.now(PROMPT_TIMEZONE).strftime("%Y-%m-%d")
 
     # ── 运行环境 ──
     env_lines: list[str] = []

@@ -70,74 +70,9 @@ def _extract_message_text(message: Any) -> str:
     return "\n".join(part for part in parts if part).strip()
 
 
-def _dedupe_preserve_order(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-    return result
-
-
-def _format_browse_page_line(line: str) -> str:
-    payload_text = line[len("browse_page "):].strip()
-    try:
-        payload = json.loads(payload_text)
-    except json.JSONDecodeError:
-        return line
-    url = payload.get("url")
-    if isinstance(url, str) and url.strip():
-        return f"browse_page: {url.strip()}"
-    return line
-
-
-def _extract_useful_thinking_lines(thinking: str) -> list[str]:
-    useful: list[str] = []
-    for raw_line in thinking.splitlines():
-        line = " ".join(raw_line.strip().split())
-        if not line:
-            continue
-
-        normalized = line.lstrip("-* ").strip()
-        low = normalized.lower()
-
-        if normalized.startswith("[WebSearch]"):
-            useful.append(normalized)
-            continue
-        if normalized.startswith("browse_page "):
-            useful.append(_format_browse_page_line(normalized))
-            continue
-        if "web_search tool" in low:
-            useful.append("tool_call: web_search")
-            continue
-        if low.startswith("planning to "):
-            continue
-        if low.startswith(("searching ", "checking ", "browsing ", "opening ")):
-            useful.append(normalized)
-            continue
-        if re.search(r"https?://\S+", normalized):
-            useful.append(normalized)
-
-    return _dedupe_preserve_order(useful)
-
-
 def _compact_response_text(text: str) -> str:
-    trace_items: list[str] = []
-
-    def _replace_thinking(match: re.Match[str]) -> str:
-        trace_items.extend(_extract_useful_thinking_lines(match.group(1)))
-        return ""
-
-    answer = re.sub(r"<think>(.*?)</think>", _replace_thinking, text, flags=re.DOTALL).strip()
-    trace_items = _dedupe_preserve_order(trace_items)
-    if not trace_items:
-        return answer or text.strip()
-
-    trace_block = "\n".join(["Search trace:"] + [f"- {item}" for item in trace_items])
-    if answer:
-        return f"{trace_block}\n\n{answer}"
-    return trace_block
+    answer = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    return answer or text.strip()
 
 
 async def _read_sse_text(response: httpx.Response) -> str:
@@ -248,6 +183,6 @@ def create_web_search_tool(
             )
         except Exception as exc:
             return f"Web search failed for: {query}\nError: {exc}"
-        return f"Web search results for: {query}\n{answer}"
+        return answer
 
     return web_search
