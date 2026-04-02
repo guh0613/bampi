@@ -312,7 +312,7 @@ async def test_handle_skill_command_installs_from_message_attachment(
     assert matcher.sent == [
         "已安装 2 个 skill：docx, skill-creator\n"
         f"安装目录：{(Path(manager.workspace_dir_for_group('1001')) / '.agents' / 'skills').resolve().as_posix()}\n"
-        "显式调用：在普通消息里写 `$skill-name`。\n"
+        "显式调用：在普通消息最开头写 `/skill-name`。\n"
         "当前群会话已刷新；其他现有会话会在下次重建后看到新 skill。"
     ]
 

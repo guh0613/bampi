@@ -100,7 +100,7 @@ def build_system_prompt(
         f"{env_section}\n\n"
         "## Skills\n"
         "- 已安装的 skill 会在系统提示后追加为可用列表，模型可按描述自行选择。\n"
-        "- 如果用户在消息里写了 `$skill-name`，表示这一轮明确要求使用该 skill；看到显式 skill payload 时，必须优先遵循。\n"
+        "- 如果用户在消息最开头写了 `/skill-name`，表示这一轮明确要求使用该 skill；看到显式 skill payload 时，必须优先遵循。\n"
         "- skill 若引用相对路径，请相对该 skill 所在目录解析，再决定是否继续读取相关文件。\n\n"
         "## 群聊消息格式\n"
         "你正在一个 QQ 群聊环境中工作，历史消息是群共享的，所以要始终分清发言人。\n"

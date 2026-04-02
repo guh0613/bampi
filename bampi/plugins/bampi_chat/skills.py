@@ -17,7 +17,9 @@ from bampy.app import LoadSkillsResult, Skill, SkillDiagnostic, load_skills
 DEFAULT_SKILL_INSTALL_DIR = ".agents/skills"
 DEFAULT_BUILTIN_SKILL_MIRROR_DIR = ".agents/builtin-skills"
 LEGACY_SKILL_INSTALL_DIR = ".bampy/skills"
-_SKILL_MENTION_RE = re.compile(r"(?<![\w-])\$(?P<name>[A-Za-z][A-Za-z0-9_-]{0,63})\b")
+_EXPLICIT_SKILL_PREFIX_RE = re.compile(
+    r"^/(?P<name>[A-Za-z][A-Za-z0-9_-]{0,63})(?P<delimiter>$|[\s,.;:!?，。；：！？、])"
+)
 _SKILL_ROOT_MARKERS = (
     (".agents", "skills"),
     (".agents", "builtin-skills"),
@@ -191,20 +193,25 @@ def parse_skill_command(text: str | None) -> ParsedSkillCommand | None:
 
 
 def extract_explicit_skill_names(text: str | None) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for match in _SKILL_MENTION_RE.finditer(text or ""):
-        name = match.group("name")
-        key = name.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(name)
-    return result
+    raw = (text or "").strip()
+    if not raw or parse_skill_command(raw) is not None:
+        return []
+
+    match = _EXPLICIT_SKILL_PREFIX_RE.match(raw)
+    if match is None:
+        return []
+    return [match.group("name")]
 
 
 def strip_explicit_skill_mentions(text: str | None) -> str:
-    return _normalize_whitespace(_SKILL_MENTION_RE.sub(" ", text or ""))
+    raw = (text or "").strip()
+    if not raw or parse_skill_command(raw) is not None:
+        return _normalize_whitespace(raw)
+
+    match = _EXPLICIT_SKILL_PREFIX_RE.match(raw)
+    if match is None:
+        return _normalize_whitespace(raw)
+    return _normalize_whitespace(raw[match.end() :])
 
 
 def resolve_explicit_skills(
@@ -288,7 +295,7 @@ def format_skill_list(skills: list[Skill], *, workspace_dir: str) -> str:
             "当前还没有已安装的 skill。\n"
             "发送或引用一个 skill 压缩包/Markdown 文件后执行 `/skill install`，"
             "或直接使用 `/skill install https://...` 安装。\n"
-            "显式调用时，直接在消息里写 `$skill-name`。"
+            "显式调用时，在消息最开头写 `/skill-name`。"
         )
 
     lines = [f"已安装 {len(skills)} 个 skill："]
@@ -297,7 +304,7 @@ def format_skill_list(skills: list[Skill], *, workspace_dir: str) -> str:
         origin = _skill_origin_label(skill, workspace_dir=workspace_dir)
         lines.append(f"- {skill.name} [{origin}，{mode}]：{skill.description}")
         lines.append(f"  路径：{display_skill_path(skill.file_path, workspace_dir=workspace_dir)}")
-    lines.append("显式调用：在消息里写 `$skill-name`。")
+    lines.append("显式调用：在消息最开头写 `/skill-name`。")
     return "\n".join(lines)
 
 
@@ -311,7 +318,7 @@ def format_skill_details(skill: Skill, *, workspace_dir: str) -> str:
             f"来源：{origin}",
             f"模式：{mode}",
             f"路径：{display_skill_path(skill.file_path, workspace_dir=workspace_dir)}",
-            "显式调用：在消息里写 `$"
+            "显式调用：在消息最开头写 `/"
             f"{skill.name}`，或把它和普通问题写在同一条消息里。",
         ]
     )
@@ -325,7 +332,7 @@ def format_skill_help() -> str:
             "- `/skill show <name>`：查看 skill 简介",
             "- 发送或引用 skill 文件后执行 `/skill install [--force]`：安装 skill 包",
             "- `/skill install https://... [--force]`：通过 URL 安装 skill 包",
-            "显式调用：在普通消息里写 `$skill-name`，比如 `$code-review 看看这个文件`。",
+            "显式调用：在普通消息最开头写 `/skill-name`，比如 `/code-review 看看这个文件`。",
         ]
     )
 

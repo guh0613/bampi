@@ -50,7 +50,7 @@ def _write_skill(skill_dir: Path, content: str) -> Path:
 
 def test_should_respond_when_explicit_skill_is_requested():
     decision = should_respond(
-        PlaintextEvent("$code-review 帮我看这个文件"),
+        PlaintextEvent("/code-review 帮我看这个文件"),
         bot_self_id="42",
         config=BampiChatConfig(),
         random_value=1.0,
@@ -59,6 +59,26 @@ def test_should_respond_when_explicit_skill_is_requested():
     assert decision.should_respond is True
     assert decision.reason == "skill"
     assert decision.direct is True
+
+
+def test_should_not_treat_non_prefix_or_formula_text_as_explicit_skill():
+    config = BampiChatConfig()
+
+    formula_decision = should_respond(
+        PlaintextEvent("这是 $G(s)=\\dfrac{s^2+4s+8}{s^2+5s+3}$"),
+        bot_self_id="42",
+        config=config,
+        random_value=1.0,
+    )
+    mid_text_decision = should_respond(
+        PlaintextEvent("请用 /code-review 帮我看这个文件"),
+        bot_self_id="42",
+        config=config,
+        random_value=1.0,
+    )
+
+    assert formula_decision.should_respond is False
+    assert mid_text_decision.should_respond is False
 
 
 def test_load_chat_skills_respects_openai_manual_only_policy(tmp_path: Path):
@@ -154,7 +174,7 @@ def test_build_user_message_includes_explicit_skill_payload(tmp_path: Path):
     )
 
     resolution = resolve_explicit_skills(
-        "$code-review 帮我看看这个补丁",
+        "/code-review 帮我看看这个补丁",
         workspace_dir=str(tmp_path),
     )
     event = FakeEvent(
@@ -165,7 +185,7 @@ def test_build_user_message_includes_explicit_skill_payload(tmp_path: Path):
 
     message = build_user_message(
         event,
-        "$code-review 帮我看看这个补丁",
+        "/code-review 帮我看看这个补丁",
         media=IncomingMedia(),
         workspace_dir=str(tmp_path),
         explicit_skills=resolution,
@@ -176,6 +196,18 @@ def test_build_user_message_includes_explicit_skill_payload(tmp_path: Path):
     assert len(message.content) == 2
     assert "explicit_skill_payloads:" in message.content[1].text
     assert "# Code Review" in message.content[1].text
+
+
+def test_resolve_explicit_skills_ignores_markdown_math(tmp_path: Path):
+    resolution = resolve_explicit_skills(
+        "这是**现代控制理论**：$G(s)=\\dfrac{s^2+4s+8}{s^2+5s+3}$，以及 $e^{At}$。",
+        workspace_dir=str(tmp_path),
+    )
+
+    assert resolution.requested_names == []
+    assert resolution.skills == []
+    assert resolution.missing_names == []
+    assert resolution.cleaned_text == "这是**现代控制理论**：$G(s)=\\dfrac{s^2+4s+8}{s^2+5s+3}$，以及 $e^{At}$。"
 
 
 @pytest.mark.asyncio

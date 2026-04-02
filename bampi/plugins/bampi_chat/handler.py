@@ -779,7 +779,7 @@ async def _handle_skill_command(
         lines = [
             f"已安装 {len(installed_names)} 个 skill：{', '.join(installed_names)}",
             f"安装目录：{Path(workspace_dir, '.agents/skills').resolve().as_posix()}",
-            "显式调用：在普通消息里写 `$skill-name`。",
+            "显式调用：在普通消息最开头写 `/skill-name`。",
             "当前群会话已刷新；其他现有会话会在下次重建后看到新 skill。",
         ]
         if replaced_names:
