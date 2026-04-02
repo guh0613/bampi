@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .browser import BrowserTool
 from .files import WorkspaceEditTool, WorkspaceFindTool, WorkspaceGrepTool, WorkspaceLsTool, WorkspaceReadTool, WorkspaceWriteTool
+
 from .safe_bash import SafeBashTool
 from .web_search import create_web_search_tool
 
@@ -34,6 +35,8 @@ def create_agent_tools(config, workspace_dir: str, *, container_root: str | None
             BrowserTool(
                 workspace_dir,
                 container_root=effective_container_root,
+                container_name=config.bampi_bash_container_name if config.bampi_bash_mode == "docker" else None,
+                bridge_localhost=config.bampi_bash_mode == "docker",
                 headless=config.bampi_browser_headless,
                 block_images=config.bampi_browser_block_images,
                 launch_timeout=config.bampi_browser_launch_timeout,

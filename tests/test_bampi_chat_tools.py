@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -78,6 +79,13 @@ def test_system_prompt_mentions_browser_tool():
     assert "outbox/browser/" in prompt
 
 
+def test_system_prompt_mentions_background_bash_sessions():
+    prompt = build_system_prompt(BampiChatConfig(), ["bash"])
+
+    assert "后台会话动作" in prompt
+    assert "`start`、`status`、`logs`、`input`、`stop`、`list`" in prompt
+
+
 def test_system_prompt_uses_utc_plus_8_date(monkeypatch: pytest.MonkeyPatch):
     class _FakeDatetime:
         @classmethod
@@ -111,6 +119,80 @@ def test_safe_bash_tool_uses_container_bash_shell(monkeypatch: pytest.MonkeyPatc
 
     assert tool._docker_command("pwd")[-3:] == ["/bin/bash", "-lc", "pwd"]
     assert tool._local_command("pwd") == ["/bin/zsh", "-lc", "pwd"]
+
+
+@pytest.mark.asyncio
+async def test_safe_bash_background_session_lifecycle(tmp_path: Path):
+    tool = SafeBashTool(
+        workspace_dir=str(tmp_path),
+        mode="local",
+        container_name="bampi-sandbox",
+        container_workdir="/workspace",
+        container_shell="/bin/bash",
+        default_timeout=30.0,
+    )
+
+    start_result = await tool.execute(
+        "call-1",
+        {
+            "action": "start",
+            "command": "python3 -u -c 'import time; print(\"ready\", flush=True); time.sleep(60)'",
+        },
+    )
+    session_id = start_result.details["session_id"]
+    assert session_id == "term-1"
+
+    logs_result = None
+    for _ in range(40):
+        logs_result = await tool.execute("call-2", {"action": "logs", "session_id": session_id})
+        if "ready" in logs_result.content[0].text:
+            break
+        await asyncio.sleep(0.05)
+
+    assert logs_result is not None
+    assert "ready" in logs_result.content[0].text
+
+    status_result = await tool.execute("call-3", {"action": "status", "session_id": session_id})
+    assert f"Background session `{session_id}` is running." in status_result.content[0].text
+
+    stop_result = await tool.execute("call-4", {"action": "stop", "session_id": session_id})
+    assert f"Background session `{session_id}` stopped." in stop_result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_safe_bash_background_session_accepts_input(tmp_path: Path):
+    tool = SafeBashTool(
+        workspace_dir=str(tmp_path),
+        mode="local",
+        container_name="bampi-sandbox",
+        container_workdir="/workspace",
+        container_shell="/bin/bash",
+        default_timeout=30.0,
+    )
+
+    start_result = await tool.execute(
+        "call-1",
+        {
+            "action": "start",
+            "command": (
+                "python3 -u -c 'import sys; print(\"boot\", flush=True); "
+                "line = sys.stdin.readline().strip(); print(f\"echo:{line}\", flush=True)'"
+            ),
+        },
+    )
+    session_id = start_result.details["session_id"]
+
+    await tool.execute("call-2", {"action": "input", "session_id": session_id, "stdin": "hello\n"})
+
+    logs_result = None
+    for _ in range(40):
+        logs_result = await tool.execute("call-3", {"action": "logs", "session_id": session_id})
+        if "echo:hello" in logs_result.content[0].text:
+            break
+        await asyncio.sleep(0.05)
+
+    assert logs_result is not None
+    assert "echo:hello" in logs_result.content[0].text
 
 
 def test_web_search_normalize_base_url_adds_v1():

@@ -84,6 +84,14 @@ def host_to_container_path(workspace_dir: str, path: Path, container_root: str) 
     return f"{base}/{relative}" if relative else base
 
 
+def container_to_host_path(workspace_dir: str, container_path: str, container_root: str) -> Path | None:
+    try:
+        relative = PurePosixPath(container_path).relative_to(PurePosixPath(container_root))
+    except ValueError:
+        return None
+    return (Path(workspace_dir).resolve() / Path(relative.as_posix())).resolve()
+
+
 def is_image_file(path: Path) -> bool:
     mime_type, _ = mimetypes.guess_type(path.name)
     return bool(mime_type and mime_type.startswith("image/"))

@@ -61,6 +61,9 @@ def build_system_prompt(
             )
         else:
             tool_lines.append("- 需要执行命令时使用 `bash`，默认在当前宿主机 workspace 中工作。")
+        tool_lines.append(
+            "- 运行会一直挂着的命令（如 dev server、watcher、http server）时，不要靠 `&` 或 `nohup` 硬挂；改用 `bash` 的后台会话动作：`start`、`status`、`logs`、`input`、`stop`、`list`。"
+        )
     if "read" in tool_names:
         tool_lines.append("- 查看文件优先使用 `read`。特别值得一提的是，你也可以使用read来读取一张图片。")
     if "grep" in tool_names:
@@ -82,6 +85,10 @@ def build_system_prompt(
         tool_lines.append(
             "- `browser` 适合做真实页面交互；`web_search` 适合快速查公开资料。截图默认写入 `outbox/browser/`。"
         )
+        if config.bampi_bash_mode == "docker":
+            tool_lines.append(
+                "- 在 Docker 模式下，`browser` 会自动把 `file:///workspace/...` 这类 workspace 文件 URL 映射到宿主机；访问 `http://localhost:<port>` 时也会尝试桥接到容器里的本地服务。"
+            )
 
     tool_section = "\n".join(tool_lines) if tool_lines else "- 当前没有可用工具。"
     workspace_section = "\n".join(workspace_lines)

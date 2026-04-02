@@ -597,7 +597,21 @@ def describe_tool_progress(tool_name: str, args: Any) -> str:
         pattern = render_tool_progress_value(payload.get("pattern") or payload.get("query"), "关键词")
         return f"正在搜索：{pattern}"
     if tool_name == "bash":
+        action = render_tool_progress_value(payload.get("action"), "run")
         command = render_tool_progress_value(payload.get("command") or payload.get("cmd"), "当前命令")
+        session_id = render_tool_progress_value(payload.get("session_id"), "会话")
+        if action == "start":
+            return f"正在启动后台终端：{command}"
+        if action == "logs":
+            return f"正在查看后台终端日志：{session_id}"
+        if action == "status":
+            return f"正在查看后台终端状态：{session_id}"
+        if action == "input":
+            return f"正在向后台终端发送输入：{session_id}"
+        if action == "stop":
+            return f"正在停止后台终端：{session_id}"
+        if action == "list":
+            return "正在查看后台终端列表"
         if command:
             return f"正在执行命令：{command}"
         return "正在执行命令"

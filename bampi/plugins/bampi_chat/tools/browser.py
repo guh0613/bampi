@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import suppress
 import importlib
 import json
+import os
+import signal
 import shutil
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.fields import PydanticUndefined
@@ -18,7 +22,13 @@ from bampy.agent.cancellation import CancellationError, CancellationToken
 from bampy.agent.types import AgentToolResult, AgentToolUpdateCallback
 from bampy.ai.types import ImageContent, TextContent
 
-from .workspace import ensure_workspace_dirs, host_to_container_path, resolve_workspace_path, to_workspace_relative
+from .workspace import (
+    container_to_host_path,
+    ensure_workspace_dirs,
+    host_to_container_path,
+    resolve_workspace_path,
+    to_workspace_relative,
+)
 
 if TYPE_CHECKING:
     from playwright.async_api import BrowserContext, Page
@@ -53,6 +63,44 @@ ScrollTarget = Literal["top", "bottom"]
 
 _DEFAULT_TEXT_PREVIEW_CHARS = 1_500
 _DEFAULT_EXTRACT_CHARS = 4_000
+_LOCAL_BROWSER_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_DOCKER_PORT_BRIDGE_SCRIPT = """
+import os
+import select
+import socket
+import sys
+
+port = int(sys.argv[1])
+sock = socket.create_connection(("127.0.0.1", port))
+sock.setblocking(False)
+stdin_fd = sys.stdin.fileno()
+stdout_fd = sys.stdout.fileno()
+sock_fd = sock.fileno()
+stdin_open = True
+
+while True:
+    read_fds = [sock_fd]
+    if stdin_open:
+        read_fds.append(stdin_fd)
+    ready, _, _ = select.select(read_fds, [], [])
+    if stdin_open and stdin_fd in ready:
+        data = os.read(stdin_fd, 65536)
+        if not data:
+            stdin_open = False
+            try:
+                sock.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+        else:
+            sock.sendall(data)
+    if sock_fd in ready:
+        data = sock.recv(65536)
+        if not data:
+            break
+        os.write(stdout_fd, data)
+
+sock.close()
+""".strip()
 
 
 @dataclass(slots=True)
@@ -69,6 +117,13 @@ class _BrowserRuntime:
     profile_dir: Path
     launched_at: float
     last_used_at: float
+
+
+@dataclass(slots=True)
+class _LocalPortBridge:
+    target_port: int
+    listen_port: int
+    server: asyncio.AbstractServer
 
 
 class BrowserToolInput(BaseModel):
@@ -194,6 +249,27 @@ def _now_timestamp_slug() -> str:
     return datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
 
 
+def _is_local_browser_host(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    return hostname.lower() in _LOCAL_BROWSER_HOSTS
+
+
+def _default_port_for_scheme(scheme: str) -> int:
+    if scheme == "https":
+        return 443
+    return 80
+
+
+def _terminate_subprocess_group(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except Exception:
+        process.terminate()
+
+
 class BrowserTool:
     name = "browser"
     label = "browser"
@@ -208,6 +284,8 @@ class BrowserTool:
         workspace_dir: str,
         *,
         container_root: str | None = None,
+        container_name: str | None = None,
+        bridge_localhost: bool = False,
         headless: bool = True,
         block_images: bool = False,
         launch_timeout: float = 45.0,
@@ -218,6 +296,8 @@ class BrowserTool:
     ) -> None:
         self._workspace_dir = str(ensure_workspace_dirs(workspace_dir))
         self._container_root = container_root
+        self._container_name = container_name
+        self._bridge_localhost = bridge_localhost and bool(container_name)
         self._headless = headless
         self._block_images = block_images
         self._launch_timeout = launch_timeout
@@ -231,6 +311,7 @@ class BrowserTool:
         self._pages: dict[str, "Page"] = {}
         self._active_page_id: str | None = None
         self._page_sequence = 1
+        self._local_port_bridges: dict[int, _LocalPortBridge] = {}
 
     async def execute(
         self,
@@ -271,8 +352,7 @@ class BrowserTool:
             return await self._open_page_locked(arguments)
         if action == "goto":
             page_id, page = await self._page_for_navigation_locked(arguments.page_id)
-            await page.goto(arguments.url, wait_until=arguments.wait_until, timeout=self._timeout_ms(arguments))
-            return AgentToolResult(content=[TextContent(text=await self._page_summary_text(page_id, page, include_preview=True))])
+            return await self._navigate_page_locked(page_id, page, arguments)
 
         page_id, page = await self._require_page_locked(arguments.page_id)
 
@@ -385,8 +465,80 @@ class BrowserTool:
         page = await context.new_page()
         page_id = self._register_page_locked(page)
         self._active_page_id = page_id
-        await page.goto(arguments.url, wait_until=arguments.wait_until, timeout=self._timeout_ms(arguments))
-        return AgentToolResult(content=[TextContent(text=await self._page_summary_text(page_id, page, include_preview=True))])
+        return await self._navigate_page_locked(page_id, page, arguments)
+
+    async def _navigate_page_locked(
+        self,
+        page_id: str,
+        page: "Page",
+        arguments: BrowserToolInput,
+    ) -> AgentToolResult:
+        requested_url = arguments.url or ""
+        resolved_url, notes = await self._rewrite_navigation_url_locked(requested_url)
+        await page.goto(resolved_url, wait_until=arguments.wait_until, timeout=self._timeout_ms(arguments))
+
+        summary = await self._page_summary_text(page_id, page, include_preview=True)
+        if resolved_url == requested_url and not notes:
+            return AgentToolResult(content=[TextContent(text=summary)])
+
+        lines = [f"Requested URL: {requested_url}"]
+        if resolved_url != requested_url:
+            lines.append(f"Resolved URL: {resolved_url}")
+        lines.extend(notes)
+        lines.extend(["", summary])
+        return AgentToolResult(content=[TextContent(text="\n".join(lines))])
+
+    async def _rewrite_navigation_url_locked(self, raw_url: str) -> tuple[str, list[str]]:
+        file_url, file_notes = self._rewrite_file_url(raw_url)
+        if file_url != raw_url or file_notes:
+            return file_url, file_notes
+        return await self._rewrite_localhost_url_locked(raw_url)
+
+    def _rewrite_file_url(self, raw_url: str) -> tuple[str, list[str]]:
+        parsed = urlsplit(raw_url)
+        if parsed.scheme != "file":
+            return raw_url, []
+
+        raw_path = unquote(parsed.path or "")
+        mapped_path: Path | None = None
+        if self._container_root:
+            mapped_path = container_to_host_path(self._workspace_dir, raw_path, self._container_root)
+        if mapped_path is not None:
+            return mapped_path.as_uri(), [
+                "Mapped the container workspace file URL to the host workspace so the browser can read it.",
+            ]
+
+        if raw_path and Path(raw_path).is_absolute() and self._container_root and not Path(raw_path).exists():
+            raise RuntimeError(
+                "Cannot open that file:// URL directly because the browser runs on the host, "
+                "but the path appears to exist only inside the docker sandbox. "
+                f"Move the file into `{self._container_root}` first so it can be mapped into the workspace."
+            )
+        return raw_url, []
+
+    async def _rewrite_localhost_url_locked(self, raw_url: str) -> tuple[str, list[str]]:
+        parsed = urlsplit(raw_url)
+        if not (
+            self._bridge_localhost
+            and parsed.scheme in {"http", "https"}
+            and _is_local_browser_host(parsed.hostname)
+        ):
+            return raw_url, []
+
+        target_port = parsed.port or _default_port_for_scheme(parsed.scheme)
+        bridge = await self._ensure_local_port_bridge_locked(target_port)
+        resolved = urlunsplit(
+            (
+                parsed.scheme,
+                f"{parsed.hostname}:{bridge.listen_port}",
+                parsed.path,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
+        return resolved, [
+            f"Bridged docker-local port {target_port} through host port {bridge.listen_port} so the browser can reach the sandbox service.",
+        ]
 
     async def _wait_result_locked(self, page_id: str, page: "Page", arguments: BrowserToolInput) -> AgentToolResult:
         timeout_ms = self._timeout_ms(arguments)
@@ -554,6 +706,125 @@ class BrowserTool:
         self._sync_pages_from_context_locked(context)
         return context
 
+    async def _ensure_local_port_bridge_locked(self, target_port: int) -> _LocalPortBridge:
+        existing = self._local_port_bridges.get(target_port)
+        if existing is not None:
+            return existing
+
+        server = await asyncio.start_server(
+            lambda reader, writer: self._handle_local_port_bridge_connection(target_port, reader, writer),
+            host="127.0.0.1",
+            port=0,
+        )
+        sockets = list(server.sockets or [])
+        if not sockets:
+            server.close()
+            await server.wait_closed()
+            raise RuntimeError(f"Failed to create a local port bridge for docker-local port {target_port}.")
+
+        listen_port = int(sockets[0].getsockname()[1])
+        bridge = _LocalPortBridge(
+            target_port=target_port,
+            listen_port=listen_port,
+            server=server,
+        )
+        self._local_port_bridges[target_port] = bridge
+        return bridge
+
+    async def _handle_local_port_bridge_connection(
+        self,
+        target_port: int,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        if not self._container_name:
+            writer.close()
+            with suppress(Exception):
+                await writer.wait_closed()
+            return
+
+        process = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            "-i",
+            self._container_name,
+            "python3",
+            "-c",
+            _DOCKER_PORT_BRIDGE_SCRIPT,
+            str(target_port),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+
+        async def client_to_process() -> None:
+            try:
+                while True:
+                    chunk = await reader.read(65_536)
+                    if not chunk:
+                        break
+                    if process.stdin is None:
+                        break
+                    process.stdin.write(chunk)
+                    await process.stdin.drain()
+            finally:
+                if process.stdin is not None and not process.stdin.is_closing():
+                    process.stdin.close()
+                    wait_closed = getattr(process.stdin, "wait_closed", None)
+                    if callable(wait_closed):
+                        with suppress(Exception):
+                            await wait_closed()
+
+        async def process_to_client() -> None:
+            if process.stdout is None:
+                return
+            while True:
+                chunk = await process.stdout.read(65_536)
+                if not chunk:
+                    return
+                writer.write(chunk)
+                await writer.drain()
+
+        async def drain_stderr() -> None:
+            if process.stderr is None:
+                return
+            while True:
+                chunk = await process.stderr.read(65_536)
+                if not chunk:
+                    return
+
+        client_task = asyncio.create_task(client_to_process())
+        process_task = asyncio.create_task(process_to_client())
+        stderr_task = asyncio.create_task(drain_stderr())
+
+        try:
+            done, _ = await asyncio.wait({client_task, process_task}, return_when=asyncio.FIRST_COMPLETED)
+            if process_task in done:
+                with suppress(asyncio.CancelledError):
+                    client_task.cancel()
+                    await client_task
+            else:
+                await process_task
+        finally:
+            if process.returncode is None:
+                _terminate_subprocess_group(process)
+            with suppress(Exception):
+                await process.wait()
+            with suppress(asyncio.CancelledError):
+                stderr_task.cancel()
+                await stderr_task
+            writer.close()
+            with suppress(Exception):
+                await writer.wait_closed()
+
+    async def _close_local_port_bridges_locked(self) -> None:
+        bridges = list(self._local_port_bridges.values())
+        self._local_port_bridges.clear()
+        for bridge in bridges:
+            bridge.server.close()
+            await bridge.server.wait_closed()
+
     async def _close_if_idle_locked(self) -> None:
         runtime = self._runtime
         if runtime is None or self._idle_ttl_seconds <= 0:
@@ -567,6 +838,7 @@ class BrowserTool:
         self._runtime = None
         self._pages.clear()
         self._active_page_id = None
+        await self._close_local_port_bridges_locked()
 
         if runtime is None:
             if clear_profile:
