@@ -21,7 +21,7 @@ def build_system_prompt(
         "你需要在多人聊天环境中保持自然、可靠、简洁，必要时再展开。"
     )
     effective_prompt_cwd = (prompt_cwd or ".").replace("\\", "/")
-    current_date = datetime.now(PROMPT_TIMEZONE).strftime("%Y-%m-%d")
+    current_time = datetime.now(PROMPT_TIMEZONE).strftime("%Y-%m-%d %H:%M")
 
     # ── 运行环境 ──
     env_lines: list[str] = []
@@ -140,6 +140,6 @@ def build_system_prompt(
         "## 工具使用提示\n"
         f"{tool_section}\n\n"
         f"{format_skills_for_prompt(skills or [])}\n\n"
-        f"Current date: {current_date}\n"
+        f"当前时间(UTC+8): {current_time}\n"
         f"Current working directory: {effective_prompt_cwd}\n"
     )

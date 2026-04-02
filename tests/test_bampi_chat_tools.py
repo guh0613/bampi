@@ -86,7 +86,7 @@ def test_system_prompt_mentions_background_bash_sessions():
     assert "`start`、`status`、`logs`、`input`、`stop`、`list`" in prompt
 
 
-def test_system_prompt_uses_utc_plus_8_date(monkeypatch: pytest.MonkeyPatch):
+def test_system_prompt_uses_utc_plus_8_time_to_minute(monkeypatch: pytest.MonkeyPatch):
     class _FakeDatetime:
         @classmethod
         def now(cls, tz):
@@ -97,7 +97,7 @@ def test_system_prompt_uses_utc_plus_8_date(monkeypatch: pytest.MonkeyPatch):
 
     prompt = build_system_prompt(BampiChatConfig(), ["bash", "read"])
 
-    assert "Current date: 2026-04-01" in prompt
+    assert "当前时间（UTC+8，精确到分钟）: 2026-04-01 00:30" in prompt
 
 
 def test_create_agent_tools_includes_browser_by_default(tmp_path: Path):
