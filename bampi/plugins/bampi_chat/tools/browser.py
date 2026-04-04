@@ -529,6 +529,32 @@ class BrowserTool:
             return raw_url, []
 
         raw_path = unquote(parsed.path or "")
+        if parsed.netloc and parsed.netloc not in {"", "localhost"}:
+            relative_parts = [unquote(parsed.netloc)]
+            stripped_path = raw_path.lstrip("/")
+            if stripped_path:
+                relative_parts.append(stripped_path)
+            relative_path = PurePosixPath(*relative_parts).as_posix()
+            try:
+                workspace_path = resolve_workspace_path(
+                    self._workspace_dir,
+                    relative_path,
+                    container_root=self._container_root,
+                )
+            except ValueError:
+                workspace_path = None
+            else:
+                workspace_url = self._workspace_file_url(
+                    to_workspace_relative(self._workspace_dir, workspace_path)
+                )
+                return workspace_path.as_uri(), [
+                    (
+                        "Mapped the workspace-relative file URL to the host workspace so the browser can read it."
+                        if not workspace_url
+                        else f"Workspace URL: {workspace_url}"
+                    ),
+                ]
+
         mapped_path: Path | None = None
         if self._container_root:
             mapped_path = container_to_host_path(self._workspace_dir, raw_path, self._container_root)

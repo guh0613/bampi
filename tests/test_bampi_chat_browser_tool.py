@@ -249,6 +249,35 @@ async def test_browser_tool_maps_container_workspace_file_url(tmp_path: Path, mo
 
 
 @pytest.mark.asyncio
+async def test_browser_tool_maps_workspace_relative_file_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    tool = BrowserTool(str(tmp_path), container_root="/workspace")
+    context = FakeContext()
+    manager = FakeManager()
+
+    async def fake_ensure_context_locked() -> FakeContext:
+        if tool._runtime is None:
+            tool._runtime = _BrowserRuntime(
+                manager=manager,
+                context=context,
+                profile_dir=tmp_path / ".browser" / "camoufox-profile",
+                launched_at=time.monotonic(),
+                last_used_at=time.monotonic(),
+            )
+        return context
+
+    monkeypatch.setattr(tool, "_ensure_context_locked", fake_ensure_context_locked)
+
+    result = await tool.execute(
+        "call-1",
+        {"action": "open", "url": "file://outbox/render.html"},
+    )
+
+    assert "Requested URL: file://outbox/render.html" in result.content[0].text
+    assert "Workspace URL: file:///workspace/outbox/render.html" in result.content[0].text
+    assert context.pages[0].actions[0][1] == (tmp_path / "outbox" / "render.html").resolve().as_uri()
+
+
+@pytest.mark.asyncio
 async def test_browser_tool_bridges_docker_localhost_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     tool = BrowserTool(
         str(tmp_path),
