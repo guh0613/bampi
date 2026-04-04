@@ -189,6 +189,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aiohttp" },
+    { name = "anthropic" },
     { name = "bampy" },
     { name = "beautifulsoup4" },
     { name = "camoufox" },
@@ -205,6 +206,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.5" },
+    { name = "anthropic", specifier = ">=0.86.0" },
     { name = "bampy", editable = "bampy" },
     { name = "beautifulsoup4", specifier = ">=4.14.3" },
     { name = "camoufox", specifier = ">=0.4.11" },

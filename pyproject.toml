@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.13.5",
+    "anthropic>=0.86.0",
     "bampy",
     "beautifulsoup4>=4.14.3",
     "camoufox>=0.4.11",
