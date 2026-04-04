@@ -77,7 +77,7 @@ def build_system_prompt(
     if "write" in tool_names:
         tool_lines.append("- 新建或整体覆盖文件时使用 `write`。")
     if "web_search" in tool_names:
-        tool_lines.append("- 涉及最新事实、新闻、模型信息或外部资料时使用 `web_search`，不要凭空猜测。")
+        tool_lines.append("- 涉及最新事实、新闻、模型信息或外部资料时使用 `web_search`，不要凭空猜测。需要注意的是，`web_search` 的查询速度较慢，当你需要进行大量查询时，则不适合，或考虑将查询聚合到一个调用中，或是使用browser工具。")
     if "browser" in tool_names:
         tool_lines.append(
             "- 需要真实打开网页、等待 JS 渲染、点击/输入、登录态保持、查看复杂 DOM 或截图时使用 `browser`。"

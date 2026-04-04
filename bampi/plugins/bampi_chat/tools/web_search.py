@@ -169,7 +169,7 @@ def create_web_search_tool(
 ):
     @tool(
         name="web_search",
-        description="Search the web for current external information and return a concise answer with sources.",
+        description="An AI agent which has the ability to search.It will search for current external information and return a concise answer with sources.",
         parameters=WebSearchInput,
     )
     async def web_search(query: str) -> str:
