@@ -97,7 +97,7 @@ def test_system_prompt_uses_utc_plus_8_time_to_minute(monkeypatch: pytest.Monkey
 
     prompt = build_system_prompt(BampiChatConfig(), ["bash", "read"])
 
-    assert "当前时间（UTC+8，精确到分钟）: 2026-04-01 00:30" in prompt
+    assert "当前时间(UTC+8): 2026-04-01 00:30" in prompt
 
 
 def test_create_agent_tools_includes_browser_by_default(tmp_path: Path):
@@ -197,6 +197,7 @@ def test_safe_bash_tool_uses_container_bash_shell(monkeypatch: pytest.MonkeyPatc
         mode="docker",
         container_name="bampi-sandbox",
         container_workdir="/workspace",
+        visible_workspace_root="/workspace",
         container_shell="/bin/bash",
         default_timeout=30.0,
     )
@@ -212,6 +213,7 @@ async def test_safe_bash_background_session_lifecycle(tmp_path: Path):
         mode="local",
         container_name="bampi-sandbox",
         container_workdir="/workspace",
+        visible_workspace_root="/workspace",
         container_shell="/bin/bash",
         default_timeout=30.0,
     )
@@ -238,6 +240,7 @@ async def test_safe_bash_background_session_lifecycle(tmp_path: Path):
 
     status_result = await tool.execute("call-3", {"action": "status", "session_id": session_id})
     assert f"Background session `{session_id}` is running." in status_result.content[0].text
+    assert "Working directory: /workspace" in status_result.content[0].text
 
     stop_result = await tool.execute("call-4", {"action": "stop", "session_id": session_id})
     assert f"Background session `{session_id}` stopped." in stop_result.content[0].text
@@ -250,6 +253,7 @@ async def test_safe_bash_background_session_accepts_input(tmp_path: Path):
         mode="local",
         container_name="bampi-sandbox",
         container_workdir="/workspace",
+        visible_workspace_root="/workspace",
         container_shell="/bin/bash",
         default_timeout=30.0,
     )
@@ -277,6 +281,23 @@ async def test_safe_bash_background_session_accepts_input(tmp_path: Path):
 
     assert logs_result is not None
     assert "echo:hello" in logs_result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_safe_bash_rewrites_visible_workspace_root_and_sanitizes_output(tmp_path: Path):
+    tool = SafeBashTool(
+        workspace_dir=str(tmp_path),
+        mode="local",
+        container_name="bampi-sandbox",
+        container_workdir="/workspace/group-1001",
+        visible_workspace_root="/workspace",
+        container_shell="/bin/bash",
+        default_timeout=30.0,
+    )
+
+    result = await tool.execute("call-1", {"action": "run", "command": "pwd"})
+
+    assert result.content[0].text.strip() == "/workspace"
 
 
 def test_web_search_normalize_base_url_adds_v1():

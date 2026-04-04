@@ -180,24 +180,21 @@ class GroupSessionManager:
     def _build_session(self, group_id: str) -> AgentSession:
         workspace_dir = self.workspace_dir_for_group(group_id)
         container_workspace_dir = self.container_workspace_dir_for_group(group_id)
+        model_workspace_root = self._config.bampi_bash_container_workdir
         model = self._build_model()
         tools = create_agent_tools(
             self._config,
             workspace_dir,
-            container_root=container_workspace_dir,
+            container_root=model_workspace_root,
+            bash_workdir=container_workspace_dir,
         )
         tool_names = [tool.name for tool in tools]
         loaded_skills = load_chat_skills(workspace_dir)
-        prompt_cwd = (
-            container_workspace_dir
-            if self._config.bampi_bash_mode != "local"
-            else workspace_dir
-        )
         system_prompt = build_system_prompt(
             self._config,
             tool_names,
             skills=build_prompt_skills(loaded_skills.skills, workspace_dir=workspace_dir),
-            prompt_cwd=prompt_cwd,
+            prompt_cwd=model_workspace_root,
         )
         stream_options = SimpleStreamOptions(api_key=self._config.bampi_api_key or None)
 

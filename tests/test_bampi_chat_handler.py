@@ -641,9 +641,11 @@ def test_build_user_message_marks_media_only_message():
         IncomingMedia(saved_paths=["inbox/report.txt"]),
     )
 
-    assert message.content[0].text.startswith("group_id: 1001")
+    assert message.content[0].text.startswith("sender_name: Alice")
     assert "message_text: (无纯文本内容；本条消息仅包含媒体/文件)" in message.content[0].text
     assert "workspace_attachments:\n- inbox/report.txt" in message.content[0].text
+    assert "group_id:" not in message.content[0].text
+    assert "sender_id:" not in message.content[0].text
 
 
 def test_build_user_message_separates_reply_media_context():
@@ -671,6 +673,7 @@ def test_build_user_message_separates_reply_media_context():
 
     assert "reply_to_name: Bob" in text_block
     assert "reply_message: 原始说明" in text_block
+    assert "reply_to_user_id:" not in text_block
     assert "inline_image_count: 1" in text_block
     assert "workspace_attachments:\n- inbox/current.txt" in text_block
     assert "media_notes:\n- 当前备注" in text_block

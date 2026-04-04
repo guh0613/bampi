@@ -6,6 +6,7 @@ from contextlib import suppress
 import importlib
 import json
 import os
+from pathlib import PurePosixPath
 import signal
 import shutil
 import time
@@ -13,7 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.fields import PydanticUndefined
@@ -295,7 +296,7 @@ class BrowserTool:
         inline_image_max_bytes: int = 1_000_000,
     ) -> None:
         self._workspace_dir = str(ensure_workspace_dirs(workspace_dir))
-        self._container_root = container_root
+        self._container_root = PurePosixPath(container_root).as_posix() if container_root else None
         self._container_name = container_name
         self._bridge_localhost = bridge_localhost and bool(container_name)
         self._headless = headless
@@ -312,6 +313,33 @@ class BrowserTool:
         self._active_page_id: str | None = None
         self._page_sequence = 1
         self._local_port_bridges: dict[int, _LocalPortBridge] = {}
+
+    def _workspace_file_url(self, relative_path: str) -> str:
+        if self._container_root is None:
+            return ""
+        visible_path = PurePosixPath(self._container_root) / PurePosixPath(relative_path)
+        return f"file://{quote(visible_path.as_posix(), safe='/')}"
+
+    def _display_url(self, url: str) -> str:
+        if not url:
+            return url
+
+        parsed = urlsplit(url)
+        if parsed.scheme != "file":
+            return url
+
+        raw_path = unquote(parsed.path or "")
+        if not raw_path:
+            return url
+
+        host_path = Path(raw_path)
+        try:
+            relative_path = to_workspace_relative(self._workspace_dir, host_path)
+        except ValueError:
+            return url
+
+        workspace_url = self._workspace_file_url(relative_path)
+        return workspace_url or url
 
     async def execute(
         self,
@@ -478,12 +506,13 @@ class BrowserTool:
         await page.goto(resolved_url, wait_until=arguments.wait_until, timeout=self._timeout_ms(arguments))
 
         summary = await self._page_summary_text(page_id, page, include_preview=True)
+        display_resolved_url = self._display_url(resolved_url)
         if resolved_url == requested_url and not notes:
             return AgentToolResult(content=[TextContent(text=summary)])
 
         lines = [f"Requested URL: {requested_url}"]
-        if resolved_url != requested_url:
-            lines.append(f"Resolved URL: {resolved_url}")
+        if display_resolved_url != requested_url:
+            lines.append(f"Resolved URL: {display_resolved_url}")
         lines.extend(notes)
         lines.extend(["", summary])
         return AgentToolResult(content=[TextContent(text="\n".join(lines))])
@@ -504,8 +533,14 @@ class BrowserTool:
         if self._container_root:
             mapped_path = container_to_host_path(self._workspace_dir, raw_path, self._container_root)
         if mapped_path is not None:
+            relative_path = to_workspace_relative(self._workspace_dir, mapped_path)
+            workspace_url = self._workspace_file_url(relative_path)
             return mapped_path.as_uri(), [
-                "Mapped the container workspace file URL to the host workspace so the browser can read it.",
+                (
+                    "Mapped the workspace file URL to the host workspace so the browser can read it."
+                    if not workspace_url
+                    else f"Workspace URL: {workspace_url}"
+                ),
             ]
 
         if raw_path and Path(raw_path).is_absolute() and self._container_root and not Path(raw_path).exists():
@@ -929,7 +964,7 @@ class BrowserTool:
             marker = " [active]" if page_id == self._active_page_id else ""
             title = await self._safe_page_title(page)
             lines.append(f"- {page_id}{marker}: {title or '(untitled)'}")
-            lines.append(f"  URL: {page.url or '(blank)'}")
+            lines.append(f"  URL: {self._display_url(page.url or '(blank)')}")
         return "\n".join(lines)
 
     async def _page_summary_text(
@@ -944,7 +979,7 @@ class BrowserTool:
         lines = [
             f"Page ID: {page_id}",
             f"Title: {title or '(untitled)'}",
-            f"URL: {page.url or '(blank)'}",
+            f"URL: {self._display_url(page.url or '(blank)')}",
             f"Ready state: {ready_state or 'unknown'}",
         ]
         if include_preview:

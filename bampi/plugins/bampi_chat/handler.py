@@ -1197,7 +1197,7 @@ def is_reply_to_bot(reply: Any, bot_self_id: str) -> bool:
 def display_name(sender: Any) -> str:
     card = getattr(sender, "card", "") or ""
     nickname = getattr(sender, "nickname", "") or ""
-    return card.strip() or nickname.strip() or f"user-{getattr(sender, 'user_id', 'unknown')}"
+    return card.strip() or nickname.strip() or "unknown-user"
 
 
 def build_user_message(
@@ -1220,9 +1220,7 @@ def build_user_message(
         body = "(无纯文本内容)"
 
     lines = [
-        f"group_id: {event.group_id}",
         f"sender_name: {sender_name}",
-        f"sender_id: {event.user_id}",
         f"message_text: {body}",
     ]
 
@@ -1230,7 +1228,6 @@ def build_user_message(
         reply_name = display_name(event.reply.sender)
         reply_text = extract_message_plaintext(getattr(event.reply, "message", None))
         lines.append(f"reply_to_name: {reply_name}")
-        lines.append(f"reply_to_user_id: {getattr(event.reply.sender, 'user_id', 'unknown')}")
         if reply_text:
             lines.append(f"reply_message: {reply_text}")
 

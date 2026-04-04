@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
+import re
 import signal
 import tempfile
 import time
@@ -139,6 +140,7 @@ class SafeBashTool:
         mode: BashMode,
         container_name: str,
         container_workdir: str,
+        visible_workspace_root: str | None,
         container_shell: str,
         default_timeout: float,
     ) -> None:
@@ -146,6 +148,7 @@ class SafeBashTool:
         self._mode = mode
         self._container_name = container_name
         self._container_workdir = container_workdir
+        self._visible_workspace_root = visible_workspace_root or container_workdir or "/workspace"
         self._container_shell = container_shell
         self._default_timeout = default_timeout
         self._session_lock = asyncio.Lock()
@@ -352,20 +355,20 @@ class SafeBashTool:
             return await self._create_background_session_with_command(
                 command,
                 self._docker_command(command),
-                self._container_workdir,
+                self._visible_workspace_root,
             )
         if self._mode == "local":
             return await self._create_background_session_with_command(
                 command,
                 self._local_command(command),
-                self._workspace_dir,
+                self._visible_workspace_root,
             )
 
         try:
             return await self._create_background_session_with_command(
                 command,
                 self._docker_command(command),
-                self._container_workdir,
+                self._visible_workspace_root,
             )
         except RuntimeError as exc:
             if not _docker_failure(str(exc)):
@@ -376,7 +379,7 @@ class SafeBashTool:
         return await self._create_background_session_with_command(
             command,
             self._local_command(command),
-            self._workspace_dir,
+            self._visible_workspace_root,
         )
 
     async def _create_background_session_with_command(
@@ -521,7 +524,9 @@ class SafeBashTool:
         return "\n".join(lines)
 
     def _render_session_output(self, session: _BackgroundShellSession, *, max_chars: int) -> str:
-        text = b"".join(session.rolling_chunks).decode("utf-8", errors="replace")
+        text = self._sanitize_workspace_paths(
+            b"".join(session.rolling_chunks).decode("utf-8", errors="replace")
+        )
         truncation = truncate_tail(text)
         output = truncation.content or "(no output yet)"
         output, trimmed = _trim_text(output, limit=max_chars)
@@ -540,11 +545,15 @@ class SafeBashTool:
         return (
             f"{message}\n\n"
             f"Ensure container `{self._container_name}` is running and exposing "
-            f"`{self._container_workdir}` as the workspace.\n"
+            f"`{self._visible_workspace_root}` as the workspace.\n"
             f"Suggested command: docker compose up -d {self._container_name}"
         )
 
     def _docker_command(self, command: str) -> list[str]:
+        command = self._rewrite_visible_workspace_root(
+            command,
+            actual_root=self._container_workdir,
+        )
         return [
             "docker",
             "exec",
@@ -558,7 +567,33 @@ class SafeBashTool:
         ]
 
     def _local_command(self, command: str) -> list[str]:
+        command = self._rewrite_visible_workspace_root(
+            command,
+            actual_root=self._workspace_dir,
+        )
         return [os.environ.get("SHELL") or "/bin/bash", "-lc", command]
+
+    def _rewrite_visible_workspace_root(self, command: str, *, actual_root: str) -> str:
+        visible_root = self._visible_workspace_root
+        if not command or not visible_root or visible_root == actual_root:
+            return command
+        pattern = re.compile(rf"(?<![A-Za-z0-9._-]){re.escape(visible_root)}(?=(?:/|\b))")
+        return pattern.sub(actual_root, command)
+
+    def _sanitize_workspace_paths(self, text: str) -> str:
+        visible_root = self._visible_workspace_root
+        if not text or not visible_root:
+            return text
+
+        sanitized = text
+        roots = sorted(
+            {self._workspace_dir, self._container_workdir} - {visible_root, ""},
+            key=len,
+            reverse=True,
+        )
+        for root in roots:
+            sanitized = sanitized.replace(root, visible_root)
+        return sanitized
 
     async def _run_bash(
         self,
@@ -619,10 +654,11 @@ class SafeBashTool:
                     return
                 handle_chunk(chunk)
                 truncation = truncate_tail(b"".join(rolling_chunks).decode("utf-8", errors="replace"))
+                truncated_text = self._sanitize_workspace_paths(truncation.content or "")
                 await _maybe_notify_update(
                     on_update,
                     AgentToolResult(
-                        content=[TextContent(text=truncation.content or "")],
+                        content=[TextContent(text=truncated_text)],
                         details={
                             "truncation": serialize_truncation(truncation) if truncation.truncated else None,
                             "full_output_path": temp_path,
@@ -647,7 +683,9 @@ class SafeBashTool:
         except asyncio.TimeoutError as exc:
             _kill_process_group(process)
             await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-            text = b"".join(rolling_chunks).decode("utf-8", errors="replace")
+            text = self._sanitize_workspace_paths(
+                b"".join(rolling_chunks).decode("utf-8", errors="replace")
+            )
             if text:
                 text += "\n\n"
             raise RuntimeError(f"{text}Command timed out after {timeout} seconds") from exc
@@ -661,7 +699,9 @@ class SafeBashTool:
         if cancellation is not None and cancellation.cancelled:
             raise CancellationError(cancellation.reason or "Command aborted")
 
-        full_text = b"".join(rolling_chunks).decode("utf-8", errors="replace")
+        full_text = self._sanitize_workspace_paths(
+            b"".join(rolling_chunks).decode("utf-8", errors="replace")
+        )
         truncation = truncate_tail(full_text)
         output = truncation.content or "(no output)"
         details: dict[str, object] | None = None

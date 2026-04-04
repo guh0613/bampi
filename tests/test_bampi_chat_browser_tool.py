@@ -220,7 +220,7 @@ async def test_browser_tool_pages_and_reset_clear_profile(tmp_path: Path, monkey
 
 @pytest.mark.asyncio
 async def test_browser_tool_maps_container_workspace_file_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    tool = BrowserTool(str(tmp_path), container_root="/workspace/group-demo")
+    tool = BrowserTool(str(tmp_path), container_root="/workspace")
     context = FakeContext()
     manager = FakeManager()
 
@@ -239,11 +239,12 @@ async def test_browser_tool_maps_container_workspace_file_url(tmp_path: Path, mo
 
     result = await tool.execute(
         "call-1",
-        {"action": "open", "url": "file:///workspace/group-demo/math_solution.html"},
+        {"action": "open", "url": "file:///workspace/math_solution.html"},
     )
 
-    assert "Requested URL: file:///workspace/group-demo/math_solution.html" in result.content[0].text
-    assert "Resolved URL:" in result.content[0].text
+    assert "Requested URL: file:///workspace/math_solution.html" in result.content[0].text
+    assert "Resolved URL:" not in result.content[0].text
+    assert "Workspace URL: file:///workspace/math_solution.html" in result.content[0].text
     assert context.pages[0].actions[0][1] == (tmp_path / "math_solution.html").resolve().as_uri()
 
 
@@ -251,7 +252,7 @@ async def test_browser_tool_maps_container_workspace_file_url(tmp_path: Path, mo
 async def test_browser_tool_bridges_docker_localhost_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     tool = BrowserTool(
         str(tmp_path),
-        container_root="/workspace/group-demo",
+        container_root="/workspace",
         container_name="bampi-sandbox",
         bridge_localhost=True,
     )

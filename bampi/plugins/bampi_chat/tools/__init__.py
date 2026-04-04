@@ -7,8 +7,15 @@ from .safe_bash import SafeBashTool
 from .web_search import create_web_search_tool
 
 
-def create_agent_tools(config, workspace_dir: str, *, container_root: str | None = None) -> list[object]:
+def create_agent_tools(
+    config,
+    workspace_dir: str,
+    *,
+    container_root: str | None = None,
+    bash_workdir: str | None = None,
+) -> list[object]:
     effective_container_root = container_root or config.bampi_bash_container_workdir
+    effective_bash_workdir = bash_workdir or effective_container_root
     tools: list[object] = [
         WorkspaceReadTool(workspace_dir, container_root=effective_container_root),
         WorkspaceLsTool(workspace_dir, container_root=effective_container_root),
@@ -18,7 +25,8 @@ def create_agent_tools(config, workspace_dir: str, *, container_root: str | None
             workspace_dir=workspace_dir,
             mode=config.bampi_bash_mode,
             container_name=config.bampi_bash_container_name,
-            container_workdir=effective_container_root,
+            container_workdir=effective_bash_workdir,
+            visible_workspace_root=effective_container_root,
             container_shell=config.bampi_bash_container_shell,
             default_timeout=config.bampi_bash_timeout,
         ),
