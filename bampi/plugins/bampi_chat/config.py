@@ -57,6 +57,8 @@ class BampiChatConfig(BaseModel):
     bampi_bash_timeout: float = 30.0
 
     bampi_web_search_timeout: float = 15.0
+    bampi_web_search_base_url: str = ""
+    bampi_web_search_api_key: str = ""
     bampi_browser_enabled: bool = True
     bampi_browser_headless: bool = True
     bampi_browser_block_images: bool = False
@@ -96,6 +98,8 @@ class BampiChatConfig(BaseModel):
         "bampi_model_provider",
         "bampi_model_id",
         "bampi_base_url",
+        "bampi_web_search_base_url",
+        "bampi_web_search_api_key",
         "bampi_persona",
         "bampi_workspace_dir",
         "bampi_session_dir",

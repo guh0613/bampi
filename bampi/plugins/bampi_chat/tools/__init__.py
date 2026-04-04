@@ -26,8 +26,8 @@ def create_agent_tools(config, workspace_dir: str, *, container_root: str | None
         WorkspaceWriteTool(workspace_dir, container_root=effective_container_root),
         create_web_search_tool(
             config.bampi_web_search_timeout,
-            base_url=config.bampi_base_url,
-            api_key=config.bampi_api_key,
+            base_url=config.bampi_web_search_base_url,
+            api_key=config.bampi_web_search_api_key,
         ),
     ]
     if config.bampi_browser_enabled:

@@ -20,7 +20,7 @@ class WebSearchInput(BaseModel):
 def _normalize_base_url(base_url: str) -> str:
     value = base_url.strip()
     if not value:
-        raise ValueError("web_search is not configured: bampi_base_url is empty")
+        raise ValueError("web_search is not configured: bampi_web_search_base_url is empty")
     if not value.rstrip("/").endswith("/v1"):
         return value.rstrip("/") + "/v1"
     return value.rstrip("/")
@@ -107,7 +107,7 @@ async def _query_search_agent(
     user_agent: str = DEFAULT_WEB_SEARCH_USER_AGENT,
 ) -> str:
     if not api_key.strip():
-        raise ValueError("web_search is not configured: bampi_api_key is empty")
+        raise ValueError("web_search is not configured: bampi_web_search_api_key is empty")
 
     url = _normalize_base_url(base_url) + "/chat/completions"
     headers = {

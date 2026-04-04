@@ -106,6 +106,90 @@ def test_create_agent_tools_includes_browser_by_default(tmp_path: Path):
     assert "browser" in [tool.name for tool in tools]
 
 
+@pytest.mark.asyncio
+async def test_create_agent_tools_web_search_uses_dedicated_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    state: dict[str, object] = {}
+
+    class _FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/event-stream"}
+        text = ""
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":"Search answer"}}]}'
+            yield "data: [DONE]"
+
+    class _FakeStreamContext:
+        async def __aenter__(self) -> _FakeResponse:
+            return _FakeResponse()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    class _FakeAsyncClient:
+        def __init__(self, **kwargs: object) -> None:
+            state["client_kwargs"] = kwargs
+
+        async def __aenter__(self) -> "_FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def stream(self, method: str, url: str, *, headers: dict[str, str], json: dict[str, object]) -> _FakeStreamContext:
+            state["request"] = {
+                "method": method,
+                "url": url,
+                "headers": headers,
+                "json": json,
+            }
+            return _FakeStreamContext()
+
+    monkeypatch.setattr(web_search_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    tools = create_agent_tools(
+        BampiChatConfig(
+            bampi_api_key="model-secret",
+            bampi_base_url="https://model.example.com",
+            bampi_web_search_api_key="search-secret",
+            bampi_web_search_base_url="https://search.example.com",
+        ),
+        str(tmp_path),
+        container_root="/workspace",
+    )
+    web_search_tool = next(tool for tool in tools if getattr(tool, "name", None) == "web_search")
+
+    result = await web_search_tool.execute("call-1", {"query": "最新模型信息"})
+
+    assert result.content[0].text == "Search answer"
+    assert state["client_kwargs"] == {"timeout": 15.0}
+    assert state["request"] == {
+        "method": "POST",
+        "url": "https://search.example.com/v1/chat/completions",
+        "headers": {
+            "Authorization": "Bearer search-secret",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "User-Agent": web_search_module.DEFAULT_WEB_SEARCH_USER_AGENT,
+        },
+        "json": {
+            "model": web_search_module.DEFAULT_WEB_SEARCH_MODEL,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "最新模型信息",
+                },
+            ],
+        },
+    }
+
+
 def test_safe_bash_tool_uses_container_bash_shell(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SHELL", "/bin/zsh")
     tool = SafeBashTool(
@@ -316,5 +400,5 @@ async def test_web_search_tool_reports_configuration_errors():
 
     assert result.content[0].text == (
         "Web search failed for: 最新模型信息\n"
-        "Error: web_search is not configured: bampi_base_url is empty"
+        "Error: web_search is not configured: bampi_web_search_base_url is empty"
     )
