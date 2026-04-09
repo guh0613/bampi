@@ -34,6 +34,7 @@ class BampiChatConfig(BaseModel):
 
     bampi_max_turns: int = 40
     bampi_session_idle_ttl_seconds: int = 30 * 60
+    bampi_background_wait_reminder_seconds: float = 10 * 60
 
     bampi_workspace_dir: str = DEFAULT_WORKSPACE_DIR
     bampi_session_dir: str = DEFAULT_SESSION_DIR
@@ -67,6 +68,12 @@ class BampiChatConfig(BaseModel):
     bampi_browser_idle_ttl_seconds: int = 5 * 60
     bampi_browser_max_pages: int = 6
     bampi_browser_inline_image_max_bytes: int = 1_000_000
+    bampi_service_enabled: bool = True
+    bampi_service_port_range: str = "46000-46031"
+    bampi_service_public_host: str = "127.0.0.1"
+    bampi_service_startup_timeout: float = 20.0
+    bampi_service_stop_timeout: float = 10.0
+    bampi_service_max_active_services_per_group: int = 4
 
     bampi_max_inline_image_size: int = 5 * 1024 * 1024
     bampi_max_download_size: int = 50 * 1024 * 1024
@@ -106,6 +113,8 @@ class BampiChatConfig(BaseModel):
         "bampi_bash_container_name",
         "bampi_bash_container_workdir",
         "bampi_bash_container_shell",
+        "bampi_service_port_range",
+        "bampi_service_public_host",
         "bampi_group_file_upload_host_dir",
         "bampi_group_file_upload_container_dir",
     )
@@ -126,3 +135,10 @@ class BampiChatConfig(BaseModel):
         if not value.startswith("/"):
             raise ValueError(f"{info.field_name} must be an absolute POSIX path")
         return PurePosixPath(value).as_posix()
+
+    @field_validator("bampi_service_port_range")
+    @classmethod
+    def _validate_service_port_range(cls, value: str) -> str:
+        if not value:
+            raise ValueError("bampi_service_port_range must not be empty")
+        return value

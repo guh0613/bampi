@@ -8,7 +8,7 @@ import signal
 import tempfile
 import time
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -25,6 +25,10 @@ from ..config import BashMode
 
 
 BashAction = Literal["run", "start", "status", "logs", "input", "stop", "list"]
+BackgroundSessionExitListener = Callable[
+    ["BackgroundSessionExitEvent"],
+    Awaitable[None] | None,
+]
 
 _SESSION_BUFFER_BYTES = DEFAULT_MAX_BYTES * 2
 
@@ -37,6 +41,13 @@ class SafeBashToolInput(BaseModel):
     timeout: float | None = Field(default=None, gt=0, description="Timeout in seconds for one-shot commands.")
     session_id: str | None = Field(default=None, description="Background session id for status/logs/input/stop.")
     stdin: str | None = Field(default=None, description="Text to send to a background session stdin.")
+    notify_on_exit: bool = Field(
+        default=False,
+        description=(
+            "Only for `action=start`. If true, callers may register to be notified "
+            "when the background session exits so the workflow can resume automatically."
+        ),
+    )
     max_chars: int = Field(default=4_000, ge=200, le=40_000, description="Maximum characters returned for logs/status.")
 
     @model_validator(mode="before")
@@ -74,6 +85,7 @@ class _BackgroundShellSession:
     process: asyncio.subprocess.Process
     cwd_display: str
     started_at: float
+    notify_on_exit: bool = False
     rolling_chunks: deque[bytes] = field(default_factory=deque)
     rolling_bytes: int = 0
     total_output_bytes: int = 0
@@ -82,6 +94,18 @@ class _BackgroundShellSession:
     stdout_task: asyncio.Task[None] | None = None
     stderr_task: asyncio.Task[None] | None = None
     watch_task: asyncio.Task[None] | None = None
+
+
+@dataclass(slots=True)
+class BackgroundSessionExitEvent:
+    session_id: str
+    command: str
+    cwd_display: str
+    returncode: int | None
+    log_path: str | None
+    output_text: str
+    notify_on_exit: bool
+    total_output_bytes: int
 
 
 def _kill_process_group(process: asyncio.subprocess.Process) -> None:
@@ -154,6 +178,18 @@ class SafeBashTool:
         self._session_lock = asyncio.Lock()
         self._sessions: dict[str, _BackgroundShellSession] = {}
         self._session_sequence = 1
+        self._exit_listeners: list[BackgroundSessionExitListener] = []
+
+    def add_exit_listener(self, listener: BackgroundSessionExitListener) -> Callable[[], None]:
+        self._exit_listeners.append(listener)
+
+        def _unsubscribe() -> None:
+            try:
+                self._exit_listeners.remove(listener)
+            except ValueError:
+                pass
+
+        return _unsubscribe
 
     async def execute(
         self,
@@ -192,6 +228,9 @@ class SafeBashTool:
             sessions = list(self._sessions.values())
             self._sessions.clear()
         await asyncio.gather(*(self._terminate_session(session) for session in sessions), return_exceptions=True)
+
+    async def stop_session(self, session_id: str) -> AgentToolResult:
+        return await self._stop_background_session(session_id)
 
     async def _execute_run(
         self,
@@ -255,20 +294,28 @@ class SafeBashTool:
 
     async def _start_background_session(self, arguments: SafeBashToolInput) -> AgentToolResult:
         command = arguments.command or ""
-        session = await self._create_background_session(command)
+        session = await self._create_background_session(
+            command,
+            notify_on_exit=arguments.notify_on_exit,
+        )
         lines = [
             f"Started background bash session `{session.session_id}`.",
             f"Command: {session.command}",
             f"Working directory: {session.cwd_display}",
             f"Log path: {session.log_path}",
+            f"Notify on exit: {'enabled' if session.notify_on_exit else 'disabled'}",
             "",
             "Use `bash` with `action=status`, `logs`, `input`, `stop`, or `list` to manage it.",
         ]
+        if session.notify_on_exit:
+            lines.append("When this session exits, the caller can resume automatically with the final result.")
         return AgentToolResult(
             content=[TextContent(text="\n".join(lines))],
             details={
                 "session_id": session.session_id,
+                "command": session.command,
                 "full_output_path": session.log_path,
+                "notify_on_exit": session.notify_on_exit,
             },
         )
 
@@ -350,18 +397,25 @@ class SafeBashTool:
             lines.append(f"  Command: {session.command}")
         return AgentToolResult(content=[TextContent(text="\n".join(lines))])
 
-    async def _create_background_session(self, command: str) -> _BackgroundShellSession:
+    async def _create_background_session(
+        self,
+        command: str,
+        *,
+        notify_on_exit: bool,
+    ) -> _BackgroundShellSession:
         if self._mode == "docker":
             return await self._create_background_session_with_command(
                 command,
                 self._docker_command(command),
                 self._visible_workspace_root,
+                notify_on_exit=notify_on_exit,
             )
         if self._mode == "local":
             return await self._create_background_session_with_command(
                 command,
                 self._local_command(command),
                 self._visible_workspace_root,
+                notify_on_exit=notify_on_exit,
             )
 
         try:
@@ -369,6 +423,7 @@ class SafeBashTool:
                 command,
                 self._docker_command(command),
                 self._visible_workspace_root,
+                notify_on_exit=notify_on_exit,
             )
         except RuntimeError as exc:
             if not _docker_failure(str(exc)):
@@ -380,6 +435,7 @@ class SafeBashTool:
             command,
             self._local_command(command),
             self._visible_workspace_root,
+            notify_on_exit=notify_on_exit,
         )
 
     async def _create_background_session_with_command(
@@ -387,6 +443,8 @@ class SafeBashTool:
         original_command: str,
         command: Sequence[str],
         cwd_display: str,
+        *,
+        notify_on_exit: bool,
     ) -> _BackgroundShellSession:
         try:
             process = await asyncio.create_subprocess_exec(
@@ -418,6 +476,7 @@ class SafeBashTool:
                 process=process,
                 cwd_display=cwd_display,
                 started_at=time.monotonic(),
+                notify_on_exit=notify_on_exit,
                 log_handle=log_handle,
                 log_path=log_handle.name,
             )
@@ -435,6 +494,7 @@ class SafeBashTool:
                 session.stderr_task or asyncio.sleep(0),
                 return_exceptions=True,
             )
+            await self._notify_background_session_exit(session)
         finally:
             if session.log_handle is not None:
                 session.log_handle.flush()
@@ -522,6 +582,29 @@ class SafeBashTool:
         lines.append("")
         lines.append(self._render_session_output(session, max_chars=max_chars))
         return "\n".join(lines)
+
+    async def _notify_background_session_exit(self, session: _BackgroundShellSession) -> None:
+        if not self._exit_listeners:
+            return
+
+        event = BackgroundSessionExitEvent(
+            session_id=session.session_id,
+            command=session.command,
+            cwd_display=session.cwd_display,
+            returncode=session.process.returncode,
+            log_path=session.log_path,
+            output_text=self._render_session_output(session, max_chars=8_000),
+            notify_on_exit=session.notify_on_exit,
+            total_output_bytes=session.total_output_bytes,
+        )
+        for listener in tuple(self._exit_listeners):
+            try:
+                maybe = listener(event)
+                if inspect.isawaitable(maybe):
+                    await maybe
+            except Exception:
+                # Listener failures should not break the bash tool's session cleanup.
+                continue
 
     def _render_session_output(self, session: _BackgroundShellSession, *, max_chars: int) -> str:
         text = self._sanitize_workspace_paths(

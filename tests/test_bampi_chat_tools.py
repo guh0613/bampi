@@ -84,6 +84,7 @@ def test_system_prompt_mentions_background_bash_sessions():
 
     assert "后台会话动作" in prompt
     assert "`start`、`status`、`logs`、`input`、`stop`、`list`" in prompt
+    assert "notify_on_exit=true" in prompt
 
 
 def test_system_prompt_uses_utc_plus_8_time_to_minute(monkeypatch: pytest.MonkeyPatch):
@@ -281,6 +282,44 @@ async def test_safe_bash_background_session_accepts_input(tmp_path: Path):
 
     assert logs_result is not None
     assert "echo:hello" in logs_result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_safe_bash_background_session_notifies_exit_listener(tmp_path: Path):
+    tool = SafeBashTool(
+        workspace_dir=str(tmp_path),
+        mode="local",
+        container_name="bampi-sandbox",
+        container_workdir="/workspace",
+        visible_workspace_root="/workspace",
+        container_shell="/bin/bash",
+        default_timeout=30.0,
+    )
+    events = []
+    tool.add_exit_listener(lambda event: events.append(event))
+
+    start_result = await tool.execute(
+        "call-1",
+        {
+            "action": "start",
+            "command": "python3 -u -c 'print(\"done\", flush=True)'",
+            "notify_on_exit": True,
+        },
+    )
+
+    try:
+        for _ in range(40):
+            if events:
+                break
+            await asyncio.sleep(0.05)
+
+        assert start_result.details["notify_on_exit"] is True
+        assert len(events) == 1
+        assert events[0].session_id == start_result.details["session_id"]
+        assert events[0].notify_on_exit is True
+        assert "done" in events[0].output_text
+    finally:
+        await tool.close()
 
 
 @pytest.mark.asyncio

@@ -16,13 +16,20 @@ from bampy.ai.types import StopReason, TextDeltaEvent
 from bampi.plugins.bampi_chat.config import BampiChatConfig
 from bampi.plugins.bampi_chat import handler as handler_module
 from bampi.plugins.bampi_chat.handler import (
+    CLEAR_NO_CONTEXT_MESSAGE,
+    CLEARED_SESSION_MESSAGE,
+    COMPACT_FORBIDDEN_MESSAGE,
+    FORCE_STOPPED_SESSION_MESSAGE,
     IncomingMedia,
     LiveProgressReporter,
     ResponseDispatchResult,
+    STOPPED_WAITING_SESSION_MESSAGE,
     TriggerDecision,
     build_user_message,
     collect_incoming_media,
     format_tool_progress_message,
+    is_clear_command,
+    is_compact_command,
     is_stop_command,
     matched_prefix,
     prepare_group_file_upload,
@@ -165,6 +172,18 @@ def test_is_stop_command_accepts_normalized_command():
     assert is_stop_command("/stop") is True
     assert is_stop_command("  /STOP  ") is True
     assert is_stop_command("/stop now") is False
+
+
+def test_is_clear_command_accepts_aliases():
+    assert is_clear_command("/clear") is True
+    assert is_clear_command(" /NEW ") is True
+    assert is_clear_command("/clear now") is False
+
+
+def test_is_compact_command_accepts_normalized_command():
+    assert is_compact_command("/compact") is True
+    assert is_compact_command(" /COMPACT ") is True
+    assert is_compact_command("/compact now") is False
 
 
 def test_format_tool_progress_message_uses_emoji_style():
@@ -1014,6 +1033,320 @@ async def test_send_agent_response_skips_aborted_reply(tmp_path: Path):
     assert result.rollback_context is True
     assert matcher.sent == []
     assert bot.calls == []
+
+
+@pytest.mark.asyncio
+async def test_register_handlers_clears_context_with_clear_command(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class CapturingMatcherRegistration:
+        def handle(self):
+            def decorator(func):
+                captured["handler"] = func
+                return func
+
+            return decorator
+
+    monkeypatch.setattr(handler_module, "on_message", lambda **kwargs: CapturingMatcherRegistration())
+    monkeypatch.setattr(handler_module, "GroupMessageEvent", FakeGroupEvent)
+
+    class FakeSessionManagerForClear:
+        def __init__(self) -> None:
+            self.cleared_groups: list[str] = []
+
+        def workspace_dir_for_group(self, group_id: str) -> str:
+            return "."
+
+        async def inspect_interaction(self, group_id: str):
+            return SimpleNamespace(
+                is_active=False,
+                is_streaming=False,
+                is_waiting_background=False,
+                managed=None,
+                active_user_id=None,
+            )
+
+        async def clear_context(self, group_id: str) -> bool:
+            self.cleared_groups.append(group_id)
+            return True
+
+    session_manager = FakeSessionManagerForClear()
+    config = BampiChatConfig()
+    handler_module.register_handlers(config, session_manager)
+    handler = captured["handler"]
+
+    bot = FakeBot()
+    bot.self_id = 42
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99, message=Message("/clear"))
+    matcher = FakeMatcher()
+
+    await handler(bot, event, matcher)
+
+    assert session_manager.cleared_groups == ["1001"]
+    assert matcher.sent == [CLEARED_SESSION_MESSAGE]
+
+
+@pytest.mark.asyncio
+async def test_register_handlers_reports_no_context_for_new_command(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class CapturingMatcherRegistration:
+        def handle(self):
+            def decorator(func):
+                captured["handler"] = func
+                return func
+
+            return decorator
+
+    monkeypatch.setattr(handler_module, "on_message", lambda **kwargs: CapturingMatcherRegistration())
+    monkeypatch.setattr(handler_module, "GroupMessageEvent", FakeGroupEvent)
+
+    class FakeSessionManagerForNew:
+        def workspace_dir_for_group(self, group_id: str) -> str:
+            return "."
+
+        async def inspect_interaction(self, group_id: str):
+            return SimpleNamespace(
+                is_active=False,
+                is_streaming=False,
+                is_waiting_background=False,
+                managed=None,
+                active_user_id=None,
+            )
+
+        async def clear_context(self, group_id: str) -> bool:
+            return False
+
+    session_manager = FakeSessionManagerForNew()
+    config = BampiChatConfig()
+    handler_module.register_handlers(config, session_manager)
+    handler = captured["handler"]
+
+    bot = FakeBot()
+    bot.self_id = 42
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99, message=Message("/new"))
+    matcher = FakeMatcher()
+
+    await handler(bot, event, matcher)
+
+    assert matcher.sent == [CLEAR_NO_CONTEXT_MESSAGE]
+
+
+@pytest.mark.asyncio
+async def test_register_handlers_rejects_compact_for_non_superuser(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class CapturingMatcherRegistration:
+        def handle(self):
+            def decorator(func):
+                captured["handler"] = func
+                return func
+
+            return decorator
+
+    monkeypatch.setattr(handler_module, "on_message", lambda **kwargs: CapturingMatcherRegistration())
+    monkeypatch.setattr(handler_module, "GroupMessageEvent", FakeGroupEvent)
+    monkeypatch.setattr(handler_module, "is_nonebot_superuser", lambda user_id: False)
+
+    class FakeSessionManagerForCompact:
+        def workspace_dir_for_group(self, group_id: str) -> str:
+            return "."
+
+    session_manager = FakeSessionManagerForCompact()
+    config = BampiChatConfig()
+    handler_module.register_handlers(config, session_manager)
+    handler = captured["handler"]
+
+    bot = FakeBot()
+    bot.self_id = 42
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99, message=Message("/compact"))
+    matcher = FakeMatcher()
+
+    await handler(bot, event, matcher)
+
+    assert matcher.sent == [COMPACT_FORBIDDEN_MESSAGE]
+
+
+@pytest.mark.asyncio
+async def test_register_handlers_runs_manual_compact_for_superuser(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class CapturingMatcherRegistration:
+        def handle(self):
+            def decorator(func):
+                captured["handler"] = func
+                return func
+
+            return decorator
+
+    monkeypatch.setattr(handler_module, "on_message", lambda **kwargs: CapturingMatcherRegistration())
+    monkeypatch.setattr(handler_module, "GroupMessageEvent", FakeGroupEvent)
+    monkeypatch.setattr(handler_module, "is_nonebot_superuser", lambda user_id: True)
+
+    class FakeManagedSessionRuntime:
+        def __init__(self) -> None:
+            self.compact_calls = 0
+
+        async def compact(self):
+            self.compact_calls += 1
+            return SimpleNamespace(tokens_before=1200, tokens_after=800)
+
+    class FakeSessionManagerForCompact:
+        def __init__(self) -> None:
+            self.managed = SimpleNamespace(
+                session=FakeManagedSessionRuntime(),
+                lock=asyncio.Lock(),
+            )
+            self.complete_calls = 0
+
+        def workspace_dir_for_group(self, group_id: str) -> str:
+            return "."
+
+        async def inspect_interaction(self, group_id: str):
+            return SimpleNamespace(
+                is_active=False,
+                is_streaming=False,
+                is_waiting_background=False,
+                managed=None,
+                active_user_id=None,
+            )
+
+        async def has_context(self, group_id: str) -> bool:
+            return True
+
+        async def get_or_create(self, group_id: str):
+            return self.managed
+
+        async def complete_interaction(self, group_id: str) -> None:
+            self.complete_calls += 1
+
+    session_manager = FakeSessionManagerForCompact()
+    config = BampiChatConfig()
+    handler_module.register_handlers(config, session_manager)
+    handler = captured["handler"]
+
+    bot = FakeBot()
+    bot.self_id = 42
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99, message=Message("/compact"))
+    matcher = FakeMatcher()
+
+    await handler(bot, event, matcher)
+
+    assert session_manager.managed.session.compact_calls == 1
+    assert session_manager.complete_calls == 1
+    assert matcher.sent == ["已完成上下文压缩，约减少 400 tokens。"]
+
+
+@pytest.mark.asyncio
+async def test_register_handlers_stop_cancels_waiting_background_session(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class CapturingMatcherRegistration:
+        def handle(self):
+            def decorator(func):
+                captured["handler"] = func
+                return func
+
+            return decorator
+
+    monkeypatch.setattr(handler_module, "on_message", lambda **kwargs: CapturingMatcherRegistration())
+    monkeypatch.setattr(handler_module, "GroupMessageEvent", FakeGroupEvent)
+    monkeypatch.setattr(handler_module, "is_nonebot_superuser", lambda user_id: False)
+
+    class FakeSessionManagerForStop:
+        def __init__(self) -> None:
+            self.stop_calls: list[tuple[str, str]] = []
+
+        def workspace_dir_for_group(self, group_id: str) -> str:
+            return "."
+
+        async def inspect_interaction(self, group_id: str):
+            return SimpleNamespace(
+                is_active=True,
+                active_user_id="42",
+                is_streaming=False,
+                is_waiting_background=True,
+                managed=SimpleNamespace(),
+            )
+
+        async def stop_interaction(self, group_id: str, *, reason: str):
+            self.stop_calls.append((group_id, reason))
+            return SimpleNamespace(
+                aborted_streaming=False,
+                stopped_background_waits=True,
+                stopped_background_session_ids=["term-1"],
+            )
+
+    session_manager = FakeSessionManagerForStop()
+    config = BampiChatConfig()
+    handler_module.register_handlers(config, session_manager)
+    handler = captured["handler"]
+
+    bot = FakeBot()
+    bot.self_id = 42
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99, message=Message("/stop"))
+    matcher = FakeMatcher()
+
+    await handler(bot, event, matcher)
+
+    assert session_manager.stop_calls == [("1001", "stopped by session owner")]
+    assert matcher.sent == [STOPPED_WAITING_SESSION_MESSAGE]
+
+
+@pytest.mark.asyncio
+async def test_register_handlers_superuser_can_force_stop_other_users_session(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    class CapturingMatcherRegistration:
+        def handle(self):
+            def decorator(func):
+                captured["handler"] = func
+                return func
+
+            return decorator
+
+    monkeypatch.setattr(handler_module, "on_message", lambda **kwargs: CapturingMatcherRegistration())
+    monkeypatch.setattr(handler_module, "GroupMessageEvent", FakeGroupEvent)
+    monkeypatch.setattr(handler_module, "is_nonebot_superuser", lambda user_id: True)
+
+    class FakeSessionManagerForForceStop:
+        def __init__(self) -> None:
+            self.stop_calls: list[tuple[str, str]] = []
+
+        def workspace_dir_for_group(self, group_id: str) -> str:
+            return "."
+
+        async def inspect_interaction(self, group_id: str):
+            return SimpleNamespace(
+                is_active=True,
+                active_user_id="7",
+                is_streaming=True,
+                is_waiting_background=False,
+                managed=SimpleNamespace(),
+            )
+
+        async def stop_interaction(self, group_id: str, *, reason: str):
+            self.stop_calls.append((group_id, reason))
+            return SimpleNamespace(
+                aborted_streaming=True,
+                stopped_background_waits=False,
+                stopped_background_session_ids=[],
+            )
+
+    session_manager = FakeSessionManagerForForceStop()
+    config = BampiChatConfig()
+    handler_module.register_handlers(config, session_manager)
+    handler = captured["handler"]
+
+    bot = FakeBot()
+    bot.self_id = 42
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99, message=Message("/stop"))
+    matcher = FakeMatcher()
+
+    await handler(bot, event, matcher)
+
+    assert session_manager.stop_calls == [("1001", "stopped by superuser")]
+    assert matcher.sent == [FORCE_STOPPED_SESSION_MESSAGE]
 
 
 @pytest.mark.asyncio

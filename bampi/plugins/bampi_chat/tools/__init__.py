@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from .browser import BrowserTool
 from .files import WorkspaceEditTool, WorkspaceFindTool, WorkspaceGrepTool, WorkspaceLsTool, WorkspaceReadTool, WorkspaceWriteTool
-
+from .service import ServiceTool
 from .safe_bash import SafeBashTool
 from .web_search import create_web_search_tool
 
@@ -13,6 +13,8 @@ def create_agent_tools(
     *,
     container_root: str | None = None,
     bash_workdir: str | None = None,
+    group_id: str | None = None,
+    service_manager=None,
 ) -> list[object]:
     effective_container_root = container_root or config.bampi_bash_container_workdir
     effective_bash_workdir = bash_workdir or effective_container_root
@@ -52,6 +54,21 @@ def create_agent_tools(
                 idle_ttl_seconds=config.bampi_browser_idle_ttl_seconds,
                 max_pages=config.bampi_browser_max_pages,
                 inline_image_max_bytes=config.bampi_browser_inline_image_max_bytes,
+            )
+        )
+    if (
+        config.bampi_service_enabled
+        and config.bampi_bash_mode == "docker"
+        and service_manager is not None
+        and group_id is not None
+    ):
+        tools.append(
+            ServiceTool(
+                manager=service_manager,
+                group_id=group_id,
+                workspace_dir=workspace_dir,
+                visible_workspace_root=effective_container_root,
+                actual_container_workdir=effective_bash_workdir,
             )
         )
     return tools

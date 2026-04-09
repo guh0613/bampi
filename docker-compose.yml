@@ -35,6 +35,8 @@ services:
       - bash
       - -lc
       - mkdir -p /tmp/bampi-home /tmp/bampi-home/.npm-global /workspace/inbox /workspace/outbox && exec sleep infinity
+    ports:
+      - "${BAMPI_SERVICE_PORT_RANGE:-46000-46031}:${BAMPI_SERVICE_PORT_RANGE:-46000-46031}/tcp"
     volumes:
       - ./data/bampi/workspace:/workspace
     tmpfs:

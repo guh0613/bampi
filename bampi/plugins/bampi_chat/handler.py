@@ -15,7 +15,7 @@ from typing import Any, Callable, Protocol
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
-from nonebot import logger
+from nonebot import get_driver, logger
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageSegment
 from nonebot.matcher import Matcher
 from nonebot.plugin import on_message
@@ -38,7 +38,8 @@ from .skills import (
     resolve_explicit_skills,
     strip_explicit_skill_mentions,
 )
-from .session_manager import GroupSessionManager
+from .session_manager import BackgroundWaitReminderEvent, GroupSessionManager
+from .tools.safe_bash import BackgroundSessionExitEvent
 from .tools.workspace import ensure_workspace_dirs, is_image_file
 
 
@@ -105,14 +106,32 @@ TOOL_PROGRESS_EMOJIS: dict[str, str] = {
     "edit": "🛠️",
     "web_search": "🌐",
     "browser": "🧭",
+    "service": "🚀",
 }
 
 STOP_COMMAND = "/stop"
+CLEAR_COMMANDS = {"/clear", "/new"}
+COMPACT_COMMAND = "/compact"
 ACTIVE_SESSION_BUSY_MESSAGE = "当前群里已有进行中的会话，只有发起者可以继续跟进；如需中止，请让发起者发送 /stop。"
 ACTIVE_SESSION_WINDING_DOWN_MESSAGE = "当前会话正在收尾，请稍等结果发出。"
+ACTIVE_SESSION_BACKGROUND_WAIT_MESSAGE = "当前会话正在后台等待命令结果，完成后会自动继续，请稍等。"
 STOP_NO_ACTIVE_MESSAGE = "当前没有你发起的进行中会话。"
 STOP_NOT_OWNER_MESSAGE = "当前会话不是你发起的，不能由你停止；如需中止，请让发起者发送 /stop。"
 STOPPED_SESSION_MESSAGE = "已停止你发起的当前会话。"
+STOPPED_WAITING_SESSION_MESSAGE = "已停止你发起的当前会话，并取消等待中的后台命令。"
+FORCE_STOPPED_SESSION_MESSAGE = "已强制停止当前群会话。"
+FORCE_STOPPED_WAITING_SESSION_MESSAGE = "已强制停止当前群会话，并取消等待中的后台命令。"
+CLEARED_SESSION_MESSAGE = "已清空当前群的对话上下文。"
+CLEAR_NO_CONTEXT_MESSAGE = "当前群还没有可清空的上下文。"
+COMPACT_NO_CONTEXT_MESSAGE = "当前群还没有可压缩的上下文。"
+COMPACT_FORBIDDEN_MESSAGE = "只有 NoneBot superuser 可以使用 /compact。"
+
+
+@dataclass(slots=True)
+class GroupReplyTarget:
+    group_id: int
+    user_id: int | None = None
+    reply_message_id: int | None = None
 
 
 class PlaintextEvent(Protocol):
@@ -635,12 +654,71 @@ def describe_tool_progress(tool_name: str, args: Any) -> str:
         if action in {"pages", "switch", "close_page", "reload", "back", "forward", "scroll", "reset"}:
             return f"正在操作浏览器：{action}"
         return f"正在操作浏览器：{action}"
+    if tool_name == "service":
+        action = render_tool_progress_value(payload.get("action"), "status")
+        service_ref = render_tool_progress_value(
+            payload.get("service") or payload.get("name"),
+            "服务",
+        )
+        command = render_tool_progress_value(payload.get("command"), "当前服务命令")
+        if action == "start":
+            return f"正在启动对外服务：{command}"
+        if action == "list":
+            return "正在查看服务列表"
+        if action == "logs":
+            return f"正在查看服务日志：{service_ref}"
+        if action == "stop":
+            return f"正在停止服务：{service_ref}"
+        return f"正在查看服务状态：{service_ref}"
     display_name = render_tool_progress_value(tool_name, "unknown", limit=40)
     return f"正在执行工具：{display_name}"
 
 
 def is_stop_command(text: str) -> bool:
     return normalize_text(text).lower() == STOP_COMMAND
+
+
+def is_clear_command(text: str) -> bool:
+    return normalize_text(text).lower() in CLEAR_COMMANDS
+
+
+def is_compact_command(text: str) -> bool:
+    return normalize_text(text).lower() == COMPACT_COMMAND
+
+
+def is_nonebot_superuser(user_id: str | int) -> bool:
+    try:
+        driver = get_driver()
+    except ValueError:
+        return False
+
+    configured = getattr(driver.config, "superusers", None) or set()
+    return str(user_id) in {str(item) for item in configured}
+
+
+def interaction_busy_message(status: Any, *, requester_user_id: str | None = None) -> str:
+    if bool(getattr(status, "is_waiting_background", False)):
+        return ACTIVE_SESSION_BACKGROUND_WAIT_MESSAGE
+    active_user_id = getattr(status, "active_user_id", None)
+    if requester_user_id is not None and active_user_id == requester_user_id:
+        return ACTIVE_SESSION_WINDING_DOWN_MESSAGE
+    if not bool(getattr(status, "is_streaming", False)):
+        return ACTIVE_SESSION_WINDING_DOWN_MESSAGE
+    return ACTIVE_SESSION_BUSY_MESSAGE
+
+
+def build_stop_success_message(*, force: bool, stopped_background_waits: bool) -> str:
+    if force:
+        return (
+            FORCE_STOPPED_WAITING_SESSION_MESSAGE
+            if stopped_background_waits
+            else FORCE_STOPPED_SESSION_MESSAGE
+        )
+    return (
+        STOPPED_WAITING_SESSION_MESSAGE
+        if stopped_background_waits
+        else STOPPED_SESSION_MESSAGE
+    )
 
 
 def _format_skill_diagnostics(diagnostics: list[Any]) -> str:
@@ -840,26 +918,84 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
         ):
             return
 
+        if is_clear_command(raw_text):
+            status = await session_manager.inspect_interaction(group_id)
+            if status.is_active:
+                await matcher.send(interaction_busy_message(status, requester_user_id=user_id))
+                return
+            cleared = await session_manager.clear_context(group_id)
+            await matcher.send(CLEARED_SESSION_MESSAGE if cleared else CLEAR_NO_CONTEXT_MESSAGE)
+            return
+
+        if is_compact_command(raw_text):
+            if not is_nonebot_superuser(user_id):
+                await matcher.send(COMPACT_FORBIDDEN_MESSAGE)
+                return
+            status = await session_manager.inspect_interaction(group_id)
+            if status.is_active:
+                await matcher.send(interaction_busy_message(status, requester_user_id=user_id))
+                return
+            if not await session_manager.has_context(group_id):
+                await matcher.send(COMPACT_NO_CONTEXT_MESSAGE)
+                return
+            try:
+                managed = await session_manager.get_or_create(group_id)
+                async with managed.lock:
+                    result = await managed.session.compact()
+            except Exception:
+                logger.exception("bampi_chat manual compaction failed")
+                await matcher.send("这次上下文压缩失败了，请检查模型配置或稍后再试。")
+                return
+            finally:
+                await session_manager.complete_interaction(group_id)
+
+            if result is None:
+                await matcher.send(COMPACT_NO_CONTEXT_MESSAGE)
+                return
+
+            saved_tokens = result.tokens_before - result.tokens_after
+            await matcher.send(
+                f"已完成上下文压缩，约减少 {saved_tokens} tokens。"
+            )
+            return
+
         if is_stop_command(raw_text):
             status = await session_manager.inspect_interaction(group_id)
             if not status.is_active:
                 await matcher.send(STOP_NO_ACTIVE_MESSAGE)
                 return
-            if status.active_user_id != user_id:
+            requester_is_superuser = is_nonebot_superuser(user_id)
+            force_stop = requester_is_superuser and status.active_user_id != user_id
+            if status.active_user_id != user_id and not requester_is_superuser:
                 await matcher.send(STOP_NOT_OWNER_MESSAGE)
                 return
-            if not status.is_streaming or status.managed is None:
+            if status.managed is None:
                 await matcher.send(ACTIVE_SESSION_WINDING_DOWN_MESSAGE)
                 return
 
-            status.managed.session.clear_all_queues()
-            status.managed.session.abort("stopped by session owner")
-            logger.info(
-                f"bampi_chat abort requested group_id={group_id} "
-                f"user_id={user_id} "
-                f"message_id={event.message_id}"
+            stop_reason = "stopped by superuser" if force_stop else "stopped by session owner"
+            stop_result = await session_manager.stop_interaction(
+                group_id,
+                reason=stop_reason,
             )
-            await matcher.send(STOPPED_SESSION_MESSAGE)
+            if not stop_result.aborted_streaming and not stop_result.stopped_background_waits:
+                await matcher.send(ACTIVE_SESSION_WINDING_DOWN_MESSAGE)
+                return
+            logger.info(
+                f"bampi_chat stop requested group_id={group_id} "
+                f"user_id={user_id} "
+                f"message_id={event.message_id} "
+                f"force_stop={force_stop} "
+                f"aborted_streaming={stop_result.aborted_streaming} "
+                f"stopped_background_waits={stop_result.stopped_background_waits} "
+                f"stopped_background_session_ids={stop_result.stopped_background_session_ids}"
+            )
+            await matcher.send(
+                build_stop_success_message(
+                    force=force_stop,
+                    stopped_background_waits=stop_result.stopped_background_waits,
+                )
+            )
             return
 
         active_status = await session_manager.inspect_interaction(group_id)
@@ -925,12 +1061,7 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 f"is_streaming={active_status.is_streaming}"
             )
             if decision.direct:
-                message = (
-                    ACTIVE_SESSION_WINDING_DOWN_MESSAGE
-                    if active_status.active_user_id == user_id
-                    else ACTIVE_SESSION_BUSY_MESSAGE
-                )
-                await matcher.send(message)
+                await matcher.send(interaction_busy_message(active_status, requester_user_id=user_id))
             return
 
         if not limiter.allow(group_id):
@@ -957,7 +1088,7 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 f"message_id={event.message_id} "
                 f"active_user_id={reservation.active_user_id}"
             )
-            await matcher.send(ACTIVE_SESSION_BUSY_MESSAGE)
+            await matcher.send(interaction_busy_message(await session_manager.inspect_interaction(group_id), requester_user_id=user_id))
             return
 
         managed = reservation.managed
@@ -1009,46 +1140,92 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 managed.last_used_at = time.monotonic()
                 started_at = time.monotonic()
                 baseline_leaf_id = managed.session.session_manager.leaf_id
+                background_resume_waits: dict[str, str | None] = {}
+
+                def _capture_background_wait(event: Any) -> None:
+                    if getattr(event, "type", None) != "tool_execution_end":
+                        return
+                    if getattr(event, "tool_name", "") != "bash":
+                        return
+                    if bool(getattr(event, "is_error", False)):
+                        return
+                    result = getattr(event, "result", None)
+                    details = getattr(result, "details", None)
+                    if not isinstance(details, dict):
+                        return
+                    session_id = str(details.get("session_id", "")).strip()
+                    if not session_id or not bool(details.get("notify_on_exit")):
+                        return
+                    command = details.get("command")
+                    background_resume_waits[session_id] = str(command).strip() if command is not None else None
+
+                unsubscribe_background_wait = managed.session.subscribe(_capture_background_wait)
                 reporter = LiveProgressReporter(bot=bot, event=event, config=config)
                 reporter.start(managed.session)
                 if explicit_skills.skills:
                     reporter.announce_skill_loading([skill.name for skill in explicit_skills.skills])
-                logger.info(
-                    f"bampi_chat prompt start group_id={group_id} "
-                    f"message_id={event.message_id} "
-                    f"content_blocks={len(user_message.content)}"
-                )
                 try:
-                    await managed.session.prompt(user_message, source="qq_group")
-                except Exception:
-                    await reporter.close()
-                    rollback_session_context(managed.session, baseline_leaf_id)
-                    logger.exception("bampi_chat session prompt failed")
-                    await matcher.send("这次调用 agent 失败了，检查一下模型配置、网络或工具环境。")
-                    return
+                    logger.info(
+                        f"bampi_chat prompt start group_id={group_id} "
+                        f"message_id={event.message_id} "
+                        f"content_blocks={len(user_message.content)}"
+                    )
+                    try:
+                        await managed.session.prompt(user_message, source="qq_group")
+                    except Exception:
+                        rollback_session_context(managed.session, baseline_leaf_id)
+                        logger.exception("bampi_chat session prompt failed")
+                        await matcher.send("这次调用 agent 失败了，检查一下模型配置、网络或工具环境。")
+                        return
 
-                managed.last_used_at = time.monotonic()
-                logger.info(
-                    f"bampi_chat prompt finished group_id={group_id} "
-                    f"message_id={event.message_id} "
-                    f"duration={time.monotonic() - started_at:.2f}s "
-                    f"total_messages={len(managed.session.messages)}"
-                )
-                await reporter.prepare_final_reply()
-                result = await send_agent_response(
-                    bot=bot,
-                    event=event,
-                    matcher=matcher,
-                    config=config,
-                    workspace_dir=workspace_dir,
-                    assistant_message=find_last_assistant_message(managed.session.messages),
-                    outbox_before=outbox_before,
-                    streamed_text=reporter.streamed_text,
-                    streamed_any_text=reporter.streamed_any_text,
-                )
-                await reporter.close()
-                if result.rollback_context:
-                    rollback_session_context(managed.session, baseline_leaf_id)
+                    managed.last_used_at = time.monotonic()
+                    logger.info(
+                        f"bampi_chat prompt finished group_id={group_id} "
+                        f"message_id={event.message_id} "
+                        f"duration={time.monotonic() - started_at:.2f}s "
+                        f"total_messages={len(managed.session.messages)}"
+                    )
+                    await reporter.prepare_final_reply()
+                    result = await send_agent_response(
+                        bot=bot,
+                        event=event,
+                        matcher=matcher,
+                        config=config,
+                        workspace_dir=workspace_dir,
+                        assistant_message=find_last_assistant_message(managed.session.messages),
+                        outbox_before=outbox_before,
+                        streamed_text=reporter.streamed_text,
+                        streamed_any_text=reporter.streamed_any_text,
+                    )
+                    if result.rollback_context:
+                        rollback_session_context(managed.session, baseline_leaf_id)
+                    for session_id, command in sorted(background_resume_waits.items()):
+                        await session_manager.register_background_wait(
+                            group_id,
+                            session_id,
+                            owner_user_id=user_id,
+                            callback=_create_background_resume_callback(
+                                bot=bot,
+                                config=config,
+                                managed=managed,
+                                group_id=group_id,
+                                user_id=int(event.user_id),
+                                reply_message_id=event.message_id,
+                                workspace_dir=workspace_dir,
+                            ),
+                            command=command,
+                            reminder_after_seconds=config.bampi_background_wait_reminder_seconds,
+                            reminder_callback=_create_background_wait_reminder_callback(
+                                bot=bot,
+                                config=config,
+                                group_id=group_id,
+                                user_id=int(event.user_id),
+                                reply_message_id=event.message_id,
+                            ),
+                        )
+                finally:
+                    unsubscribe_background_wait()
+                    await reporter.close()
         except Exception:
             logger.exception("bampi_chat failed while preparing or delivering interaction")
             await matcher.send("处理这条消息时出了点问题，请稍后再试一次。")
@@ -1679,6 +1856,316 @@ def rollback_session_context(session: AgentSession, baseline_leaf_id: str | None
     logger.info(
         f"bampi_chat rolled back session context to leaf_id={baseline_leaf_id}"
     )
+
+
+def build_group_reply_message(
+    *,
+    config: BampiChatConfig,
+    target: GroupReplyTarget,
+    text: str,
+) -> Message:
+    message = Message()
+    if config.bampi_reply_with_quote and target.reply_message_id is not None:
+        message += MessageSegment.reply(target.reply_message_id)
+    if config.bampi_at_sender and target.user_id is not None:
+        message += MessageSegment.at(target.user_id)
+    if text:
+        message += MessageSegment.text(text)
+    return message
+
+
+async def _send_group_message_via_bot(
+    *,
+    bot: Bot,
+    target: GroupReplyTarget,
+    message: Message,
+) -> None:
+    await bot.call_api(
+        "send_group_msg",
+        group_id=target.group_id,
+        message=message,
+    )
+
+
+def _create_background_wait_reminder_callback(
+    *,
+    bot: Bot,
+    config: BampiChatConfig,
+    group_id: str,
+    user_id: int,
+    reply_message_id: int,
+) -> Callable[[BackgroundWaitReminderEvent], Awaitable[None]]:
+    target = GroupReplyTarget(
+        group_id=int(group_id),
+        user_id=user_id,
+        reply_message_id=reply_message_id,
+    )
+
+    async def _remind(event: BackgroundWaitReminderEvent) -> None:
+        minutes = max(1, int(round(event.waited_seconds / 60)))
+        command_hint = ""
+        if event.command:
+            command_hint = f"\n命令：{log_preview(event.command, limit=120)}"
+        await _send_group_message_via_bot(
+            bot=bot,
+            target=target,
+            message=build_group_reply_message(
+                config=config,
+                target=target,
+                text=(
+                    f"你之前启动的后台终端 `{event.session_id}` 已运行超过 {minutes} 分钟，"
+                    "如果它看起来卡住了，可以发送 /stop 停止当前群会话。"
+                    f"{command_hint}"
+                ),
+            ),
+        )
+
+    return _remind
+
+
+def build_background_resume_follow_up_message(
+    exit_event: BackgroundSessionExitEvent,
+) -> UserMessage:
+    lines = [
+        "系统通知：你此前要求等待的后台终端命令已经结束，请继续基于结果完成任务。",
+        f"background_session_id: {exit_event.session_id}",
+        f"command: {exit_event.command}",
+        f"exit_code: {exit_event.returncode}",
+        f"working_directory: {exit_event.cwd_display}",
+    ]
+    if exit_event.log_path:
+        lines.append(f"log_path: {exit_event.log_path}")
+    lines.extend(
+        [
+            "captured_output:",
+            exit_event.output_text or "(no output)",
+            "",
+            "如需更多上下文，你仍然可以继续使用 bash 的 status/logs 查看这个后台会话。",
+        ]
+    )
+    return UserMessage(content=[TextContent(text="\n".join(lines))])
+
+
+def _create_background_resume_callback(
+    *,
+    bot: Bot,
+    config: BampiChatConfig,
+    managed: Any,
+    group_id: str,
+    user_id: int,
+    reply_message_id: int,
+    workspace_dir: str,
+) -> Callable[[BackgroundSessionExitEvent], Awaitable[None]]:
+    target = GroupReplyTarget(
+        group_id=int(group_id),
+        user_id=user_id,
+        reply_message_id=reply_message_id,
+    )
+
+    async def _resume(exit_event: BackgroundSessionExitEvent) -> None:
+        async with managed.lock:
+            managed.last_used_at = time.monotonic()
+            baseline_leaf_id = managed.session.session_manager.leaf_id
+            outbox_before = snapshot_outbox(workspace_dir)
+            logger.info(
+                f"bampi_chat auto-resume start group_id={group_id} "
+                f"session_id={exit_event.session_id} "
+                f"exit_code={exit_event.returncode}"
+            )
+            try:
+                managed.session.follow_up(
+                    build_background_resume_follow_up_message(exit_event)
+                )
+                await managed.session.continue_()
+            except Exception:
+                rollback_session_context(managed.session, baseline_leaf_id)
+                logger.exception(
+                    f"bampi_chat auto-resume failed group_id={group_id} "
+                    f"session_id={exit_event.session_id}"
+                )
+                failure_message = build_group_reply_message(
+                    config=config,
+                    target=target,
+                    text=(
+                        f"后台终端 `{exit_event.session_id}` 已结束，但自动续跑失败了。"
+                        "你可以直接发一句话让我继续处理。"
+                    ),
+                )
+                await _send_group_message_via_bot(
+                    bot=bot,
+                    target=target,
+                    message=failure_message,
+                )
+                return
+
+            result = await send_background_agent_response(
+                bot=bot,
+                target=target,
+                config=config,
+                workspace_dir=workspace_dir,
+                assistant_message=find_last_assistant_message(managed.session.messages),
+                outbox_before=outbox_before,
+            )
+            if result.rollback_context:
+                rollback_session_context(managed.session, baseline_leaf_id)
+
+    return _resume
+
+
+async def send_background_agent_response(
+    *,
+    bot: Bot,
+    target: GroupReplyTarget,
+    config: BampiChatConfig,
+    workspace_dir: str,
+    assistant_message: AssistantMessage | None,
+    outbox_before: dict[str, float],
+    streamed_text: str = "",
+    streamed_any_text: bool = False,
+) -> ResponseDispatchResult:
+    full_text = extract_text_blocks(assistant_message)
+    text = strip_streamed_prefix(full_text, streamed_text)
+    text = text.lstrip()
+    files = collect_outbox_files(workspace_dir, before=outbox_before, text=full_text)
+    stop_reason = getattr(assistant_message, "stop_reason", None)
+    error_message = normalize_text(getattr(assistant_message, "error_message", None))
+    logger.info(
+        f"bampi_chat preparing auto-resume reply group_id={target.group_id} "
+        f"reply_message_id={target.reply_message_id} "
+        f"text={log_preview(text)!r} "
+        f"files={[path.name for path in files]} "
+        f"stop_reason={stop_reason} "
+        f"error={log_preview(error_message)!r}"
+    )
+
+    if stop_reason in {StopReason.ABORTED, "aborted"}:
+        logger.info(
+            f"bampi_chat skipped aborted auto-resume reply group_id={target.group_id} "
+            f"reply_message_id={target.reply_message_id}"
+        )
+        return ResponseDispatchResult(delivered=False, rollback_context=True)
+
+    if not text and not files:
+        if error_message:
+            logger.warning(
+                f"bampi_chat auto-resume returned no deliverable content "
+                f"group_id={target.group_id} "
+                f"reply_message_id={target.reply_message_id} "
+                f"stop_reason={stop_reason} "
+                f"error={log_preview(error_message)!r}"
+            )
+            await _send_group_message_via_bot(
+                bot=bot,
+                target=target,
+                message=build_group_reply_message(
+                    config=config,
+                    target=target,
+                    text="这次自动续跑失败了，请检查 API Key、模型配置或上游服务。",
+                ),
+            )
+            return ResponseDispatchResult(delivered=False, rollback_context=True)
+        if streamed_any_text:
+            logger.info(
+                f"bampi_chat auto-resume fully covered by live stream "
+                f"group_id={target.group_id} "
+                f"reply_message_id={target.reply_message_id}"
+            )
+            return ResponseDispatchResult(delivered=True, rollback_context=False)
+
+        logger.warning(
+            f"bampi_chat auto-resume returned empty content "
+            f"group_id={target.group_id} "
+            f"reply_message_id={target.reply_message_id}"
+        )
+        await _send_group_message_via_bot(
+            bot=bot,
+            target=target,
+            message=build_group_reply_message(
+                config=config,
+                target=target,
+                text="这次自动续跑没有生成可发送的内容，你可以直接发一句话让我继续。",
+            ),
+        )
+        return ResponseDispatchResult(delivered=False, rollback_context=True)
+
+    message = build_group_reply_message(
+        config=config,
+        target=target,
+        text=text,
+    )
+
+    uploaded_files: list[Path] = []
+    staged_upload_files: list[Path] = []
+    failed_artifacts: list[str] = []
+    sent_image_count = 0
+    try:
+        for path in files:
+            if not is_image_file(path):
+                continue
+            try:
+                prepared_image = await prepare_outbound_image(path, config)
+                staged_upload_files.extend(prepared_image.cleanup_paths)
+                message += MessageSegment.image(prepared_image.source)
+                sent_image_count += 1
+            except Exception:
+                logger.exception(f"failed to prepare auto-resume outbox image: {path}")
+                failed_artifacts.append(path.name)
+
+        if message:
+            await _send_group_message_via_bot(
+                bot=bot,
+                target=target,
+                message=message,
+            )
+            logger.info(
+                f"bampi_chat auto-resume reply sent group_id={target.group_id} "
+                f"reply_message_id={target.reply_message_id} "
+                f"has_text={bool(text)} "
+                f"image_count={sent_image_count}"
+            )
+
+        for path in files:
+            if is_image_file(path):
+                if path.name in failed_artifacts:
+                    continue
+                uploaded_files.append(path)
+                continue
+            try:
+                upload = await prepare_group_file_upload(path, config)
+                staged_upload_files.extend(upload.cleanup_paths)
+                await bot.call_api(
+                    "upload_group_file",
+                    group_id=target.group_id,
+                    file=upload.file_uri,
+                    name=path.name,
+                )
+                logger.info(f"bampi_chat auto-resume uploaded outbox file group_id={target.group_id} path={path}")
+                uploaded_files.append(path)
+            except Exception:
+                logger.exception(f"failed to upload auto-resume outbox file: {path}")
+                failed_artifacts.append(path.name)
+        if failed_artifacts:
+            await _send_group_message_via_bot(
+                bot=bot,
+                target=target,
+                message=build_group_reply_message(
+                    config=config,
+                    target=target,
+                    text=f"这些产物已经生成，但自动发送失败了：{', '.join(failed_artifacts)}",
+                ),
+            )
+    finally:
+        for path in uploaded_files:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(f"failed to cleanup auto-resume outbox file: {path}")
+        for staged_path in staged_upload_files:
+            try:
+                staged_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(f"failed to cleanup auto-resume staged upload file: {staged_path}")
+    return ResponseDispatchResult(delivered=True, rollback_context=False)
 
 
 async def send_agent_response(
