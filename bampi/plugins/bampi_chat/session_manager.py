@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +31,14 @@ BackgroundWaitReminderCallback = Callable[
     ["BackgroundWaitReminderEvent"],
     Awaitable[None] | None,
 ]
+
+_API_KEY_ENV_BY_API: dict[str, str] = {
+    "anthropic-messages": "ANTHROPIC_API_KEY",
+    "google-genai": "GOOGLE_API_KEY",
+    "ollama-responses": "OLLAMA_API_KEY",
+    "openai-completions": "OPENAI_API_KEY",
+    "openai-responses": "OPENAI_API_KEY",
+}
 
 
 @dataclass(slots=True)
@@ -396,6 +405,7 @@ class GroupSessionManager:
             f"workspace_dir={workspace_dir} "
             f"container_workspace_dir={container_workspace_dir} "
             f"provider={model.provider} "
+            f"api={model.api} "
             f"model={model.id} "
             f"session_file={session_file} "
             f"bash_mode={self._config.bampi_bash_mode} "
@@ -772,67 +782,124 @@ class GroupSessionManager:
         return stopped
 
     def _build_model(self) -> Model:
-        model = get_model(self._config.bampi_model_id, provider=self._config.bampi_model_provider)
+        model = get_model(
+            self._config.bampi_model_id,
+            provider=self._config.bampi_model_provider,
+        )
         if model is None:
             model = self._build_custom_model()
-        if self._config.bampi_base_url:
-            model = model.model_copy(update={"base_url": self._config.bampi_base_url})
-        return model
+        return self._apply_model_overrides(model)
 
     def _build_custom_model(self) -> Model:
         provider = self._config.bampi_model_provider
         model_id = self._config.bampi_model_id
+        if not provider or not model_id:
+            raise RuntimeError("Custom model requires non-empty provider and model_id")
 
-        if provider in {"openai", "ollama"}:
-            api = "openai-responses" if provider == "openai" else "ollama-responses"
-            logger.warning(
-                f"bampi_chat using custom {provider}-compatible model "
-                f"provider={provider} model={model_id}"
-            )
-            return Model(
-                id=model_id,
-                name=model_id,
-                api=api,
-                provider=provider,
-                base_url=self._config.bampi_base_url,
-                reasoning=False,
-                input_types=["text", "image"],
-                context_window=128_000,
-                max_tokens=16_384,
-                cost=ModelCost(),
-            )
-
-        raise RuntimeError(
-            f"Unsupported model: provider={provider}, model={model_id}"
+        api = self._resolve_model_api(provider)
+        logger.warning(
+            f"bampi_chat using custom model "
+            f"provider={provider} model={model_id} api={api}"
         )
+        return Model(
+            id=model_id,
+            name=model_id,
+            api=api,
+            provider=provider,
+            base_url=self._config.bampi_base_url,
+            reasoning=False,
+            input_types=["text", "image"],
+            context_window=128_000,
+            max_tokens=16_384,
+            cost=ModelCost(),
+        )
+
+    def _apply_model_overrides(self, model: Model) -> Model:
+        updates: dict[str, Any] = {}
+        api = self._config.bampi_model_api
+        if api != "auto" and api != model.api:
+            logger.warning(
+                f"bampi_chat overriding model api "
+                f"provider={model.provider} model={model.id} from={model.api} to={api}"
+            )
+            updates["api"] = api
+        if self._config.bampi_base_url:
+            updates["base_url"] = self._config.bampi_base_url
+        if not updates:
+            return model
+        return model.model_copy(update=updates)
+
+    def _resolve_model_api(self, provider: str) -> str:
+        configured_api = self._config.bampi_model_api
+        if configured_api != "auto":
+            return configured_api
+
+        provider_key = provider.strip().lower().replace("_", "-")
+        if provider_key in _API_KEY_ENV_BY_API:
+            return provider_key
+        if provider_key in {"anthropic", "claude"} or "anthropic" in provider_key:
+            return "anthropic-messages"
+        if (
+            provider_key in {"google", "gemini"}
+            or "google" in provider_key
+            or "gemini" in provider_key
+        ):
+            return "google-genai"
+        if provider_key == "openai":
+            return "openai-responses"
+        if provider_key == "ollama" or "ollama" in provider_key:
+            return "ollama-responses"
+        return "openai-completions"
 
     async def _resolve_api_key(self, provider: str) -> str | None:
         if self._config.bampi_api_key:
             logger.info(f"bampi_chat resolved api key provider={provider} source=config")
             return self._config.bampi_api_key
 
-        env_key = {
-            "openai": "OPENAI_API_KEY",
-            "ollama": "OLLAMA_API_KEY",
-            "anthropic": "ANTHROPIC_API_KEY",
-            "google": "GOOGLE_API_KEY",
-        }.get(provider)
-        if env_key is None:
-            logger.warning(f"bampi_chat no api key mapping for provider={provider}")
-            return None
-        config_value = self._resolve_nonebot_config_value(env_key.lower())
-        if config_value is not None:
-            logger.info(
-                f"bampi_chat resolved api key provider={provider} "
-                f"source=nonebot_config key={env_key.lower()}"
-            )
-            return config_value
-        env_value = os.environ.get(env_key, "") or None
-        if env_value is None:
-            logger.warning(f"bampi_chat api key missing provider={provider} env={env_key}")
-            return None
-        logger.info(f"bampi_chat resolved api key provider={provider} source=env env={env_key}")
-        return env_value
+        env_keys = self._candidate_api_key_env_keys(provider)
+        for env_key in env_keys:
+            config_value = self._resolve_nonebot_config_value(env_key.lower())
+            if config_value is not None:
+                logger.info(
+                    f"bampi_chat resolved api key provider={provider} "
+                    f"source=nonebot_config key={env_key.lower()}"
+                )
+                return config_value
+            env_value = os.environ.get(env_key, "") or None
+            if env_value is not None:
+                logger.info(
+                    f"bampi_chat resolved api key provider={provider} "
+                    f"source=env env={env_key}"
+                )
+                return env_value
+
+        logger.warning(
+            f"bampi_chat api key missing provider={provider} "
+            f"candidates={env_keys}"
+        )
+        return None
+
+    def _candidate_api_key_env_keys(self, provider: str) -> list[str]:
+        candidates: list[str] = []
+
+        normalized_provider = re.sub(
+            r"[^A-Z0-9]+",
+            "_",
+            provider.strip().upper(),
+        ).strip("_")
+        if normalized_provider:
+            candidates.append(f"{normalized_provider}_API_KEY")
+
+        api = self._resolve_model_api(provider)
+        api_env_key = _API_KEY_ENV_BY_API.get(api)
+        if api_env_key:
+            candidates.append(api_env_key)
+
+        deduped: list[str] = []
+        for env_key in candidates:
+            if env_key not in deduped:
+                deduped.append(env_key)
+        return deduped
 
     @staticmethod
     def _resolve_nonebot_config_value(key: str) -> str | None:

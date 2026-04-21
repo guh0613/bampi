@@ -9,6 +9,36 @@ from pydantic import BaseModel, Field, field_validator
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
 BashMode = Literal["auto", "docker", "local"]
 
+SUPPORTED_MODEL_APIS = {
+    "auto",
+    "anthropic-messages",
+    "openai-responses",
+    "openai-completions",
+    "ollama-responses",
+    "google-genai",
+}
+
+MODEL_API_ALIASES = {
+    "auto": "auto",
+    "builtin": "auto",
+    "default": "auto",
+    "anthropic": "anthropic-messages",
+    "anthropic-messages": "anthropic-messages",
+    "google": "google-genai",
+    "gemini": "google-genai",
+    "google-genai": "google-genai",
+    "openai": "openai-responses",
+    "responses": "openai-responses",
+    "openai-responses": "openai-responses",
+    "chat-completions": "openai-completions",
+    "chat-completion": "openai-completions",
+    "completions": "openai-completions",
+    "openai-completions": "openai-completions",
+    "openai-chat-completions": "openai-completions",
+    "ollama": "ollama-responses",
+    "ollama-responses": "ollama-responses",
+}
+
 DEFAULT_WORKSPACE_DIR = "data/bampi/workspace"
 DEFAULT_SESSION_DIR = "data/bampi/sessions"
 DEFAULT_BASH_CONTAINER_NAME = "bampi-sandbox"
@@ -21,6 +51,7 @@ class BampiChatConfig(BaseModel):
 
     bampi_model_provider: str = "openai"
     bampi_model_id: str = "gpt-5-mini"
+    bampi_model_api: str = "auto"
     bampi_api_key: str = ""
     bampi_base_url: str = ""
     bampi_thinking_level: ThinkingLevel = "off"
@@ -104,6 +135,7 @@ class BampiChatConfig(BaseModel):
     @field_validator(
         "bampi_model_provider",
         "bampi_model_id",
+        "bampi_model_api",
         "bampi_base_url",
         "bampi_web_search_base_url",
         "bampi_web_search_api_key",
@@ -121,6 +153,22 @@ class BampiChatConfig(BaseModel):
     @classmethod
     def _strip_text(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("bampi_model_api", mode="before")
+    @classmethod
+    def _normalize_model_api(cls, value: object) -> str:
+        if value is None:
+            return "auto"
+        text = str(value).strip().lower().replace("_", "-")
+        if not text:
+            return "auto"
+        normalized = MODEL_API_ALIASES.get(text, text)
+        if normalized not in SUPPORTED_MODEL_APIS:
+            raise ValueError(
+                "bampi_model_api must be one of: "
+                + ", ".join(sorted(SUPPORTED_MODEL_APIS))
+            )
+        return normalized
 
     @field_validator("bampi_bash_container_name")
     @classmethod

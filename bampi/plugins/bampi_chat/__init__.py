@@ -30,6 +30,7 @@ else:
         f"bampi_chat plugin ready enabled={plugin_config.bampi_enabled} "
         f"provider={plugin_config.bampi_model_provider} "
         f"model={plugin_config.bampi_model_id} "
+        f"api={plugin_config.bampi_model_api} "
         f"prefixes={plugin_config.bampi_trigger_prefix} "
         f"keywords={plugin_config.bampi_trigger_keywords} "
         f"group_whitelist={plugin_config.bampi_group_whitelist} "
