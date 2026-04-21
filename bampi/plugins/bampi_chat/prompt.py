@@ -104,7 +104,7 @@ def build_system_prompt(
         )
         advertised_host = config.bampi_service_public_host or "<未配置>"
         tool_lines.append(
-            f"- 当前配置的对外访问主机是 `{advertised_host}`，端口池是 `{config.bampi_service_port_range}`。"
+            f"- 当前配置的对外访问主机是 `{advertised_host}`，端口池是 `{config.bampi_service_port_range}`。启动服务时，你必须选用端口池范围中的端口！"
         )
 
     tool_section = "\n".join(tool_lines) if tool_lines else "- 当前没有可用工具。"
