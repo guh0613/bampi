@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from bampy.app import tool
 
-DEFAULT_WEB_SEARCH_MODEL = "grok-4.20-beta"
+DEFAULT_WEB_SEARCH_MODEL = "grok-4.20-auto"
 DEFAULT_WEB_SEARCH_USER_AGENT = "Mozilla/5.0 (compatible; BampiBot/0.1; +https://example.invalid)"
 
 
