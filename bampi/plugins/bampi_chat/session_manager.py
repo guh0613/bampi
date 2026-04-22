@@ -116,6 +116,7 @@ class GroupSessionManager:
         self._sessions: dict[str, ManagedGroupSession] = {}
         self._guard = asyncio.Lock()
         self._service_manager: ServiceManager | None = None
+        self._schedule_manager = None
         if config.bampi_service_enabled and config.bampi_bash_mode == "docker":
             self._service_manager = ServiceManager.from_config(config)
         logger.info(
@@ -143,6 +144,9 @@ class GroupSessionManager:
             self._config.bampi_bash_container_workdir,
             group_id,
         )
+
+    def attach_schedule_manager(self, manager: object) -> None:
+        self._schedule_manager = manager
 
     async def get_or_create(self, group_id: str) -> ManagedGroupSession:
         await self.close_idle()
@@ -371,6 +375,22 @@ class GroupSessionManager:
             await self._dispose_session(managed, reason="shutdown", clear_history=False)
 
     def _build_session(self, group_id: str) -> AgentSession:
+        return self._create_agent_session(
+            group_id,
+            persist=True,
+            session_file=str((self._session_dir / f"group-{group_id}.jsonl").resolve()),
+            include_schedule=True,
+        )
+
+    def _create_agent_session(
+        self,
+        group_id: str,
+        *,
+        persist: bool,
+        session_file: str | None,
+        include_schedule: bool,
+        system_prompt_suffix: str | None = None,
+    ) -> AgentSession:
         workspace_dir = self.workspace_dir_for_group(group_id)
         container_workspace_dir = self.container_workspace_dir_for_group(group_id)
         model_workspace_root = self._config.bampi_bash_container_workdir
@@ -382,6 +402,8 @@ class GroupSessionManager:
             bash_workdir=container_workspace_dir,
             group_id=group_id,
             service_manager=self._service_manager,
+            schedule_manager=self._schedule_manager,
+            include_schedule=include_schedule,
         )
         tool_names = [tool.name for tool in tools]
         loaded_skills = load_chat_skills(workspace_dir)
@@ -391,13 +413,18 @@ class GroupSessionManager:
             skills=build_prompt_skills(loaded_skills.skills, workspace_dir=workspace_dir),
             prompt_cwd=model_workspace_root,
         )
+        if system_prompt_suffix:
+            system_prompt = f"{system_prompt.rstrip()}\n\n## 额外执行约束\n{system_prompt_suffix.strip()}\n"
         stream_options = SimpleStreamOptions(api_key=self._config.bampi_api_key or None)
 
-        session_file = str((self._session_dir / f"group-{group_id}.jsonl").resolve())
-        session_manager = SessionManager(
-            workspace_dir,
-            session_file=session_file,
-            persist=True,
+        session_manager = (
+            SessionManager(
+                workspace_dir,
+                session_file=session_file,
+                persist=True,
+            )
+            if persist and session_file
+            else SessionManager.in_memory(workspace_dir)
         )
 
         logger.info(
@@ -407,7 +434,7 @@ class GroupSessionManager:
             f"provider={model.provider} "
             f"api={model.api} "
             f"model={model.id} "
-            f"session_file={session_file} "
+            f"session_file={session_file or '<in-memory>'} "
             f"bash_mode={self._config.bampi_bash_mode} "
             f"bash_container={self._config.bampi_bash_container_name} "
             f"bash_workdir={container_workspace_dir} "
@@ -434,6 +461,29 @@ class GroupSessionManager:
             get_api_key=self._resolve_api_key,
             max_turns=self._config.bampi_max_turns,
         )
+
+    async def create_ephemeral_session(
+        self,
+        group_id: str,
+        *,
+        include_schedule: bool = False,
+        system_prompt_suffix: str | None = None,
+        reason: str = "ephemeral",
+    ) -> AgentSession:
+        session = self._create_agent_session(
+            group_id,
+            persist=False,
+            session_file=None,
+            include_schedule=include_schedule,
+            system_prompt_suffix=system_prompt_suffix,
+        )
+        self._attach_session_debug_logging(session, f"{group_id}:{reason}")
+        await session.start()
+        return session
+
+    async def close_ephemeral_session(self, session: AgentSession) -> None:
+        await self._close_session_tools(session)
+        await session.close()
 
     async def _get_or_create_locked(self, group_id: str) -> ManagedGroupSession:
         managed = self._sessions.get(group_id)

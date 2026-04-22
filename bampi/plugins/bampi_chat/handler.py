@@ -107,6 +107,7 @@ TOOL_PROGRESS_EMOJIS: dict[str, str] = {
     "web_search": "🌐",
     "browser": "🧭",
     "service": "🚀",
+    "schedule": "⏰",
 }
 
 STOP_COMMAND = "/stop"
@@ -670,6 +671,32 @@ def describe_tool_progress(tool_name: str, args: Any) -> str:
         if action == "stop":
             return f"正在停止服务：{service_ref}"
         return f"正在查看服务状态：{service_ref}"
+    if tool_name == "schedule":
+        action = render_tool_progress_value(payload.get("action"), "status")
+        task_ref = render_tool_progress_value(
+            payload.get("task") or payload.get("name"),
+            "定时任务",
+        )
+        trigger_type = render_tool_progress_value(payload.get("trigger_type"), "date")
+        run_at = render_tool_progress_value(payload.get("run_at"), "")
+        cron = render_tool_progress_value(payload.get("cron"), "")
+        if action == "create":
+            if trigger_type == "cron" and cron:
+                return f"正在创建定时任务：{task_ref}（cron {cron}）"
+            if run_at:
+                return f"正在创建定时任务：{task_ref}（{run_at}）"
+            return f"正在创建定时任务：{task_ref}"
+        if action == "list":
+            return "正在查看定时任务列表"
+        if action == "pause":
+            return f"正在暂停定时任务：{task_ref}"
+        if action == "resume":
+            return f"正在恢复定时任务：{task_ref}"
+        if action == "cancel":
+            return f"正在取消定时任务：{task_ref}"
+        if action == "run_now":
+            return f"正在立即执行定时任务：{task_ref}"
+        return f"正在查看定时任务：{task_ref}"
     display_name = render_tool_progress_value(tool_name, "unknown", limit=40)
     return f"正在执行工具：{display_name}"
 
@@ -2022,10 +2049,13 @@ async def send_background_agent_response(
     outbox_before: dict[str, float],
     streamed_text: str = "",
     streamed_any_text: bool = False,
+    text_prefix: str = "",
 ) -> ResponseDispatchResult:
     full_text = extract_text_blocks(assistant_message)
     text = strip_streamed_prefix(full_text, streamed_text)
     text = text.lstrip()
+    if text_prefix and text:
+        text = f"{text_prefix}{text}"
     files = collect_outbox_files(workspace_dir, before=outbox_before, text=full_text)
     stop_reason = getattr(assistant_message, "stop_reason", None)
     error_message = normalize_text(getattr(assistant_message, "error_message", None))

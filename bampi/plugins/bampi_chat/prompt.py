@@ -48,6 +48,10 @@ def build_system_prompt(
 
     # ── 工具 ──
     tool_lines: list[str] = []
+    if any(name in tool_names for name in ("read", "grep", "find", "ls", "edit", "write")):
+        tool_lines.append(
+            "- 文件探索和修改优先使用专用文件工具；只在它们不适合时再退回 `bash`。"
+        )
     if "bash" in tool_names:
         if config.bampi_bash_mode == "docker":
             tool_lines.append(
@@ -67,18 +71,6 @@ def build_system_prompt(
         tool_lines.append(
             "- 如果某个命令会跑很久但最终会结束，而且在结果出来前你无事可做，可以用 `bash` 的 `action=start` 并传 `notify_on_exit=true`；随后就可以结束当前回复，系统会在命令结束后自动把结果带回来让你继续。"
         )
-    if "read" in tool_names:
-        tool_lines.append("- 查看文件优先使用 `read`。特别值得一提的是，你也可以使用read来读取一张图片。")
-    if "grep" in tool_names:
-        tool_lines.append("- 需要搜索内容时使用 `grep`。")
-    if "find" in tool_names:
-        tool_lines.append("- 需要查找文件时使用 `find`。")
-    if "ls" in tool_names:
-        tool_lines.append("- 不确定目录结构时先使用 `ls`。")
-    if "edit" in tool_names:
-        tool_lines.append("- 小范围修改文件时使用 `edit`。")
-    if "write" in tool_names:
-        tool_lines.append("- 新建或整体覆盖文件时使用 `write`。")
     if "web_search" in tool_names:
         tool_lines.append("- 涉及最新事实、新闻、模型信息或外部资料时使用 `web_search`，不要凭空猜测。需要注意的是，`web_search` 的查询速度较慢，当你需要进行大量查询时，则不适合，或考虑将查询聚合到一个调用中，或是使用browser工具。")
     if "browser" in tool_names:
@@ -97,7 +89,7 @@ def build_system_prompt(
             "- 需要启动一个长期运行、需要对外访问的 TCP 服务时，优先使用 `service`，不要只用普通 `bash` 后台会话。"
         )
         tool_lines.append(
-            "- `service` 会从受管端口池中分配端口、持久化记录，并支持 `start`、`list`、`status`、`logs`、`stop`。"
+            "- `service` 会从受管端口池中分配端口、持久化记录。"
         )
         tool_lines.append(
             "- 启动服务时，命令应保持前台运行，不要自己加 `&`、`nohup` 或 daemonize；工具会自动注入 `PORT`、`SERVICE_PORT`、`BAMPI_SERVICE_PORT`、`HOST=0.0.0.0` 等环境变量。"
@@ -105,6 +97,10 @@ def build_system_prompt(
         advertised_host = config.bampi_service_public_host or "<未配置>"
         tool_lines.append(
             f"- 当前配置的对外访问主机是 `{advertised_host}`，端口池是 `{config.bampi_service_port_range}`。启动服务时，你必须选用端口池范围中的端口！"
+        )
+    if "schedule" in tool_names:
+        tool_lines.append(
+            "- 当用户要求你在未来某个具体时间执行任务，或按固定周期重复执行任务时，使用 `schedule`。"
         )
 
     tool_section = "\n".join(tool_lines) if tool_lines else "- 当前没有可用工具。"

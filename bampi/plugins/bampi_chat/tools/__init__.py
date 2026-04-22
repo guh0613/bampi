@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .browser import BrowserTool
 from .files import WorkspaceEditTool, WorkspaceFindTool, WorkspaceGrepTool, WorkspaceLsTool, WorkspaceReadTool, WorkspaceWriteTool
+from .schedule import ScheduleTool
 from .service import ServiceTool
 from .safe_bash import SafeBashTool
 from .web_search import create_web_search_tool
@@ -15,6 +16,8 @@ def create_agent_tools(
     bash_workdir: str | None = None,
     group_id: str | None = None,
     service_manager=None,
+    schedule_manager=None,
+    include_schedule: bool = True,
 ) -> list[object]:
     effective_container_root = container_root or config.bampi_bash_container_workdir
     effective_bash_workdir = bash_workdir or effective_container_root
@@ -69,6 +72,13 @@ def create_agent_tools(
                 workspace_dir=workspace_dir,
                 visible_workspace_root=effective_container_root,
                 actual_container_workdir=effective_bash_workdir,
+            )
+        )
+    if config.bampi_schedule_enabled and schedule_manager is not None and group_id is not None and include_schedule:
+        tools.append(
+            ScheduleTool(
+                manager=schedule_manager,
+                group_id=group_id,
             )
         )
     return tools

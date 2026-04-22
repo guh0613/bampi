@@ -5,6 +5,7 @@ from nonebot.plugin import PluginMetadata, get_plugin_config
 
 from .config import BampiChatConfig
 from .handler import register_handlers
+from .schedule_manager import ScheduleManager
 from .session_manager import GroupSessionManager
 
 __plugin_meta__ = PluginMetadata(
@@ -17,6 +18,7 @@ __plugin_meta__ = PluginMetadata(
 
 plugin_config: BampiChatConfig | None = None
 group_session_manager: GroupSessionManager | None = None
+schedule_manager: ScheduleManager | None = None
 
 try:
     driver = get_driver()
@@ -25,6 +27,11 @@ except ValueError:
 else:
     plugin_config = get_plugin_config(BampiChatConfig)
     group_session_manager = GroupSessionManager(plugin_config)
+    schedule_manager = ScheduleManager(
+        config=plugin_config,
+        group_session_manager=group_session_manager,
+    )
+    group_session_manager.attach_schedule_manager(schedule_manager)
     register_handlers(plugin_config, group_session_manager)
     logger.info(
         f"bampi_chat plugin ready enabled={plugin_config.bampi_enabled} "
@@ -43,6 +50,9 @@ else:
         f"service_enabled={plugin_config.bampi_service_enabled} "
         f"service_port_range={plugin_config.bampi_service_port_range} "
         f"service_public_host={plugin_config.bampi_service_public_host or '<unset>'} "
+        f"schedule_enabled={plugin_config.bampi_schedule_enabled} "
+        f"schedule_dir={plugin_config.bampi_schedule_dir} "
+        f"schedule_timezone={plugin_config.bampi_schedule_timezone} "
         f"reply_quote={plugin_config.bampi_reply_with_quote} "
         f"at_sender={plugin_config.bampi_at_sender} "
         f"live_progress={plugin_config.bampi_live_progress_enabled} "
@@ -50,8 +60,17 @@ else:
         f"compaction_notice={plugin_config.bampi_threshold_compaction_notice_enabled}"
     )
 
+    @driver.on_startup
+    async def _start_bampi_schedule_manager() -> None:
+        if schedule_manager is not None and plugin_config is not None and plugin_config.bampi_schedule_enabled:
+            logger.info("bampi_chat starting schedule manager")
+            await schedule_manager.start()
+
     @driver.on_shutdown
     async def _close_bampi_sessions() -> None:
+        if schedule_manager is not None:
+            logger.info("bampi_chat shutting down schedule manager")
+            await schedule_manager.close()
         if group_session_manager is not None:
             logger.info("bampi_chat shutting down, closing active sessions")
             await group_session_manager.close_all()

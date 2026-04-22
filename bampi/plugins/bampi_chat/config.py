@@ -41,6 +41,7 @@ MODEL_API_ALIASES = {
 
 DEFAULT_WORKSPACE_DIR = "data/bampi/workspace"
 DEFAULT_SESSION_DIR = "data/bampi/sessions"
+DEFAULT_SCHEDULE_DIR = "data/bampi/schedules"
 DEFAULT_BASH_CONTAINER_NAME = "bampi-sandbox"
 DEFAULT_BASH_CONTAINER_WORKDIR = "/workspace"
 DEFAULT_BASH_CONTAINER_SHELL = "/bin/bash"
@@ -69,6 +70,7 @@ class BampiChatConfig(BaseModel):
 
     bampi_workspace_dir: str = DEFAULT_WORKSPACE_DIR
     bampi_session_dir: str = DEFAULT_SESSION_DIR
+    bampi_schedule_dir: str = DEFAULT_SCHEDULE_DIR
 
     bampi_persona: str = ""
     bampi_reply_with_quote: bool = True
@@ -105,6 +107,10 @@ class BampiChatConfig(BaseModel):
     bampi_service_startup_timeout: float = 20.0
     bampi_service_stop_timeout: float = 10.0
     bampi_service_max_active_services_per_group: int = 4
+    bampi_schedule_enabled: bool = True
+    bampi_schedule_timezone: str = "Asia/Shanghai"
+    bampi_schedule_max_active_tasks_per_group: int = 20
+    bampi_schedule_tick_seconds: float = 15.0
 
     bampi_max_inline_image_size: int = 5 * 1024 * 1024
     bampi_max_download_size: int = 50 * 1024 * 1024
@@ -142,11 +148,13 @@ class BampiChatConfig(BaseModel):
         "bampi_persona",
         "bampi_workspace_dir",
         "bampi_session_dir",
+        "bampi_schedule_dir",
         "bampi_bash_container_name",
         "bampi_bash_container_workdir",
         "bampi_bash_container_shell",
         "bampi_service_port_range",
         "bampi_service_public_host",
+        "bampi_schedule_timezone",
         "bampi_group_file_upload_host_dir",
         "bampi_group_file_upload_container_dir",
     )
