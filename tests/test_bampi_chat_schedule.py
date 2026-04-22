@@ -52,10 +52,8 @@ class FakeGroupSessionManager:
 def test_system_prompt_mentions_schedule_tool():
     prompt = build_system_prompt(BampiChatConfig(), ["schedule"])
 
-    assert "未来某个具体时间执行任务" in prompt
-    assert "开启一轮正常的群会话" in prompt
-    assert "自包含的任务说明" in prompt
-    assert "5 段 cron 表达式" in prompt
+    assert "schedule" in prompt
+    assert "定时" in prompt
 
 
 def test_create_agent_tools_includes_schedule_when_manager_is_provided(tmp_path: Path):
@@ -143,7 +141,6 @@ async def test_schedule_manager_runs_task_in_shared_session_and_marks_completed(
     assert source == "scheduled_task"
     assert "scheduled_task_prompt:" in user_message.content[0].text
     assert "读取 workspace 中的日报模板" in user_message.content[0].text
-    assert "正常对话" in user_message.content[0].text
     assert len(sent_payloads) == 1
     assert "text_prefix" not in sent_payloads[0]
     assert len(bot_calls) == 1

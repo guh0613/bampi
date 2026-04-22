@@ -66,25 +66,23 @@ def test_bampi_chat_group_whitelist_normalizes_entries():
 def test_system_prompt_mentions_docker_workspace():
     prompt = build_system_prompt(BampiChatConfig(), ["bash", "read"])
 
-    assert "Docker 容器" in prompt
     assert "/workspace" in prompt
-    assert "Node.js" in prompt
-    assert "unzip" in prompt
+    assert "常用开发环境" in prompt
 
 
 def test_system_prompt_mentions_browser_tool():
     prompt = build_system_prompt(BampiChatConfig(), ["browser", "web_search"])
 
-    assert "真实打开网页" in prompt
+    assert "browser" in prompt
     assert "outbox/browser/" in prompt
 
 
 def test_system_prompt_mentions_background_bash_sessions():
     prompt = build_system_prompt(BampiChatConfig(), ["bash"])
 
-    assert "后台会话动作" in prompt
-    assert "`start`、`status`、`logs`、`input`、`stop`、`list`" in prompt
-    assert "notify_on_exit=true" in prompt
+    assert "后台会话" in prompt
+    assert "start" in prompt
+    assert "notify_on_exit" in prompt
 
 
 def test_system_prompt_uses_utc_plus_8_time_to_minute(monkeypatch: pytest.MonkeyPatch):

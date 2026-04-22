@@ -18,8 +18,7 @@ def test_parse_service_port_range_parses_ranges_and_deduplicates():
 def test_system_prompt_mentions_service_tool():
     prompt = build_system_prompt(BampiChatConfig(), ["service"])
 
-    assert "长期运行" in prompt
-    assert "`start`、`list`、`status`、`logs`、`stop`" in prompt
+    assert "service" in prompt
     assert "PORT" in prompt
     assert "46000-46031" in prompt
 

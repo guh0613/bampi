@@ -766,16 +766,10 @@ class ScheduleManager:
         *,
         scheduled_for: str,
     ) -> UserMessage:
-        scheduled_at = _format_local_timestamp(scheduled_for, timezone=record.timezone)
-        actual_at = _format_local_timestamp(_now_iso(), timezone=record.timezone)
+        display_name = record.name if record.name != record.task_id else "定时任务"
         lines = [
-            "sender_name: system/scheduler",
-            "message_text: 这是一条定时触发的任务，请按照prompt内容执行。",
-            f"scheduled_task_id: {record.task_id}",
-            f"scheduled_task_name: {record.name}",
-            f"scheduled_trigger: {self._render_trigger(record)}",
-            f"scheduled_scheduled_for: {scheduled_at}",
-            f"scheduled_started_at: {actual_at}",
+            f"sender_name: scheduler",
+            f"message_text: 用户设定的定时任务「{display_name}」到期，请按以下内容执行。",
             "scheduled_task_prompt:",
             record.prompt,
         ]

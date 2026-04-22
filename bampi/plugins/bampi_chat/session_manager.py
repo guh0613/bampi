@@ -412,9 +412,8 @@ class GroupSessionManager:
             tool_names,
             skills=build_prompt_skills(loaded_skills.skills, workspace_dir=workspace_dir),
             prompt_cwd=model_workspace_root,
+            append_system_prompt=system_prompt_suffix,
         )
-        if system_prompt_suffix:
-            system_prompt = f"{system_prompt.rstrip()}\n\n## 额外执行约束\n{system_prompt_suffix.strip()}\n"
         stream_options = SimpleStreamOptions(api_key=self._config.bampi_api_key or None)
 
         session_manager = (
