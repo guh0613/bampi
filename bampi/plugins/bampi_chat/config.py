@@ -64,7 +64,7 @@ class BampiChatConfig(BaseModel):
     bampi_rate_limit: int = 30
     bampi_rate_limit_window_seconds: int = 60
 
-    bampi_max_turns: int = 40
+    bampi_max_turns: int = 50
     bampi_session_idle_ttl_seconds: int = 30 * 60
     bampi_background_wait_reminder_seconds: float = 10 * 60
 
