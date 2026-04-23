@@ -544,7 +544,6 @@ class ScheduleManager:
                 extract_text_blocks,
                 find_last_assistant_message,
                 log_preview,
-                rollback_session_context,
                 send_background_agent_response,
                 snapshot_outbox,
             )
@@ -590,7 +589,6 @@ class ScheduleManager:
             outbox_before = snapshot_outbox(workspace_dir)
             async with managed.lock:
                 managed.last_used_at = time.monotonic()
-                baseline_leaf_id = managed.session.session_manager.leaf_id
                 user_message = self._build_execution_message(
                     snapshot,
                     scheduled_for=pending.scheduled_for,
@@ -598,7 +596,6 @@ class ScheduleManager:
                 try:
                     await managed.session.prompt(user_message, source="scheduled_task")
                 except Exception:
-                    rollback_session_context(managed.session, baseline_leaf_id)
                     raise
 
                 assistant_message = find_last_assistant_message(managed.session.messages)
@@ -611,8 +608,6 @@ class ScheduleManager:
                     assistant_message=assistant_message,
                     outbox_before=outbox_before,
                 )
-                if result.rollback_context:
-                    rollback_session_context(managed.session, baseline_leaf_id)
 
             last_status: TaskRunStatus = "success"
             error_message: str | None = None

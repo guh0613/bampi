@@ -1166,7 +1166,6 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
             async with managed.lock:
                 managed.last_used_at = time.monotonic()
                 started_at = time.monotonic()
-                baseline_leaf_id = managed.session.session_manager.leaf_id
                 background_resume_waits: dict[str, str | None] = {}
 
                 def _capture_background_wait(event: Any) -> None:
@@ -1200,7 +1199,6 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                     try:
                         await managed.session.prompt(user_message, source="qq_group")
                     except Exception:
-                        rollback_session_context(managed.session, baseline_leaf_id)
                         logger.exception("bampi_chat session prompt failed")
                         await matcher.send("这次调用 agent 失败了，检查一下模型配置、网络或工具环境。")
                         return
@@ -1213,19 +1211,18 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                         f"total_messages={len(managed.session.messages)}"
                     )
                     await reporter.prepare_final_reply()
+                    assistant_message = find_last_assistant_message(managed.session.messages)
                     result = await send_agent_response(
                         bot=bot,
                         event=event,
                         matcher=matcher,
                         config=config,
                         workspace_dir=workspace_dir,
-                        assistant_message=find_last_assistant_message(managed.session.messages),
+                        assistant_message=assistant_message,
                         outbox_before=outbox_before,
                         streamed_text=reporter.streamed_text,
                         streamed_any_text=reporter.streamed_any_text,
                     )
-                    if result.rollback_context:
-                        rollback_session_context(managed.session, baseline_leaf_id)
                     for session_id, command in sorted(background_resume_waits.items()):
                         await session_manager.register_background_wait(
                             group_id,
@@ -1874,17 +1871,6 @@ def collect_outbox_files(
     return sorted(candidates.values(), key=lambda item: item.name.lower())
 
 
-def rollback_session_context(session: AgentSession, baseline_leaf_id: str | None) -> None:
-    if baseline_leaf_id is None:
-        session.session_manager.reset_leaf()
-    else:
-        session.session_manager.branch(baseline_leaf_id)
-    session.reload_session_context()
-    logger.info(
-        f"bampi_chat rolled back session context to leaf_id={baseline_leaf_id}"
-    )
-
-
 def build_group_reply_message(
     *,
     config: BampiChatConfig,
@@ -1992,7 +1978,6 @@ def _create_background_resume_callback(
     async def _resume(exit_event: BackgroundSessionExitEvent) -> None:
         async with managed.lock:
             managed.last_used_at = time.monotonic()
-            baseline_leaf_id = managed.session.session_manager.leaf_id
             outbox_before = snapshot_outbox(workspace_dir)
             logger.info(
                 f"bampi_chat auto-resume start group_id={group_id} "
@@ -2005,7 +1990,6 @@ def _create_background_resume_callback(
                 )
                 await managed.session.continue_()
             except Exception:
-                rollback_session_context(managed.session, baseline_leaf_id)
                 logger.exception(
                     f"bampi_chat auto-resume failed group_id={group_id} "
                     f"session_id={exit_event.session_id}"
@@ -2025,16 +2009,16 @@ def _create_background_resume_callback(
                 )
                 return
 
+            resume_message = build_background_resume_follow_up_message(exit_event)
+            assistant_message = find_last_assistant_message(managed.session.messages)
             result = await send_background_agent_response(
                 bot=bot,
                 target=target,
                 config=config,
                 workspace_dir=workspace_dir,
-                assistant_message=find_last_assistant_message(managed.session.messages),
+                assistant_message=assistant_message,
                 outbox_before=outbox_before,
             )
-            if result.rollback_context:
-                rollback_session_context(managed.session, baseline_leaf_id)
 
     return _resume
 
