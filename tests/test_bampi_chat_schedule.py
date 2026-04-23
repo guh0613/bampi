@@ -148,6 +148,73 @@ async def test_schedule_manager_runs_task_in_shared_session_and_marks_completed(
 
 
 @pytest.mark.asyncio
+async def test_schedule_manager_list_hides_completed_one_time_tasks_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake_group_manager = FakeGroupSessionManager(tmp_path / "workspace")
+    manager = ScheduleManager(
+        config=BampiChatConfig(bampi_schedule_dir=str(tmp_path / "schedules")),
+        group_session_manager=fake_group_manager,
+    )
+
+    async def fake_send_background_agent_response(**kwargs):  # noqa: ANN003
+        return ResponseDispatchResult(delivered=True, rollback_context=False)
+
+    class FakeBot:
+        async def call_api(self, action: str, **params: object) -> dict[str, object]:
+            return {}
+
+    monkeypatch.setattr(schedule_manager_module, "get_bots", lambda: {"bot": FakeBot()})
+    monkeypatch.setattr(
+        handler_module,
+        "send_background_agent_response",
+        fake_send_background_agent_response,
+    )
+
+    one_time = await manager.create_task(
+        group_id="1001",
+        name="one-shot",
+        prompt="执行一次的任务。",
+        trigger_type="date",
+        timezone="Asia/Shanghai",
+        run_at="2099-01-01 09:00",
+        cron=None,
+        replace_existing=False,
+    )
+    recurring = await manager.create_task(
+        group_id="1001",
+        name="weekly-report",
+        prompt="每周生成一次报告。",
+        trigger_type="cron",
+        timezone="Asia/Shanghai",
+        run_at=None,
+        cron="0 9 * * 1",
+        replace_existing=False,
+    )
+
+    managed = SimpleNamespace(
+        lock=asyncio.Lock(),
+        session=FakeSharedSession(),
+        last_used_at=0.0,
+    )
+    pending = schedule_manager_module.PendingScheduledRun(
+        task_id=one_time.task_id,
+        trigger_source="manual",
+        scheduled_for="2099-01-01T09:00:00+08:00",
+    )
+
+    await manager._run_task(managed, pending)
+
+    active_records = await manager.list_tasks(group_id="1001")
+    all_records = await manager.list_tasks(group_id="1001", include_inactive=True)
+
+    assert [record.task_id for record in active_records] == [recurring.task_id]
+    assert {record.task_id for record in all_records} == {one_time.task_id, recurring.task_id}
+    assert "No active scheduled tasks in this group." == manager.render_task_list([])
+
+
+@pytest.mark.asyncio
 async def test_schedule_manager_sends_queue_notice_when_group_is_busy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

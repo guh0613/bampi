@@ -275,10 +275,19 @@ class ScheduleManager:
             await self._save_registry_locked()
             return ScheduledTaskRecord.from_dict(record.to_dict())
 
-    async def list_tasks(self, *, group_id: str) -> list[ScheduledTaskRecord]:
+    async def list_tasks(
+        self,
+        *,
+        group_id: str,
+        include_inactive: bool = False,
+    ) -> list[ScheduledTaskRecord]:
         async with self._lock:
             records = sorted(
-                (task for task in self._tasks.values() if task.group_id == group_id),
+                (
+                    task
+                    for task in self._tasks.values()
+                    if task.group_id == group_id and (include_inactive or task.is_active)
+                ),
                 key=lambda item: (item.created_at, item.task_id),
                 reverse=True,
             )
@@ -388,7 +397,7 @@ class ScheduleManager:
     @staticmethod
     def render_task_list(records: list[ScheduledTaskRecord]) -> str:
         if not records:
-            return "No scheduled tasks in this group."
+            return "No active scheduled tasks in this group."
         lines = ["Scheduled tasks in this group:"]
         for record in records:
             next_run = _format_local_timestamp(record.next_run_at, timezone=record.timezone)
