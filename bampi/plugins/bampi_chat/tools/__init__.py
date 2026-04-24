@@ -5,7 +5,6 @@ from .files import (
     WorkspaceEditTool,
     WorkspaceFindTool,
     WorkspaceGrepTool,
-    WorkspaceLsTool,
     WorkspacePatchTool,
     WorkspaceReadTool,
     WorkspaceWriteTool,
@@ -31,7 +30,6 @@ def create_agent_tools(
     effective_bash_workdir = bash_workdir or effective_container_root
     tools: list[object] = [
         WorkspaceReadTool(workspace_dir, container_root=effective_container_root),
-        WorkspaceLsTool(workspace_dir, container_root=effective_container_root),
         WorkspaceFindTool(workspace_dir, container_root=effective_container_root),
         WorkspaceGrepTool(workspace_dir, container_root=effective_container_root),
         SafeBashTool(

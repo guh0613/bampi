@@ -98,7 +98,6 @@ class PreparedOutboundImage:
 TOOL_PROGRESS_EMOJIS: dict[str, str] = {
     "skill": "🧩",
     "read": "📖",
-    "ls": "📂",
     "find": "🔎",
     "grep": "🔍",
     "bash": "💻",
@@ -605,9 +604,6 @@ def describe_tool_progress(tool_name: str, args: Any) -> str:
             "目标文件",
         )
         return f"正在读取：{path}"
-    if tool_name == "ls":
-        path = render_tool_progress_value(payload.get("path") or payload.get("dir"), ".")
-        return f"正在查看目录：{path}"
     if tool_name == "find":
         pattern = render_tool_progress_value(
             payload.get("pattern") or payload.get("name") or payload.get("query"),

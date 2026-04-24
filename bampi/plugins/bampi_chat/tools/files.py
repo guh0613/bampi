@@ -9,7 +9,6 @@ from bampy.app.tools import (
     create_edit_tool,
     create_find_tool,
     create_grep_tool,
-    create_ls_tool,
     create_patch_tool,
     create_read_tool,
     create_write_tool,
@@ -112,27 +111,6 @@ class WorkspacePatchTool(_WorkspaceToolMixin):
         on_update: AgentToolUpdateCallback | None = None,
     ) -> AgentToolResult:
         payload = dict(params.model_dump() if hasattr(params, "model_dump") else dict(params))
-        return await self._delegate.execute(tool_call_id, payload, cancellation=cancellation, on_update=on_update)
-
-
-class WorkspaceLsTool(_WorkspaceToolMixin):
-    def __init__(self, workspace_dir: str, container_root: str | None = None) -> None:
-        super().__init__(workspace_dir, container_root=container_root)
-        self._delegate = create_ls_tool(self._workspace_dir)
-        self.name = self._delegate.name
-        self.label = self._delegate.label
-        self.description = self._delegate.description
-        self.parameters = self._delegate.parameters
-
-    async def execute(
-        self,
-        tool_call_id: str,
-        params: Any,
-        cancellation: CancellationToken | None = None,
-        on_update: AgentToolUpdateCallback | None = None,
-    ) -> AgentToolResult:
-        payload = dict(params.model_dump() if hasattr(params, "model_dump") else dict(params or {}))
-        payload["path"] = self._safe_path(payload.get("path"))
         return await self._delegate.execute(tool_call_id, payload, cancellation=cancellation, on_update=on_update)
 
 

@@ -126,8 +126,10 @@ def test_system_prompt_uses_utc_plus_8_time_to_minute(monkeypatch: pytest.Monkey
 
 def test_create_agent_tools_includes_browser_by_default(tmp_path: Path):
     tools = create_agent_tools(BampiChatConfig(), str(tmp_path), container_root="/workspace")
+    tool_names = [tool.name for tool in tools]
 
-    assert "browser" in [tool.name for tool in tools]
+    assert "browser" in tool_names
+    assert "ls" not in tool_names
 
 
 @pytest.mark.asyncio

@@ -378,7 +378,7 @@ async def test_live_progress_reporter_allows_unlimited_tool_updates_when_limit_z
     for i, (name, args) in enumerate([
         ("write", {"path": "a.py"}),
         ("bash", {"command": "python3 a.py"}),
-        ("ls", {"path": "/workspace/outbox"}),
+        ("find", {"pattern": "**/*.py", "path": "/workspace"}),
     ]):
         session.listener(SimpleNamespace(type="tool_execution_start", tool_name=name, args=args, tool_call_id=f"tc{i}"))
         session.listener(SimpleNamespace(type="tool_execution_end", tool_name=name, tool_call_id=f"tc{i}", is_error=False, result=None))
@@ -459,8 +459,8 @@ async def test_live_progress_reporter_uses_text_delta_without_snapshot_desync():
         )
     )
     session.listener(SimpleNamespace(type="message_end", message=first_partial))
-    session.listener(SimpleNamespace(type="tool_execution_start", tool_name="ls", args={"path": "inbox"}, tool_call_id="tc1"))
-    session.listener(SimpleNamespace(type="tool_execution_end", tool_name="ls", tool_call_id="tc1", is_error=False, result=None))
+    session.listener(SimpleNamespace(type="tool_execution_start", tool_name="find", args={"pattern": "*", "path": "inbox"}, tool_call_id="tc1"))
+    session.listener(SimpleNamespace(type="tool_execution_end", tool_name="find", tool_call_id="tc1", is_error=False, result=None))
 
     session.listener(SimpleNamespace(type="message_start", message=AssistantMessage(content=[])))
     second_partial = AssistantMessage(content=[TextContent(text="实验已完成。")])
@@ -488,7 +488,7 @@ async def test_live_progress_reporter_uses_text_delta_without_snapshot_desync():
 
     assert [str(call[1]["message"]) for call in bot.calls] == [
         "[CQ:reply,id=99]让我先看看 inbox 目录里有什么文件，然后解读一下内容。",
-        "📂 正在查看目录：inbox",
+        "🔎 正在查找：*",
         "实验已完成。",
     ]
     assert reporter.streamed_text == "实验已完成。"
