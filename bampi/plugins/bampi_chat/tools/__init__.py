@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from .browser import BrowserTool
-from .files import WorkspaceEditTool, WorkspaceFindTool, WorkspaceGrepTool, WorkspaceLsTool, WorkspaceReadTool, WorkspaceWriteTool
+from .files import (
+    WorkspaceEditTool,
+    WorkspaceFindTool,
+    WorkspaceGrepTool,
+    WorkspaceLsTool,
+    WorkspacePatchTool,
+    WorkspaceReadTool,
+    WorkspaceWriteTool,
+)
 from .schedule import ScheduleTool
 from .service import ServiceTool
 from .safe_bash import SafeBashTool
@@ -36,6 +44,7 @@ def create_agent_tools(
             default_timeout=config.bampi_bash_timeout,
         ),
         WorkspaceEditTool(workspace_dir, container_root=effective_container_root),
+        WorkspacePatchTool(workspace_dir, container_root=effective_container_root),
         WorkspaceWriteTool(workspace_dir, container_root=effective_container_root),
         create_web_search_tool(
             config.bampi_web_search_timeout,

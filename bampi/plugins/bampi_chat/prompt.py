@@ -46,7 +46,7 @@ def build_system_prompt(
 
     # ── 工具 ──
     tool_lines: list[str] = []
-    if any(name in tool_names for name in ("read", "grep", "find", "ls", "edit", "write")):
+    if any(name in tool_names for name in ("read", "grep", "find", "ls", "edit", "patch", "write")):
         tool_lines.append(
             "- 文件探索和修改优先使用专用文件工具；只在它们不适合时再退回 `bash`。"
         )

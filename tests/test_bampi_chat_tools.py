@@ -10,7 +10,7 @@ from bampi.plugins.bampi_chat.config import BampiChatConfig
 from bampi.plugins.bampi_chat import prompt as prompt_module
 from bampi.plugins.bampi_chat.prompt import build_system_prompt
 from bampi.plugins.bampi_chat.tools import create_agent_tools
-from bampi.plugins.bampi_chat.tools.files import WorkspaceEditTool, WorkspaceReadTool, WorkspaceWriteTool
+from bampi.plugins.bampi_chat.tools.files import WorkspaceEditTool, WorkspacePatchTool, WorkspaceReadTool, WorkspaceWriteTool
 from bampi.plugins.bampi_chat.tools.safe_bash import SafeBashTool
 from bampi.plugins.bampi_chat.tools import web_search as web_search_module
 
@@ -29,7 +29,7 @@ async def test_workspace_tools_round_trip(tmp_path: Path):
     editor = WorkspaceEditTool(str(tmp_path))
 
     await writer.execute("call-1", {"path": "notes.txt", "content": "alpha\nbeta\n"})
-    await editor.execute("call-2", {"path": "notes.txt", "old_text": "beta", "new_text": "BETA"})
+    await editor.execute("call-2", {"path": "notes.txt", "edits": [{"old_text": "beta", "new_text": "BETA"}]})
     result = await reader.execute("call-3", {"path": "notes.txt"})
 
     assert "BETA" in result.content[0].text
@@ -45,6 +45,29 @@ async def test_workspace_tools_accept_container_absolute_path(tmp_path: Path):
 
     assert result.content[0].text == "from container path\n"
     assert (tmp_path / "report.txt").read_text(encoding="utf-8") == "from container path\n"
+
+
+@pytest.mark.asyncio
+async def test_workspace_patch_tool_accepts_container_absolute_paths(tmp_path: Path):
+    file_path = tmp_path / "report.txt"
+    file_path.write_text("alpha\nbeta\n", encoding="utf-8")
+    patcher = WorkspacePatchTool(str(tmp_path), container_root="/workspace")
+
+    await patcher.execute(
+        "call-1",
+        {
+            "patch": (
+                "--- /workspace/report.txt\n"
+                "+++ /workspace/report.txt\n"
+                "@@ -1,2 +1,2 @@\n"
+                " alpha\n"
+                "-beta\n"
+                "+BETA\n"
+            )
+        },
+    )
+
+    assert file_path.read_text(encoding="utf-8") == "alpha\nBETA\n"
 
 
 def test_bampi_chat_defaults_use_docker_sandbox():
