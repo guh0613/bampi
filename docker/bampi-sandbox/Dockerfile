@@ -3,6 +3,7 @@ FROM python:3.12-slim-bookworm
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
+ENV MPLBACKEND=Agg
 ENV MPLCONFIGDIR=/usr/local/etc/matplotlib
 ENV NPM_CONFIG_PREFIX=/tmp/bampi-home/.npm-global
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -35,12 +36,13 @@ RUN apt-get update \
         xz-utils \
         zip \
     && python -m pip install --no-cache-dir \
-        "pdf2image>=1.17.0" \
-        "pdfplumber>=0.11.0" \
-        "Pillow>=10.0.0" \
-        "pypdf>=5.0.0" \
-        "pytesseract>=0.3.10" \
-        "reportlab>=4.0.0" \
+        "matplotlib" \
+        "pdf2image" \
+        "pdfplumber" \
+        "Pillow" \
+        "pypdf" \
+        "pytesseract" \
+        "reportlab" \
     && fc-cache -f \
     && mkdir -p "${MPLCONFIGDIR}" \
     && rm -rf /var/lib/apt/lists/*
