@@ -32,6 +32,7 @@ def build_system_prompt(
             [
                 f"- 工作目录 `{effective_prompt_cwd}`，文件操作优先使用相对路径。",
                 "- 常用开发环境已就绪（bash, git, python, node, npm, ripgrep 等）。未预装 gcc/g++、Go 等，需 apt 安装（耗时较长，提前告知用户）。",
+                "- matplotlib 已预置中文字体；绘制中文图表时优先使用 `Noto Sans CJK SC` 或 `WenQuanYi Zen Hei`，并设置 `axes.unicode_minus=False`。",
                 "- `inbox/` 存放群里发来的文件和图片；写到 `outbox/` 的文件会自动发回群里。",
             ]
         )

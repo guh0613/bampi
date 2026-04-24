@@ -3,6 +3,7 @@ FROM python:3.12-slim-bookworm
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
+ENV MPLCONFIGDIR=/usr/local/etc/matplotlib
 ENV NPM_CONFIG_PREFIX=/tmp/bampi-home/.npm-global
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV PATH=${NPM_CONFIG_PREFIX}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -13,6 +14,9 @@ RUN apt-get update \
         ca-certificates \
         curl \
         file \
+        fontconfig \
+        fonts-noto-cjk \
+        fonts-wqy-zenhei \
         git \
         imagemagick \
         jq \
@@ -37,6 +41,10 @@ RUN apt-get update \
         "pypdf>=5.0.0" \
         "pytesseract>=0.3.10" \
         "reportlab>=4.0.0" \
+    && fc-cache -f \
+    && mkdir -p "${MPLCONFIGDIR}" \
     && rm -rf /var/lib/apt/lists/*
+
+COPY docker/bampi-sandbox/matplotlibrc /usr/local/etc/matplotlib/matplotlibrc
 
 WORKDIR /workspace

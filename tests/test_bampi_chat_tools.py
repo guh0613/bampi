@@ -68,6 +68,8 @@ def test_system_prompt_mentions_docker_workspace():
 
     assert "/workspace" in prompt
     assert "常用开发环境" in prompt
+    assert "Noto Sans CJK SC" in prompt
+    assert "WenQuanYi Zen Hei" in prompt
 
 
 def test_system_prompt_mentions_browser_tool():
