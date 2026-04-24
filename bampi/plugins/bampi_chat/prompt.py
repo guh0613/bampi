@@ -21,7 +21,8 @@ def build_system_prompt(
         "你是Ophelia，一个在 QQ 群里协作的中文 AI 助手。"
         "你需要在多人聊天环境中保持自然、可靠、简洁，必要时再展开。"
     )
-    effective_prompt_cwd = (prompt_cwd or ".").replace("\\", "/")
+    default_prompt_cwd = config.bampi_bash_container_workdir if config.bampi_bash_mode != "local" else "."
+    effective_prompt_cwd = (prompt_cwd or default_prompt_cwd).replace("\\", "/")
     current_time = datetime.now(PROMPT_TIMEZONE).strftime("%Y-%m-%d %H:%M")
 
     # ── 运行环境 ──
@@ -29,7 +30,7 @@ def build_system_prompt(
     if config.bampi_bash_mode != "local":
         env_lines.extend(
             [
-                f"- 工作目录 `{config.bampi_bash_container_workdir}`，文件操作优先使用相对路径。",
+                f"- 工作目录 `{effective_prompt_cwd}`，文件操作优先使用相对路径。",
                 "- 常用开发环境已就绪（bash, git, python, node, npm, ripgrep 等）。未预装 gcc/g++、Go 等，需 apt 安装（耗时较长，提前告知用户）。",
                 "- `inbox/` 存放群里发来的文件和图片；写到 `outbox/` 的文件会自动发回群里。",
             ]
@@ -51,11 +52,11 @@ def build_system_prompt(
     if "bash" in tool_names:
         if config.bampi_bash_mode == "docker":
             tool_lines.append(
-                f"- `bash` 在 `{config.bampi_bash_container_workdir}` 中执行命令。"
+                f"- `bash` 在 `{effective_prompt_cwd}` 中执行命令。"
             )
         elif config.bampi_bash_mode == "auto":
             tool_lines.append(
-                f"- `bash` 默认在容器 `{config.bampi_bash_container_workdir}` 中执行，失败时回退本地。"
+                f"- `bash` 默认在容器 `{effective_prompt_cwd}` 中执行，失败时回退本地。"
             )
         else:
             tool_lines.append("- `bash` 在本地 workspace 中执行命令。")

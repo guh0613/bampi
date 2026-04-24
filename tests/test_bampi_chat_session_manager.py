@@ -27,12 +27,37 @@ async def test_group_session_manager_reuses_session(tmp_path: Path):
         first_workspace = Path(manager.workspace_dir_for_group("1001"))
         third_workspace = Path(manager.workspace_dir_for_group("1002"))
         assert first_workspace != third_workspace
+        assert first_workspace.name.startswith("chat-")
+        assert "1001" not in first_workspace.name
+        assert manager.container_workspace_dir_for_group("1001") == f"/workspace/{first_workspace.name}"
         assert (first_workspace / "inbox").exists()
         assert (first_workspace / "outbox").exists()
         assert (third_workspace / "inbox").exists()
         assert (third_workspace / "outbox").exists()
     finally:
         await manager.close_all()
+
+
+def test_group_session_manager_uses_private_workspace_alias_and_migrates_legacy_dir(tmp_path: Path):
+    workspace_root = tmp_path / "workspace"
+    legacy_workspace = workspace_root / "group-1001"
+    legacy_file = legacy_workspace / "notes.txt"
+    legacy_workspace.mkdir(parents=True)
+    legacy_file.write_text("keep me", encoding="utf-8")
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(workspace_root),
+        bampi_session_dir=str(tmp_path / "sessions"),
+    )
+    manager = GroupSessionManager(config)
+
+    workspace = Path(manager.workspace_dir_for_group("1001"))
+
+    assert workspace.name.startswith("chat-")
+    assert "1001" not in workspace.name
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == "keep me"
+    assert not legacy_workspace.exists()
+    assert not (workspace_root / ".workspace-group-aliases.json").exists()
+    assert (tmp_path / ".workspace-group-aliases.json").exists()
 
 
 @pytest.mark.asyncio

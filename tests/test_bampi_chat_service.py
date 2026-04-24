@@ -39,8 +39,8 @@ def test_create_agent_tools_includes_service_when_manager_is_provided(tmp_path: 
     tools = create_agent_tools(
         BampiChatConfig(),
         str(tmp_path / "group-workspace"),
-        container_root="/workspace",
-        bash_workdir="/workspace/group-1001",
+        container_root="/workspace/chat-0123abcd",
+        bash_workdir="/workspace/chat-0123abcd",
         group_id="1001",
         service_manager=manager,
     )
@@ -52,6 +52,7 @@ def test_create_agent_tools_includes_service_when_manager_is_provided(tmp_path: 
 async def test_service_manager_start_stop_and_persist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace_root = tmp_path / "workspace-root"
     group_workspace = resolve_group_workspace_dir(str(workspace_root), "1001")
+    container_group_workspace = f"/workspace/{group_workspace.name}"
     (group_workspace / "app").mkdir(parents=True, exist_ok=True)
 
     manager = ServiceManager(
@@ -69,7 +70,7 @@ async def test_service_manager_start_stop_and_persist(tmp_path: Path, monkeypatc
     running_pids: set[int] = set()
 
     async def fake_launch_service_process(*, actual_cwd: str, runtime_dir: Path, command: str, port: int, env: dict[str, str]) -> None:
-        assert actual_cwd == "/workspace/group-1001/app"
+        assert actual_cwd == f"{container_group_workspace}/app"
         assert command == "python -m http.server \"$PORT\" --bind 0.0.0.0"
         assert port == 46000
         assert env == {"APP_ENV": "test"}
@@ -106,11 +107,11 @@ async def test_service_manager_start_stop_and_persist(tmp_path: Path, monkeypatc
     started = await manager.start_service(
         group_id="1001",
         workspace_dir=str(group_workspace),
-        visible_workspace_root="/workspace",
-        actual_container_workdir="/workspace/group-1001",
+        visible_workspace_root=container_group_workspace,
+        actual_container_workdir=container_group_workspace,
         command="python -m http.server \"$PORT\" --bind 0.0.0.0",
         name="docs",
-        cwd="/workspace/app",
+        cwd=f"{container_group_workspace}/app",
         preferred_port=None,
         replace_existing=False,
         env={"APP_ENV": "test"},

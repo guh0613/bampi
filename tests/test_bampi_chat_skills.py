@@ -213,7 +213,12 @@ def test_resolve_explicit_skills_ignores_markdown_math(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_group_session_manager_session_prompt_lists_installed_skills(tmp_path: Path):
     workspace_root = tmp_path / "workspace"
-    group_workspace = workspace_root / "group-1001"
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+    )
+    manager = GroupSessionManager(config)
+    group_workspace = Path(manager.workspace_dir_for_group("1001"))
     _write_skill(
         group_workspace / ".agents" / "skills" / "docs-search",
         "---\n"
@@ -222,17 +227,12 @@ async def test_group_session_manager_session_prompt_lists_installed_skills(tmp_p
         "---\n\n"
         "# Docs Search\n",
     )
-    config = BampiChatConfig(
-        bampi_workspace_dir=str(tmp_path / "workspace"),
-        bampi_session_dir=str(tmp_path / "sessions"),
-    )
-    manager = GroupSessionManager(config)
 
     managed = await manager.get_or_create("1001")
     try:
         assert "<available_skills>" in managed.session.system_prompt
         assert "docs-search" in managed.session.system_prompt
-        assert "Current working directory: /workspace" in managed.session.system_prompt
+        assert f"Current working directory: /workspace/{group_workspace.name}" in managed.session.system_prompt
         assert str(group_workspace.resolve()) not in managed.session.system_prompt
         assert ".agents/builtin-skills/docx/SKILL.md" in managed.session.system_prompt
         assert str((group_workspace / ".agents" / "builtin-skills" / "docx" / "SKILL.md").resolve()) not in managed.session.system_prompt

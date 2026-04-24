@@ -66,8 +66,8 @@ def test_create_agent_tools_includes_schedule_when_manager_is_provided(tmp_path:
     tools = create_agent_tools(
         BampiChatConfig(),
         str(tmp_path / "group-workspace"),
-        container_root="/workspace",
-        bash_workdir="/workspace/group-1001",
+        container_root="/workspace/chat-0123abcd",
+        bash_workdir="/workspace/chat-0123abcd",
         group_id="1001",
         schedule_manager=schedule_manager,
     )

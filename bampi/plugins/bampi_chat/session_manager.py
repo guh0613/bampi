@@ -143,6 +143,7 @@ class GroupSessionManager:
         return resolve_group_container_workspace(
             self._config.bampi_bash_container_workdir,
             group_id,
+            workspace_root_dir=self._workspace_root_dir,
         )
 
     def attach_schedule_manager(self, manager: object) -> None:
@@ -393,7 +394,7 @@ class GroupSessionManager:
     ) -> AgentSession:
         workspace_dir = self.workspace_dir_for_group(group_id)
         container_workspace_dir = self.container_workspace_dir_for_group(group_id)
-        model_workspace_root = self._config.bampi_bash_container_workdir
+        model_workspace_root = container_workspace_dir
         model = self._build_model()
         tools = create_agent_tools(
             self._config,
