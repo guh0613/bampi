@@ -195,6 +195,7 @@ def test_build_user_message_includes_explicit_skill_payload(tmp_path: Path):
     assert "message_text: 帮我看看这个补丁" in message.content[0].text
     assert len(message.content) == 2
     assert "explicit_skill_payloads:" in message.content[1].text
+    assert "base_dir: .agents/skills/code-review" in message.content[1].text
     assert "# Code Review" in message.content[1].text
 
 

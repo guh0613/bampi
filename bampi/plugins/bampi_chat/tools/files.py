@@ -5,6 +5,7 @@ from typing import Any
 
 from bampy.agent.cancellation import CancellationToken
 from bampy.agent.types import AgentToolResult, AgentToolUpdateCallback
+from bampy.ai.types import TextContent
 from bampy.app.tools import (
     create_edit_tool,
     create_find_tool,
@@ -14,6 +15,7 @@ from bampy.app.tools import (
     create_write_tool,
 )
 
+from ..skills import describe_skill_resource_context
 from .workspace import resolve_workspace_path, to_workspace_relative
 
 
@@ -49,7 +51,28 @@ class WorkspaceReadTool(_WorkspaceToolMixin):
     ) -> AgentToolResult:
         payload = dict(params.model_dump() if hasattr(params, "model_dump") else dict(params))
         payload["path"] = self._safe_path(payload.get("path"))
-        return await self._delegate.execute(tool_call_id, payload, cancellation=cancellation, on_update=on_update)
+        result = await self._delegate.execute(tool_call_id, payload, cancellation=cancellation, on_update=on_update)
+        return _with_skill_resource_context(result, payload["path"])
+
+
+def _with_skill_resource_context(result: AgentToolResult, path: str) -> AgentToolResult:
+    context = describe_skill_resource_context(path)
+    if context is None:
+        return result
+
+    header = "\n".join(
+        [
+            "skill_context:",
+            f"name: {context.skill_name}",
+            f"root: {context.skill_root}",
+            f"resource: {context.resource_path}",
+            "---",
+        ]
+    )
+    return AgentToolResult(
+        content=[TextContent(text=header), *result.content],
+        details=result.details,
+    )
 
 
 class WorkspaceWriteTool(_WorkspaceToolMixin):

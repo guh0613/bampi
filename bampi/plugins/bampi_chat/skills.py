@@ -51,6 +51,13 @@ class SkillInstallResult:
     target_root: str
 
 
+@dataclass(slots=True)
+class SkillResourceContext:
+    skill_name: str
+    resource_path: str
+    skill_root: str
+
+
 def skill_install_root(workspace_dir: str) -> Path:
     return (Path(workspace_dir).resolve() / DEFAULT_SKILL_INSTALL_DIR).resolve()
 
@@ -129,6 +136,13 @@ def build_prompt_skills(skills: list[Skill], *, workspace_dir: str) -> list[Skil
 
 
 def describe_skill_resource_path(path: str | None) -> tuple[str, str] | None:
+    context = describe_skill_resource_context(path)
+    if context is None:
+        return None
+    return context.skill_name, context.resource_path
+
+
+def describe_skill_resource_context(path: str | None) -> SkillResourceContext | None:
     text = (path or "").strip()
     if not text:
         return None
@@ -147,9 +161,18 @@ def describe_skill_resource_path(path: str | None) -> tuple[str, str] | None:
                 return None
             skill_name = normalized_parts[skill_index]
             relative_parts = normalized_parts[skill_index + 1 :]
+            skill_root = PurePosixPath(*normalized_parts[: skill_index + 1]).as_posix()
             if not relative_parts:
-                return skill_name, "SKILL.md"
-            return skill_name, PurePosixPath(*relative_parts).as_posix()
+                return SkillResourceContext(
+                    skill_name=skill_name,
+                    resource_path="SKILL.md",
+                    skill_root=skill_root,
+                )
+            return SkillResourceContext(
+                skill_name=skill_name,
+                resource_path=PurePosixPath(*relative_parts).as_posix(),
+                skill_root=skill_root,
+            )
     return None
 
 
@@ -271,6 +294,7 @@ def build_explicit_skill_payload_text(
                 "",
                 f"## skill: {skill.name}",
                 f"path: {display_skill_path(skill.file_path, workspace_dir=workspace_dir)}",
+                f"base_dir: {display_skill_path(skill.base_dir, workspace_dir=workspace_dir)}",
                 f"description: {skill.description}",
                 "",
                 content.strip(),

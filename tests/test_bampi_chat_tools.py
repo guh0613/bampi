@@ -48,6 +48,32 @@ async def test_workspace_tools_accept_container_absolute_path(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_workspace_read_tool_adds_skill_root_context(tmp_path: Path):
+    skill_file = tmp_path / ".agents" / "skills" / "demo" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text(
+        "---\n"
+        "name: demo\n"
+        "description: Demo skill.\n"
+        "---\n\n"
+        "Run `python scripts/example.py`.\n",
+        encoding="utf-8",
+    )
+    reader = WorkspaceReadTool(str(tmp_path), container_root="/workspace")
+
+    result = await reader.execute("call-1", {"path": "/workspace/.agents/skills/demo/SKILL.md"})
+
+    assert result.content[0].text == (
+        "skill_context:\n"
+        "name: demo\n"
+        "root: .agents/skills/demo\n"
+        "resource: SKILL.md\n"
+        "---"
+    )
+    assert "Run `python scripts/example.py`." in result.content[1].text
+
+
+@pytest.mark.asyncio
 async def test_workspace_patch_tool_accepts_container_absolute_paths(tmp_path: Path):
     file_path = tmp_path / "report.txt"
     file_path.write_text("alpha\nbeta\n", encoding="utf-8")
