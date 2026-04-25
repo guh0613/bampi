@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 from contextlib import suppress
 import importlib
 import json
@@ -42,9 +43,14 @@ BrowserAction = Literal[
     "type",
     "press",
     "wait",
+    "observe",
     "extract",
     "screenshot",
+    "screenshot_ref",
     "evaluate",
+    "click_ref",
+    "save_image",
+    "extract_image",
     "pages",
     "switch",
     "close_page",
@@ -64,7 +70,156 @@ ScrollTarget = Literal["top", "bottom"]
 
 _DEFAULT_TEXT_PREVIEW_CHARS = 1_500
 _DEFAULT_EXTRACT_CHARS = 4_000
+_DEFAULT_OBSERVE_ITEMS = 40
 _LOCAL_BROWSER_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_OBSERVE_SCRIPT = """
+(limit) => {
+  const toText = (value, max = 80) => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, max);
+  const className = (el) => {
+    const raw = el.className;
+    if (!raw) return '';
+    if (typeof raw === 'string') return toText(raw, 120);
+    return toText(raw.baseVal || raw.toString?.() || '', 120);
+  };
+  const rectOf = (el) => {
+    const r = el.getBoundingClientRect();
+    return {x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height)};
+  };
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return false;
+    const style = getComputedStyle(el);
+    return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity || '1') > 0.01;
+  };
+  const cssPath = (el) => {
+    if (el.id && !/\\s/.test(el.id)) return `#${CSS.escape(el.id)}`;
+    const parts = [];
+    for (let node = el; node && node.nodeType === Node.ELEMENT_NODE && node !== document.body; node = node.parentElement) {
+      let part = node.tagName.toLowerCase();
+      if (node.classList && node.classList.length) {
+        part += '.' + Array.from(node.classList).slice(0, 2).map((item) => CSS.escape(item)).join('.');
+      }
+      const parent = node.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter((item) => item.tagName === node.tagName);
+        if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(node) + 1})`;
+      }
+      parts.unshift(part);
+    }
+    return parts.length ? parts.join(' > ') : el.tagName.toLowerCase();
+  };
+  const describe = (el, kind) => {
+    const src = el.currentSrc || el.src || '';
+    return {
+      kind,
+      tag: el.tagName.toLowerCase(),
+      selector: cssPath(el),
+      text: toText(el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || el.value, 120),
+      aria: toText(el.getAttribute('aria-label') || el.getAttribute('title') || '', 80),
+      role: toText(el.getAttribute('role') || '', 40),
+      type: toText(el.getAttribute('type') || '', 40),
+      id: toText(el.id || '', 80),
+      class: className(el),
+      href: toText(el.href || '', 160),
+      src: toText(src, 180),
+      rect: rectOf(el),
+    };
+  };
+  const clickableSelector = [
+    'a[href]',
+    'button',
+    '[role="button"]',
+    '[onclick]',
+    '[tabindex]:not([tabindex="-1"])',
+    'input[type="button"]',
+    'input[type="submit"]',
+    'input[type="checkbox"]',
+    'input[type="radio"]',
+    '[class*="avatar" i]',
+    '[class*="login" i]',
+    '[class*="qrcode" i]',
+    '[class*="qr-" i]'
+  ].join(',');
+  const all = Array.from(document.querySelectorAll(clickableSelector)).filter(visible);
+  const seen = new Set();
+  const unique = [];
+  for (const el of all) {
+    if (seen.has(el)) continue;
+    seen.add(el);
+    unique.push(el);
+  }
+  const inputs = Array.from(document.querySelectorAll('input, textarea, select'))
+    .filter(visible)
+    .slice(0, limit)
+    .map((el) => describe(el, 'input'));
+  const images = Array.from(document.querySelectorAll('img, canvas, svg'))
+    .filter(visible)
+    .sort((a, b) => {
+      const ar = a.getBoundingClientRect();
+      const br = b.getBoundingClientRect();
+      return (br.width * br.height) - (ar.width * ar.height);
+    })
+    .slice(0, limit)
+    .map((el) => describe(el, 'img'));
+  return {
+    url: location.href,
+    title: document.title || '',
+    text: toText(document.body ? document.body.innerText : '', 700),
+    elements: unique.slice(0, limit).map((el) => describe(el, 'element')),
+    inputs,
+    images,
+  };
+}
+"""
+_SAVE_IMAGE_SCRIPT = """
+async ({selector, imageIndex}) => {
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return false;
+    const style = getComputedStyle(el);
+    return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity || '1') > 0.01;
+  };
+  const images = selector
+    ? [document.querySelector(selector)].filter(Boolean)
+    : Array.from(document.querySelectorAll('img, canvas, svg')).filter(visible).sort((a, b) => {
+        const ar = a.getBoundingClientRect();
+        const br = b.getBoundingClientRect();
+        return (br.width * br.height) - (ar.width * ar.height);
+      });
+  const el = images[imageIndex || 0];
+  if (!el) return null;
+  if (el instanceof HTMLCanvasElement) {
+    return {dataUrl: el.toDataURL('image/png'), src: 'canvas', width: el.width, height: el.height};
+  }
+  if (el instanceof SVGElement && !(el instanceof SVGImageElement)) {
+    const xml = new XMLSerializer().serializeToString(el);
+    const encoded = btoa(unescape(encodeURIComponent(xml)));
+    const box = el.getBoundingClientRect();
+    return {dataUrl: `data:image/svg+xml;base64,${encoded}`, src: 'inline-svg', width: Math.round(box.width), height: Math.round(box.height)};
+  }
+  const img = el;
+  const src = img.currentSrc || img.src || '';
+  if (src.startsWith('data:')) return {dataUrl: src, src, width: img.naturalWidth || img.width, height: img.naturalHeight || img.height};
+  try {
+    const response = await fetch(src, {credentials: 'include'});
+    const blob = await response.blob();
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+    return {dataUrl, src, width: img.naturalWidth || img.width, height: img.naturalHeight || img.height};
+  } catch (fetchError) {
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth || img.width;
+    canvas.height = img.naturalHeight || img.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    return {dataUrl: canvas.toDataURL('image/png'), src, width: canvas.width, height: canvas.height};
+  }
+}
+"""
 _DOCKER_PORT_BRIDGE_SCRIPT = """
 import os
 import select
@@ -132,6 +287,9 @@ class BrowserToolInput(BaseModel):
 
     action: BrowserAction = Field(description="Browser action to run.")
     page_id: str | None = Field(default=None, description="Target page id. Uses the active page when omitted.")
+    frame_id: str | None = Field(default=None, description="Target frame id from observe, for example f0 or f1.")
+    frame_url_contains: str | None = Field(default=None, description="Target the first frame whose URL contains this substring.")
+    ref: str | None = Field(default=None, description="Element/image ref returned by observe, for example f0:e1 or f1:img2.")
     url: str | None = Field(default=None, description="Navigation URL for open/goto.")
     selector: str | None = Field(default=None, description="CSS selector for click/type/wait/extract/screenshot.")
     text: str | None = Field(default=None, description="Text to fill or type into an element.")
@@ -157,6 +315,8 @@ class BrowserToolInput(BaseModel):
     quality: int | None = Field(default=None, ge=1, le=100, description="JPEG quality. Ignored for PNG.")
     extract_format: ExtractFormat = Field(default="text", description="Whether extract returns rendered text or full HTML.")
     max_chars: int = Field(default=_DEFAULT_EXTRACT_CHARS, ge=200, le=40_000, description="Maximum characters returned by extract/evaluate.")
+    max_items: int = Field(default=_DEFAULT_OBSERVE_ITEMS, ge=1, le=200, description="Maximum observed elements/images per frame.")
+    image_index: int = Field(default=0, ge=0, le=500, description="Visible image index for save_image/extract_image when no selector/ref is supplied.")
     delta_x: int = Field(default=0, ge=-20_000, le=20_000, description="Horizontal scroll distance for scroll.")
     delta_y: int = Field(default=800, ge=-20_000, le=20_000, description="Vertical scroll distance for scroll.")
     scroll_to: ScrollTarget | None = Field(default=None, description="Scroll directly to the top or bottom of the page.")
@@ -187,12 +347,16 @@ class BrowserToolInput(BaseModel):
             raise ValueError("goto requires url")
         if self.action == "click" and not self.selector:
             raise ValueError("click requires selector")
+        if self.action == "click_ref" and not self.ref:
+            raise ValueError("click_ref requires ref")
         if self.action == "type" and (not self.selector or self.text is None):
             raise ValueError("type requires selector and text")
         if self.action == "press" and not self.keys:
             raise ValueError("press requires keys")
         if self.action == "evaluate" and not self.script:
             raise ValueError("evaluate requires script")
+        if self.action == "screenshot_ref" and not self.ref:
+            raise ValueError("screenshot_ref requires ref")
         if self.action in {"switch", "close_page"} and not self.page_id:
             raise ValueError(f"{self.action} requires page_id")
         if self.action == "wait" and not any(
@@ -385,30 +549,66 @@ class BrowserTool:
         page_id, page = await self._require_page_locked(arguments.page_id)
 
         if action == "click":
-            locator = page.locator(arguments.selector).first
-            await locator.click(
-                button=arguments.button,
-                click_count=arguments.click_count,
-                timeout=self._timeout_ms(arguments),
-            )
+            target = await self._frame_for_arguments_locked(page, arguments)
+            locator = target.locator(arguments.selector).first
+            try:
+                await locator.click(
+                    button=arguments.button,
+                    click_count=arguments.click_count,
+                    timeout=self._timeout_ms(arguments),
+                )
+            except Exception as exc:
+                raise RuntimeError(await self._browser_failure_text(page_id, page, arguments, exc)) from exc
             if arguments.load_state is not None:
                 await page.wait_for_load_state(arguments.load_state, timeout=self._timeout_ms(arguments))
             return AgentToolResult(content=[TextContent(text=await self._page_summary_text(page_id, page, include_preview=True))])
 
+        if action == "click_ref":
+            frame_id, target, item = await self._resolve_ref_locked(page, arguments.ref or "", max_items=arguments.max_items)
+            try:
+                await target.locator(item["selector"]).first.click(
+                    button=arguments.button,
+                    click_count=arguments.click_count,
+                    timeout=self._timeout_ms(arguments),
+                )
+            except Exception as exc:
+                raise RuntimeError(await self._browser_failure_text(page_id, page, arguments, exc)) from exc
+            if arguments.load_state is not None:
+                await page.wait_for_load_state(arguments.load_state, timeout=self._timeout_ms(arguments))
+            return AgentToolResult(
+                content=[
+                    TextContent(
+                        text=(
+                            f"Clicked {arguments.ref} in {frame_id} "
+                            f"({item.get('tag', 'element')} {item.get('text') or item.get('aria') or item.get('class') or ''}).\n\n"
+                            + await self._page_summary_text(page_id, page, include_preview=True)
+                        )
+                    )
+                ]
+            )
+
         if action == "type":
-            locator = page.locator(arguments.selector).first
-            if arguments.clear_first:
-                await locator.fill(arguments.text, timeout=self._timeout_ms(arguments))
-            else:
-                await locator.click(timeout=self._timeout_ms(arguments))
-                await page.keyboard.type(arguments.text)
+            target = await self._frame_for_arguments_locked(page, arguments)
+            locator = target.locator(arguments.selector).first
+            try:
+                if arguments.clear_first:
+                    await locator.fill(arguments.text, timeout=self._timeout_ms(arguments))
+                else:
+                    await locator.click(timeout=self._timeout_ms(arguments))
+                    await page.keyboard.type(arguments.text)
+            except Exception as exc:
+                raise RuntimeError(await self._browser_failure_text(page_id, page, arguments, exc)) from exc
             return AgentToolResult(content=[TextContent(text=f"Typed into {arguments.selector} on {page_id}.")])
 
         if action == "press":
-            if arguments.selector:
-                await page.locator(arguments.selector).first.press(arguments.keys, timeout=self._timeout_ms(arguments))
-            else:
-                await page.keyboard.press(arguments.keys)
+            target = await self._frame_for_arguments_locked(page, arguments)
+            try:
+                if arguments.selector:
+                    await target.locator(arguments.selector).first.press(arguments.keys, timeout=self._timeout_ms(arguments))
+                else:
+                    await page.keyboard.press(arguments.keys)
+            except Exception as exc:
+                raise RuntimeError(await self._browser_failure_text(page_id, page, arguments, exc)) from exc
             if arguments.load_state is not None:
                 await page.wait_for_load_state(arguments.load_state, timeout=self._timeout_ms(arguments))
             return AgentToolResult(content=[TextContent(text=f"Pressed {arguments.keys} on {page_id}.")])
@@ -416,19 +616,37 @@ class BrowserTool:
         if action == "wait":
             return await self._wait_result_locked(page_id, page, arguments)
 
+        if action == "observe":
+            return await self._observe_result_locked(page_id, page, arguments)
+
         if action == "extract":
             return await self._extract_result_locked(page_id, page, arguments)
 
         if action == "screenshot":
             return await self._screenshot_result_locked(page_id, page, arguments)
 
+        if action == "screenshot_ref":
+            frame_id, target, item = await self._resolve_ref_locked(page, arguments.ref or "", max_items=arguments.max_items)
+            host_path = self._resolve_screenshot_path(arguments.path, page_id, arguments.screenshot_format)
+            return await self._screenshot_element_result_locked(
+                page_id,
+                target.locator(item["selector"]).first,
+                arguments,
+                host_path=host_path,
+                label=f"{arguments.ref} in {frame_id}",
+            )
+
         if action == "evaluate":
-            value = await page.evaluate(arguments.script, arguments.argument)
+            target = await self._frame_for_arguments_locked(page, arguments)
+            value = await target.evaluate(arguments.script, arguments.argument)
             serialized, truncated = _serialize_result(value, limit=arguments.max_chars)
             message = f"Evaluate result on {page_id}:\n{serialized}"
             if truncated:
                 message += "\n\n[Result truncated]"
             return AgentToolResult(content=[TextContent(text=message)])
+
+        if action in {"save_image", "extract_image"}:
+            return await self._save_image_result_locked(page_id, page, arguments)
 
         if action == "switch":
             self._active_page_id = page_id
@@ -603,11 +821,15 @@ class BrowserTool:
 
     async def _wait_result_locked(self, page_id: str, page: "Page", arguments: BrowserToolInput) -> AgentToolResult:
         timeout_ms = self._timeout_ms(arguments)
+        target = await self._frame_for_arguments_locked(page, arguments)
         if arguments.selector:
-            await page.locator(arguments.selector).first.wait_for(
-                state=arguments.state,
-                timeout=timeout_ms,
-            )
+            try:
+                await target.locator(arguments.selector).first.wait_for(
+                    state=arguments.state,
+                    timeout=timeout_ms,
+                )
+            except Exception as exc:
+                raise RuntimeError(await self._browser_failure_text(page_id, page, arguments, exc)) from exc
             return AgentToolResult(content=[TextContent(text=f"Selector {arguments.selector} reached state {arguments.state} on {page_id}.")])
         if arguments.load_state:
             await page.wait_for_load_state(arguments.load_state, timeout=timeout_ms)
@@ -625,7 +847,8 @@ class BrowserTool:
         arguments: BrowserToolInput,
     ) -> AgentToolResult:
         if arguments.selector:
-            locator = page.locator(arguments.selector).first
+            target = await self._frame_for_arguments_locked(page, arguments)
+            locator = target.locator(arguments.selector).first
             if arguments.extract_format == "html":
                 value = await locator.evaluate("(el) => el.outerHTML", timeout=self._timeout_ms(arguments))
             else:
@@ -641,9 +864,11 @@ class BrowserTool:
             return AgentToolResult(content=[TextContent(text="\n".join(lines))])
 
         if arguments.extract_format == "html":
-            value = await page.content()
+            target = await self._frame_for_arguments_locked(page, arguments)
+            value = await target.content()
         else:
-            value = await page.evaluate(
+            target = await self._frame_for_arguments_locked(page, arguments)
+            value = await target.evaluate(
                 """
                 (limit) => {
                     const body = document.body;
@@ -685,7 +910,8 @@ class BrowserTool:
             screenshot_kwargs["quality"] = arguments.quality
 
         if arguments.selector:
-            await page.locator(arguments.selector).first.screenshot(**screenshot_kwargs)
+            target = await self._frame_for_arguments_locked(page, arguments)
+            await target.locator(arguments.selector).first.screenshot(**screenshot_kwargs)
         else:
             await page.screenshot(
                 **screenshot_kwargs,
@@ -712,13 +938,346 @@ class BrowserTool:
                     )
                 )
             else:
-                lines.append(
-                    f"Inline image skipped because the screenshot is {len(data)} bytes, "
-                    f"above the inline limit of {self._inline_image_max_bytes} bytes."
-                )
+                preview = await self._try_screenshot_preview_locked(page, arguments, host_path, selector=arguments.selector)
+                if preview is not None:
+                    preview_path, preview_data = preview
+                    lines.append(
+                        f"Inline preview generated because the original screenshot is {len(data)} bytes, "
+                        f"above the inline limit of {self._inline_image_max_bytes} bytes."
+                    )
+                    lines.append(f"Preview path: {to_workspace_relative(self._workspace_dir, preview_path)}")
+                    if len(preview_data) <= self._inline_image_max_bytes:
+                        blocks.append(ImageContent(data=base64.b64encode(preview_data).decode("ascii"), mime_type="image/jpeg"))
+                    else:
+                        lines.append(
+                            f"Preview image is still {len(preview_data)} bytes, so inline image was skipped."
+                        )
+                else:
+                    lines.append(
+                        f"Inline image skipped because the screenshot is {len(data)} bytes, "
+                        f"above the inline limit of {self._inline_image_max_bytes} bytes."
+                    )
 
         blocks.insert(0, TextContent(text="\n".join(lines)))
         return AgentToolResult(content=blocks)
+
+    async def _screenshot_element_result_locked(
+        self,
+        page_id: str,
+        locator: Any,
+        arguments: BrowserToolInput,
+        *,
+        host_path: Path,
+        label: str,
+    ) -> AgentToolResult:
+        host_path.parent.mkdir(parents=True, exist_ok=True)
+        screenshot_kwargs: dict[str, Any] = {
+            "path": str(host_path),
+            "type": arguments.screenshot_format,
+            "timeout": self._timeout_ms(arguments),
+        }
+        if arguments.screenshot_format == "jpeg" and arguments.quality is not None:
+            screenshot_kwargs["quality"] = arguments.quality
+
+        await locator.screenshot(**screenshot_kwargs)
+
+        relative_path = to_workspace_relative(self._workspace_dir, host_path)
+        lines = [
+            f"Saved screenshot for {label} on {page_id}.",
+            f"Workspace path: {relative_path}",
+        ]
+        if self._container_root is not None:
+            lines.append(f"Container path: {host_to_container_path(self._workspace_dir, host_path, self._container_root)}")
+
+        blocks: list[Any] = [TextContent(text="\n".join(lines))]
+        data = host_path.read_bytes()
+        if arguments.return_image and len(data) <= self._inline_image_max_bytes:
+            blocks.append(
+                ImageContent(
+                    data=base64.b64encode(data).decode("ascii"),
+                    mime_type="image/jpeg" if arguments.screenshot_format == "jpeg" else "image/png",
+                )
+            )
+        elif arguments.return_image:
+            preview_path = host_path.with_name(f"{host_path.stem}-preview.jpeg")
+            preview_kwargs: dict[str, Any] = {
+                "path": str(preview_path),
+                "type": "jpeg",
+                "quality": 60,
+                "timeout": self._timeout_ms(arguments),
+                "scale": "css",
+            }
+            with suppress(Exception):
+                await locator.screenshot(**preview_kwargs)
+                preview_data = preview_path.read_bytes()
+                lines.append(
+                    f"Inline preview generated because the original screenshot is {len(data)} bytes, "
+                    f"above the inline limit of {self._inline_image_max_bytes} bytes."
+                )
+                lines.append(f"Preview path: {to_workspace_relative(self._workspace_dir, preview_path)}")
+                blocks[0] = TextContent(text="\n".join(lines))
+                if len(preview_data) <= self._inline_image_max_bytes:
+                    blocks.append(ImageContent(data=base64.b64encode(preview_data).decode("ascii"), mime_type="image/jpeg"))
+        return AgentToolResult(content=blocks)
+
+    async def _try_screenshot_preview_locked(
+        self,
+        page: "Page",
+        arguments: BrowserToolInput,
+        original_path: Path,
+        *,
+        selector: str | None,
+    ) -> tuple[Path, bytes] | None:
+        preview_path = original_path.with_name(f"{original_path.stem}-preview.jpeg")
+        preview_kwargs: dict[str, Any] = {
+            "path": str(preview_path),
+            "type": "jpeg",
+            "quality": 60,
+            "timeout": self._timeout_ms(arguments),
+            "scale": "css",
+        }
+        try:
+            if selector:
+                target = await self._frame_for_arguments_locked(page, arguments)
+                await target.locator(selector).first.screenshot(**preview_kwargs)
+            else:
+                await page.screenshot(**preview_kwargs, full_page=False)
+        except Exception:
+            return None
+        return preview_path, preview_path.read_bytes()
+
+    async def _observe_result_locked(
+        self,
+        page_id: str,
+        page: "Page",
+        arguments: BrowserToolInput,
+    ) -> AgentToolResult:
+        observation = await self._collect_observation_locked(page, max_items=arguments.max_items)
+        text = await self._format_observation_text(page_id, page, observation, max_chars=arguments.max_chars)
+        return AgentToolResult(content=[TextContent(text=text)])
+
+    async def _collect_observation_locked(self, page: "Page", *, max_items: int) -> list[dict[str, Any]]:
+        frames = self._frame_entries(page)
+        observed: list[dict[str, Any]] = []
+        for frame_id, frame in frames:
+            try:
+                data = await frame.evaluate(_OBSERVE_SCRIPT, max_items)
+            except Exception as exc:
+                data = {
+                    "url": getattr(frame, "url", ""),
+                    "title": "",
+                    "text": "",
+                    "error": str(exc).strip() or exc.__class__.__name__,
+                    "elements": [],
+                    "inputs": [],
+                    "images": [],
+                }
+            if not isinstance(data, dict):
+                data = {
+                    "url": getattr(frame, "url", ""),
+                    "title": "",
+                    "text": str(data or ""),
+                    "elements": [],
+                    "inputs": [],
+                    "images": [],
+                }
+            for group_name, prefix in (("elements", "e"), ("inputs", "input"), ("images", "img")):
+                for index, item in enumerate(data.get(group_name) or [], start=1):
+                    if isinstance(item, dict):
+                        item["ref"] = f"{frame_id}:{prefix}{index}"
+            observed.append({"frame_id": frame_id, "frame": frame, "data": data})
+        return observed
+
+    async def _format_observation_text(
+        self,
+        page_id: str,
+        page: "Page",
+        observation: list[dict[str, Any]],
+        *,
+        max_chars: int,
+    ) -> str:
+        title = await self._safe_page_title(page)
+        lines = [
+            f"Page ID: {page_id}",
+            f"Title: {title or '(untitled)'}",
+            f"URL: {self._display_url(page.url or '(blank)')}",
+            "",
+            "Frames:",
+        ]
+        for entry in observation:
+            data = entry["data"]
+            frame_id = entry["frame_id"]
+            frame_url = self._display_url(str(data.get("url") or getattr(entry["frame"], "url", "")))
+            marker = " [main]" if frame_id == "f0" else ""
+            lines.append(f"- {frame_id}{marker}: {frame_url or '(blank)'}")
+            if data.get("error"):
+                lines.append(f"  observe error: {data['error']}")
+
+        for entry in observation:
+            data = entry["data"]
+            frame_id = entry["frame_id"]
+            text = str(data.get("text") or "")
+            if text:
+                lines.extend(["", f"Visible text in {frame_id}:", text])
+            self._append_observed_items(lines, f"Clickable elements in {frame_id}", data.get("elements") or [])
+            self._append_observed_items(lines, f"Inputs in {frame_id}", data.get("inputs") or [])
+            self._append_observed_items(lines, f"Images in {frame_id}", data.get("images") or [])
+
+        rendered = "\n".join(lines)
+        truncated, was_truncated = _truncate_text(rendered, max_chars)
+        if was_truncated:
+            truncated += "\n\n[Observation truncated]"
+        return truncated
+
+    def _append_observed_items(self, lines: list[str], heading: str, items: list[dict[str, Any]]) -> None:
+        if not items:
+            return
+        lines.extend(["", f"{heading}:"])
+        for item in items:
+            rect = item.get("rect") or {}
+            label = item.get("text") or item.get("aria") or item.get("id") or item.get("class") or item.get("src") or item.get("href") or ""
+            label = str(label).strip()
+            tag = item.get("tag") or "element"
+            role = f" role={item['role']}" if item.get("role") else ""
+            item_type = f" type={item['type']}" if item.get("type") else ""
+            lines.append(
+                f"- {item.get('ref')}: <{tag}>{role}{item_type} "
+                f"{json.dumps(label, ensure_ascii=False)} "
+                f"rect=({rect.get('x', 0)},{rect.get('y', 0)},{rect.get('w', 0)},{rect.get('h', 0)}) "
+                f"selector={item.get('selector') or ''}"
+            )
+
+    async def _resolve_ref_locked(
+        self,
+        page: "Page",
+        ref: str,
+        *,
+        max_items: int,
+    ) -> tuple[str, Any, dict[str, Any]]:
+        observation = await self._collect_observation_locked(page, max_items=max_items)
+        for entry in observation:
+            for group_name in ("elements", "inputs", "images"):
+                for item in entry["data"].get(group_name) or []:
+                    if item.get("ref") == ref:
+                        selector = item.get("selector")
+                        if not selector:
+                            raise RuntimeError(f"Ref {ref} did not include a usable selector.")
+                        return str(entry["frame_id"]), entry["frame"], item
+        available: list[str] = []
+        for entry in observation:
+            for group_name in ("elements", "inputs", "images"):
+                available.extend(str(item.get("ref")) for item in entry["data"].get(group_name) or [] if item.get("ref"))
+        hint = ", ".join(available[:40]) or "none"
+        raise RuntimeError(f"Ref {ref!r} was not found in the current page. Available refs: {hint}")
+
+    async def _frame_for_arguments_locked(self, page: "Page", arguments: BrowserToolInput) -> Any:
+        return self._frame_by_hint(page, frame_id=arguments.frame_id, frame_url_contains=arguments.frame_url_contains)
+
+    def _frame_entries(self, page: "Page") -> list[tuple[str, Any]]:
+        frames = getattr(page, "frames", None)
+        if frames:
+            return [(f"f{index}", frame) for index, frame in enumerate(list(frames))]
+        return [("f0", page)]
+
+    def _frame_by_hint(self, page: "Page", *, frame_id: str | None, frame_url_contains: str | None) -> Any:
+        entries = self._frame_entries(page)
+        if frame_id:
+            for current_id, frame in entries:
+                if current_id == frame_id:
+                    return frame
+            raise RuntimeError(f"Frame {frame_id!r} was not found. Use observe to list current frames.")
+        if frame_url_contains:
+            for _, frame in entries:
+                if frame_url_contains in str(getattr(frame, "url", "")):
+                    return frame
+            raise RuntimeError(f"No frame URL contains {frame_url_contains!r}. Use observe to list current frames.")
+        return entries[0][1]
+
+    async def _browser_failure_text(
+        self,
+        page_id: str,
+        page: "Page",
+        arguments: BrowserToolInput,
+        exc: Exception,
+    ) -> str:
+        lines = [
+            f"Browser {arguments.action} failed on {page_id}: {str(exc).strip() or exc.__class__.__name__}",
+        ]
+        if arguments.selector:
+            lines.append(f"Selector: {arguments.selector}")
+        if arguments.ref:
+            lines.append(f"Ref: {arguments.ref}")
+        lines.extend(["", "Current page candidates:"])
+        try:
+            observation = await self._collect_observation_locked(page, max_items=min(arguments.max_items, 12))
+            compact = await self._format_observation_text(page_id, page, observation, max_chars=2_500)
+            lines.append(compact)
+        except Exception as observe_exc:
+            lines.append(f"(Could not observe page after failure: {observe_exc})")
+        return "\n".join(lines)
+
+    async def _save_image_result_locked(
+        self,
+        page_id: str,
+        page: "Page",
+        arguments: BrowserToolInput,
+    ) -> AgentToolResult:
+        target = await self._frame_for_arguments_locked(page, arguments)
+        selector = arguments.selector
+        image_ref = arguments.ref
+        if image_ref:
+            _, target, item = await self._resolve_ref_locked(page, image_ref, max_items=arguments.max_items)
+            selector = str(item.get("selector") or "")
+
+        result = await target.evaluate(
+            _SAVE_IMAGE_SCRIPT,
+            {"selector": selector, "imageIndex": arguments.image_index},
+        )
+        if not result:
+            raise RuntimeError(await self._browser_failure_text(page_id, page, arguments, RuntimeError("No matching visible image found.")))
+
+        data_url = str(result.get("dataUrl") or "")
+        mime_type, payload = self._decode_data_url(data_url)
+        extension = "jpg" if mime_type == "image/jpeg" else "svg" if mime_type == "image/svg+xml" else "png"
+        host_path = self._resolve_image_path(arguments.path, page_id, extension)
+        host_path.parent.mkdir(parents=True, exist_ok=True)
+        host_path.write_bytes(payload)
+
+        relative_path = to_workspace_relative(self._workspace_dir, host_path)
+        lines = [
+            f"Saved image from {image_ref or selector or f'visible image #{arguments.image_index}'} on {page_id}.",
+            f"Workspace path: {relative_path}",
+            f"MIME type: {mime_type}",
+            f"Bytes: {len(payload)}",
+        ]
+        width = result.get("width")
+        height = result.get("height")
+        if width or height:
+            lines.append(f"Dimensions: {width or '?'}x{height or '?'}")
+        if result.get("src"):
+            src_preview, _ = _truncate_text(str(result["src"]), 180)
+            lines.append(f"Source: {src_preview}")
+        if self._container_root is not None:
+            lines.append(f"Container path: {host_to_container_path(self._workspace_dir, host_path, self._container_root)}")
+
+        blocks: list[Any] = [TextContent(text="\n".join(lines))]
+        if len(payload) <= self._inline_image_max_bytes:
+            blocks.append(ImageContent(data=base64.b64encode(payload).decode("ascii"), mime_type=mime_type))
+        return AgentToolResult(content=blocks)
+
+    def _decode_data_url(self, data_url: str) -> tuple[str, bytes]:
+        if not data_url.startswith("data:") or "," not in data_url:
+            raise RuntimeError("Image extraction did not return a data URL.")
+        header, encoded = data_url.split(",", 1)
+        mime_type = header[5:].split(";", 1)[0] or "image/png"
+        try:
+            if ";base64" in header:
+                payload = base64.b64decode(encoded)
+            else:
+                payload = encoded.encode("utf-8")
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError("Image data URL could not be decoded.") from exc
+        return mime_type, payload
 
     async def _ensure_context_locked(self) -> "BrowserContext":
         if self._runtime is not None:
@@ -1073,6 +1632,21 @@ class BrowserTool:
                 container_root=self._container_root,
             )
         relative = Path("outbox") / "browser" / f"{_now_timestamp_slug()}-{page_id}.{screenshot_format}"
+        return (Path(self._workspace_dir) / relative).resolve()
+
+    def _resolve_image_path(
+        self,
+        raw_path: str | None,
+        page_id: str,
+        extension: str,
+    ) -> Path:
+        if raw_path:
+            return resolve_workspace_path(
+                self._workspace_dir,
+                raw_path,
+                container_root=self._container_root,
+            )
+        relative = Path("outbox") / "browser" / f"{_now_timestamp_slug()}-{page_id}-image.{extension}"
         return (Path(self._workspace_dir) / relative).resolve()
 
     def _launch_error_message(self, exc: Exception) -> str:

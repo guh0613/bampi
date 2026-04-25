@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import time
 from pathlib import Path
 
@@ -89,6 +90,64 @@ class FakePage:
     async def evaluate(self, script: str, arg=None):
         if script == "document.readyState":
             return "complete"
+        if "clickableSelector" in script:
+            return {
+                "url": self.url,
+                "title": self._title,
+                "text": "Login page",
+                "elements": [
+                    {
+                        "tag": "button",
+                        "selector": ".login",
+                        "text": "登录",
+                        "aria": "",
+                        "role": "button",
+                        "type": "",
+                        "id": "",
+                        "class": "login",
+                        "href": "",
+                        "src": "",
+                        "rect": {"x": 10, "y": 20, "w": 80, "h": 32},
+                    }
+                ],
+                "inputs": [
+                    {
+                        "tag": "input",
+                        "selector": "input.phone",
+                        "text": "",
+                        "aria": "phone",
+                        "role": "",
+                        "type": "text",
+                        "id": "",
+                        "class": "phone",
+                        "href": "",
+                        "src": "",
+                        "rect": {"x": 10, "y": 60, "w": 200, "h": 32},
+                    }
+                ],
+                "images": [
+                    {
+                        "tag": "img",
+                        "selector": "img.qr",
+                        "text": "",
+                        "aria": "qr",
+                        "role": "",
+                        "type": "",
+                        "id": "",
+                        "class": "qr",
+                        "href": "",
+                        "src": "data:image/png;base64,ZmFrZS1pbWFnZQ==",
+                        "rect": {"x": 10, "y": 100, "w": 160, "h": 160},
+                    }
+                ],
+            }
+        if "dataUrl" in script:
+            return {
+                "dataUrl": "data:image/png;base64," + base64.b64encode(b"fake-image").decode("ascii"),
+                "src": "data:image/png;base64,ZmFrZS1pbWFnZQ==",
+                "width": 160,
+                "height": 160,
+            }
         if "document.body" in script:
             return "Hello from the fake page.\nRendered content is here."
         return {"script": script, "arg": arg}
@@ -314,3 +373,143 @@ async def test_browser_tool_bridges_docker_localhost_url(tmp_path: Path, monkeyp
     assert "Requested URL: http://localhost:8889/math_render.html" in result.content[0].text
     assert "Bridged docker-local port 8889 through host port 40123" in result.content[0].text
     assert context.pages[0].actions[0][1] == "http://localhost:40123/math_render.html"
+
+
+@pytest.mark.asyncio
+async def test_browser_tool_observe_and_click_ref(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    tool = BrowserTool(str(tmp_path), container_root="/workspace")
+    context = FakeContext()
+    manager = FakeManager()
+
+    async def fake_ensure_context_locked() -> FakeContext:
+        if tool._runtime is None:
+            tool._runtime = _BrowserRuntime(
+                manager=manager,
+                context=context,
+                profile_dir=tmp_path / ".browser" / "camoufox-profile",
+                launched_at=time.monotonic(),
+                last_used_at=time.monotonic(),
+            )
+        return context
+
+    monkeypatch.setattr(tool, "_ensure_context_locked", fake_ensure_context_locked)
+
+    await tool.execute("call-1", {"action": "open", "url": "https://example.com/login"})
+    observe_result = await tool.execute("call-2", {"action": "observe"})
+
+    assert "Clickable elements in f0" in observe_result.content[0].text
+    assert "f0:e1" in observe_result.content[0].text
+    assert "f0:input1" in observe_result.content[0].text
+    assert "f0:img1" in observe_result.content[0].text
+
+    click_result = await tool.execute("call-3", {"action": "click_ref", "ref": "f0:e1"})
+
+    assert "Clicked f0:e1" in click_result.content[0].text
+    assert context.pages[0].actions[-1][0] == "click"
+    assert context.pages[0].actions[-1][1] == ".login"
+
+
+@pytest.mark.asyncio
+async def test_browser_tool_screenshot_ref_and_save_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    tool = BrowserTool(str(tmp_path), container_root="/workspace")
+    context = FakeContext()
+    manager = FakeManager()
+
+    async def fake_ensure_context_locked() -> FakeContext:
+        if tool._runtime is None:
+            tool._runtime = _BrowserRuntime(
+                manager=manager,
+                context=context,
+                profile_dir=tmp_path / ".browser" / "camoufox-profile",
+                launched_at=time.monotonic(),
+                last_used_at=time.monotonic(),
+            )
+        return context
+
+    monkeypatch.setattr(tool, "_ensure_context_locked", fake_ensure_context_locked)
+
+    await tool.execute("call-1", {"action": "open", "url": "https://example.com/login"})
+
+    screenshot_result = await tool.execute(
+        "call-2",
+        {"action": "screenshot_ref", "ref": "f0:img1", "path": "outbox/browser/qr.png", "return_image": False},
+    )
+    assert "Saved screenshot for f0:img1" in screenshot_result.content[0].text
+    assert (tmp_path / "outbox" / "browser" / "qr.png").read_bytes() == b"fake-locator-image"
+
+    save_result = await tool.execute(
+        "call-3",
+        {"action": "save_image", "ref": "f0:img1", "path": "outbox/browser/qr-extracted.png"},
+    )
+    assert "Saved image from f0:img1" in save_result.content[0].text
+    assert (tmp_path / "outbox" / "browser" / "qr-extracted.png").read_bytes() == b"fake-image"
+    assert len(save_result.content) == 2
+
+
+@pytest.mark.asyncio
+async def test_browser_tool_selector_actions_can_target_frame_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    tool = BrowserTool(str(tmp_path), container_root="/workspace")
+    context = FakeContext()
+    manager = FakeManager()
+
+    async def fake_ensure_context_locked() -> FakeContext:
+        if tool._runtime is None:
+            tool._runtime = _BrowserRuntime(
+                manager=manager,
+                context=context,
+                profile_dir=tmp_path / ".browser" / "camoufox-profile",
+                launched_at=time.monotonic(),
+                last_used_at=time.monotonic(),
+            )
+        return context
+
+    monkeypatch.setattr(tool, "_ensure_context_locked", fake_ensure_context_locked)
+
+    await tool.execute("call-1", {"action": "open", "url": "https://example.com/login"})
+    frame = FakePage()
+    frame.url = "https://user.example.com/login-frame"
+    context.pages[0].frames = [context.pages[0], frame]
+
+    await tool.execute("call-2", {"action": "click", "frame_id": "f1", "selector": ".login"})
+
+    assert frame.actions[-1][0] == "click"
+    assert frame.actions[-1][1] == ".login"
+    assert not any(action[0] == "click" for action in context.pages[0].actions)
+
+
+@pytest.mark.asyncio
+async def test_browser_tool_click_failure_includes_observed_candidates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    tool = BrowserTool(str(tmp_path), container_root="/workspace")
+    context = FakeContext()
+    manager = FakeManager()
+
+    async def fake_ensure_context_locked() -> FakeContext:
+        if tool._runtime is None:
+            tool._runtime = _BrowserRuntime(
+                manager=manager,
+                context=context,
+                profile_dir=tmp_path / ".browser" / "camoufox-profile",
+                launched_at=time.monotonic(),
+                last_used_at=time.monotonic(),
+            )
+        return context
+
+    monkeypatch.setattr(tool, "_ensure_context_locked", fake_ensure_context_locked)
+
+    await tool.execute("call-1", {"action": "open", "url": "https://example.com/login"})
+
+    class FailingLocator(FakeLocator):
+        async def click(self, **kwargs) -> None:
+            del kwargs
+            raise TimeoutError("selector not found")
+
+    context.pages[0].locator = lambda selector: FailingLocator(context.pages[0], selector)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await tool.execute("call-2", {"action": "click", "selector": "text=登录"})
+
+    message = str(exc_info.value)
+    assert "Browser click failed" in message
+    assert "Current page candidates" in message
+    assert "f0:e1" in message
+    assert ".login" in message
