@@ -34,7 +34,7 @@ def build_system_prompt(
                 "- 常用开发环境已就绪（bash, git, python, node, npm, ripgrep 等）。未预装 gcc/g++、Go 等，需 apt 安装（耗时较长，提前告知用户）。",
                 "- matplotlib 与中文字体已预置；绘制中文图表时优先使用 `Noto Sans CJK SC` 或 `WenQuanYi Zen Hei`，并设置 `axes.unicode_minus=False`。",
                 "- `inbox/` 存放群里发来的文件和图片；写到 `outbox/` 的文件会自动发回群里。",
-                "- 只有 `outbox/` 根目录的新文件会自动发回群里；子目录（如 `outbox/browser/`）不会发送。用户要你把图片或文件发出来时，保存到 `outbox/文件名`。",
+                "- 注意： `outbox/` 根目录的新文件会自动发回群里；子目录（如 `outbox/abc/`）不会发送。同时，只要是存放在outbox根目录的文件都会发送；请不要将不想发送的文件存放在outbox根目录中。",
             ]
         )
     else:
@@ -42,7 +42,7 @@ def build_system_prompt(
             [
                 "- 命令在本地 workspace 中执行，文件操作优先使用相对路径。",
                 "- `inbox/` 存放群里发来的文件和图片；写到 `outbox/` 的文件会自动发回群里。",
-                "- 只有 `outbox/` 根目录的新文件会自动发回群里；子目录（如 `outbox/browser/`）不会发送。用户要你把图片或文件发出来时，保存到 `outbox/文件名`。",
+                "- 注意：只有 `outbox/` 根目录的新文件会自动发回群里；子目录（如 `outbox/abc/`）不会发送。同时，只要是存放在outbox根目录的文件都会发送；请不要将不想发送的文件存放在outbox根目录中。",
             ]
         )
 
