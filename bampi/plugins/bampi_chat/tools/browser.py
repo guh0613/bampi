@@ -7,6 +7,7 @@ from contextlib import suppress
 import importlib
 import json
 import os
+import platform
 from pathlib import PurePosixPath
 import signal
 import shutil
@@ -72,6 +73,17 @@ _DEFAULT_TEXT_PREVIEW_CHARS = 1_500
 _DEFAULT_EXTRACT_CHARS = 4_000
 _DEFAULT_OBSERVE_ITEMS = 40
 _LOCAL_BROWSER_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_CJK_FONT_FALLBACKS = [
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Heiti SC",
+    "Songti SC",
+    "Noto Sans SC",
+    "Noto Sans CJK SC",
+    "WenQuanYi Zen Hei",
+    "Microsoft YaHei",
+    "Microsoft JhengHei",
+]
 _OBSERVE_SCRIPT = """
 (limit) => {
   const toText = (value, max = 80) => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, max);
@@ -433,6 +445,15 @@ def _terminate_subprocess_group(process: asyncio.subprocess.Process) -> None:
         os.killpg(process.pid, signal.SIGTERM)
     except Exception:
         process.terminate()
+
+
+def _host_camoufox_os() -> Literal["windows", "macos", "linux"]:
+    system = platform.system().lower()
+    if system == "darwin":
+        return "macos"
+    if system == "windows":
+        return "windows"
+    return "linux"
 
 
 class BrowserTool:
@@ -1291,6 +1312,14 @@ class BrowserTool:
 
         firefox_user_prefs = {
             "dom.webnotifications.enabled": False,
+            "font.language.group": "zh-CN",
+            "font.name-list.sans-serif.x-western": ", ".join(_CJK_FONT_FALLBACKS),
+            "font.name-list.sans-serif.zh-CN": ", ".join(_CJK_FONT_FALLBACKS),
+            "font.name-list.serif.zh-CN": "Songti SC, Noto Serif CJK SC, Noto Serif SC, " + ", ".join(_CJK_FONT_FALLBACKS),
+            "font.name.sans-serif.x-western": _CJK_FONT_FALLBACKS[0],
+            "font.name.sans-serif.zh-CN": _CJK_FONT_FALLBACKS[0],
+            "font.name.serif.zh-CN": "Songti SC",
+            "intl.accept_languages": "zh-CN, zh, en-US, en",
             "media.autoplay.default": 5,
         }
         manager = api.async_camoufox_cls(
@@ -1300,7 +1329,10 @@ class BrowserTool:
             block_images=self._block_images,
             block_webrtc=True,
             enable_cache=False,
+            fonts=_CJK_FONT_FALLBACKS,
             firefox_user_prefs=firefox_user_prefs,
+            locale=["zh-CN", "zh", "en-US", "en"],
+            os=_host_camoufox_os(),
             timeout=int(self._launch_timeout * 1000),
         )
 

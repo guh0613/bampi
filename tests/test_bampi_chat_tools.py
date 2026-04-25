@@ -100,6 +100,9 @@ def test_system_prompt_mentions_browser_tool():
 
     assert "browser" in prompt
     assert "outbox/browser/" in prompt
+    assert "只有 `outbox/` 根目录的新文件会自动发回群里" in prompt
+    assert "path` 设为 `outbox/xxx.png`" in prompt
+    assert "点击 ref 用 `click_ref`" in prompt
 
 
 def test_system_prompt_mentions_background_bash_sessions():

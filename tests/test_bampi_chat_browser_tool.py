@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from bampi.plugins.bampi_chat.tools.browser import BrowserTool, BrowserToolInput, _BrowserRuntime, _LocalPortBridge
+from bampi.plugins.bampi_chat.tools import browser as browser_module
+from bampi.plugins.bampi_chat.tools.browser import BrowserTool, BrowserToolInput, _BrowserApi, _BrowserRuntime, _LocalPortBridge
 
 
 class FakeManager:
@@ -275,6 +276,43 @@ async def test_browser_tool_pages_and_reset_clear_profile(tmp_path: Path, monkey
     assert "Browser session reset." in reset_result.content[0].text
     assert manager.exited is True
     assert not profile_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_browser_tool_launch_uses_host_os_and_cjk_font_fallbacks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+    context = FakeContext()
+
+    class CapturingCamoufox:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        async def __aenter__(self) -> FakeContext:
+            return context
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    monkeypatch.setattr(browser_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        browser_module,
+        "_import_browser_api",
+        lambda: _BrowserApi(
+            async_camoufox_cls=CapturingCamoufox,
+            playwright_error=Exception,
+            playwright_timeout_error=TimeoutError,
+        ),
+    )
+
+    tool = BrowserTool(str(tmp_path))
+    await tool._ensure_context_locked()
+
+    assert captured["os"] == "macos"
+    assert captured["locale"] == ["zh-CN", "zh", "en-US", "en"]
+    assert "PingFang SC" in captured["fonts"]
+    prefs = captured["firefox_user_prefs"]
+    assert prefs["intl.accept_languages"] == "zh-CN, zh, en-US, en"
+    assert "PingFang SC" in prefs["font.name-list.sans-serif.zh-CN"]
 
 
 @pytest.mark.asyncio

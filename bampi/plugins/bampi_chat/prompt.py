@@ -34,6 +34,7 @@ def build_system_prompt(
                 "- 常用开发环境已就绪（bash, git, python, node, npm, ripgrep 等）。未预装 gcc/g++、Go 等，需 apt 安装（耗时较长，提前告知用户）。",
                 "- matplotlib 与中文字体已预置；绘制中文图表时优先使用 `Noto Sans CJK SC` 或 `WenQuanYi Zen Hei`，并设置 `axes.unicode_minus=False`。",
                 "- `inbox/` 存放群里发来的文件和图片；写到 `outbox/` 的文件会自动发回群里。",
+                "- 只有 `outbox/` 根目录的新文件会自动发回群里；子目录（如 `outbox/browser/`）不会发送。用户要你把图片或文件发出来时，保存到 `outbox/文件名`。",
             ]
         )
     else:
@@ -41,6 +42,7 @@ def build_system_prompt(
             [
                 "- 命令在本地 workspace 中执行，文件操作优先使用相对路径。",
                 "- `inbox/` 存放群里发来的文件和图片；写到 `outbox/` 的文件会自动发回群里。",
+                "- 只有 `outbox/` 根目录的新文件会自动发回群里；子目录（如 `outbox/browser/`）不会发送。用户要你把图片或文件发出来时，保存到 `outbox/文件名`。",
             ]
         )
 
@@ -71,7 +73,10 @@ def build_system_prompt(
         tool_lines.append("- 查最新事实、新闻、模型信息或外部资料时用 `web_search`，不要凭空猜测。批量查询时考虑聚合到一个调用中。")
     if "browser" in tool_names:
         tool_lines.append(
-            "- 需要真实打开网页、等待 JS 渲染、点击/输入、截图时用 `browser`；快速查资料用 `web_search`。截图默认写入 `outbox/browser/`。"
+            "- 需要真实打开网页、等待 JS 渲染、点击/输入、截图时用 `browser`；快速查资料用 `web_search`。截图默认写入 `outbox/browser/` 仅供检查；若用户要收到截图，显式把 `path` 设为 `outbox/xxx.png`。"
+        )
+        tool_lines.append(
+            "- `browser` 的 `observe` 会返回元素 ref；点击 ref 用 `click_ref`，截取 ref 用 `screenshot_ref`，不要把 ref 传给普通 `click`。"
         )
     if "service" in tool_names:
         tool_lines.append(
