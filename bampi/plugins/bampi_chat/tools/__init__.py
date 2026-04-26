@@ -48,6 +48,7 @@ def create_agent_tools(
             config.bampi_web_search_timeout,
             base_url=config.bampi_web_search_base_url,
             api_key=config.bampi_web_search_api_key,
+            model=config.bampi_web_search_model,
         ),
     ]
     if config.bampi_browser_enabled:

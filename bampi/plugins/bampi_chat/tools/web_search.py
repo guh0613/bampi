@@ -104,6 +104,7 @@ async def _query_search_agent(
     timeout: float,
     base_url: str,
     api_key: str,
+    model: str = DEFAULT_WEB_SEARCH_MODEL,
     user_agent: str = DEFAULT_WEB_SEARCH_USER_AGENT,
 ) -> str:
     if not api_key.strip():
@@ -117,7 +118,7 @@ async def _query_search_agent(
         "User-Agent": user_agent,
     }
     payload = {
-        "model": DEFAULT_WEB_SEARCH_MODEL,
+        "model": model.strip() or DEFAULT_WEB_SEARCH_MODEL,
         "messages": [
             {
                 "role": "user",
@@ -165,6 +166,7 @@ def create_web_search_tool(
     *,
     base_url: str,
     api_key: str,
+    model: str = DEFAULT_WEB_SEARCH_MODEL,
     user_agent: str = DEFAULT_WEB_SEARCH_USER_AGENT,
 ):
     @tool(
@@ -179,6 +181,7 @@ def create_web_search_tool(
                 timeout=timeout,
                 base_url=base_url,
                 api_key=api_key,
+                model=model,
                 user_agent=user_agent,
             )
         except Exception as exc:

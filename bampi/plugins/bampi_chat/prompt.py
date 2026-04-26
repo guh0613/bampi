@@ -34,7 +34,7 @@ def build_system_prompt(
                 "- 常用开发环境已就绪（bash, git, python, node, npm, ripgrep 等）。未预装 gcc/g++、Go 等，需 apt 安装（耗时较长，提前告知用户）。",
                 "- matplotlib 与中文字体已预置；绘制中文图表时优先使用 `Noto Sans CJK SC` 或 `WenQuanYi Zen Hei`，并设置 `axes.unicode_minus=False`。",
                 "- `inbox/` 存放群里发来的文件和图片；写到 `outbox/` 的文件会自动发回群里。",
-                "- 注意： `outbox/` 根目录的新文件会自动发回群里；子目录（如 `outbox/abc/`）不会发送。同时，只要是存放在outbox根目录的文件都会发送；请不要将不想发送的文件存放在outbox根目录中。",
+                "- 注意：只有 `outbox/` 根目录的新文件会自动发回群里；子目录（如 `outbox/abc/`）不会发送。同时，只要是存放在outbox根目录的文件都会发送；请不要将不想发送的文件存放在outbox根目录中。",
             ]
         )
     else:
@@ -99,6 +99,8 @@ def build_system_prompt(
 
     prompt = (
         f"{persona}\n\n"
+        f"当前时间(UTC+8): {current_time} | 工作目录: {effective_prompt_cwd}\n"
+        f"当前的时间请始终以此为准，不要依赖训练数据推测日期。\n\n"
         "## 环境\n"
         f"{env_section}\n\n"
         "## 群聊\n"
@@ -118,7 +120,5 @@ def build_system_prompt(
         prompt += f"## 额外指令\n{append_system_prompt.strip()}\n\n"
 
     prompt += format_skills_for_prompt(skills or [])
-    prompt += f"\n当前时间(UTC+8): {current_time}\n"
-    prompt += f"Current working directory: {effective_prompt_cwd}\n"
 
     return prompt

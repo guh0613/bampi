@@ -91,6 +91,7 @@ class BampiChatConfig(BaseModel):
     bampi_bash_timeout: float = 30.0
 
     bampi_web_search_timeout: float = 15.0
+    bampi_web_search_model: str = "grok-4.20-fast"
     bampi_web_search_base_url: str = ""
     bampi_web_search_api_key: str = ""
     bampi_browser_enabled: bool = True
@@ -143,6 +144,7 @@ class BampiChatConfig(BaseModel):
         "bampi_model_id",
         "bampi_model_api",
         "bampi_base_url",
+        "bampi_web_search_model",
         "bampi_web_search_base_url",
         "bampi_web_search_api_key",
         "bampi_persona",

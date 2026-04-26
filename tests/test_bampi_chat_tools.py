@@ -104,6 +104,7 @@ def test_bampi_chat_defaults_use_docker_sandbox():
     assert config.bampi_bash_container_workdir == "/workspace"
     assert config.bampi_bash_container_shell == "/bin/bash"
     assert config.bampi_group_whitelist == []
+    assert config.bampi_web_search_model == web_search_module.DEFAULT_WEB_SEARCH_MODEL
 
 
 def test_bampi_chat_group_whitelist_normalizes_entries():
@@ -214,6 +215,7 @@ async def test_create_agent_tools_web_search_uses_dedicated_config(
             bampi_base_url="https://model.example.com",
             bampi_web_search_api_key="search-secret",
             bampi_web_search_base_url="https://search.example.com",
+            bampi_web_search_model="search-model",
         ),
         str(tmp_path),
         container_root="/workspace",
@@ -234,7 +236,7 @@ async def test_create_agent_tools_web_search_uses_dedicated_config(
             "User-Agent": web_search_module.DEFAULT_WEB_SEARCH_USER_AGENT,
         },
         "json": {
-            "model": web_search_module.DEFAULT_WEB_SEARCH_MODEL,
+            "model": "search-model",
             "messages": [
                 {
                     "role": "user",
@@ -483,6 +485,57 @@ async def test_web_search_tool_uses_chat_completions(monkeypatch: pytest.MonkeyP
     assert state["client_exited"] is True
     assert state["stream_entered"] is True
     assert state["stream_exited"] is True
+
+
+@pytest.mark.asyncio
+async def test_web_search_tool_falls_back_to_default_model_when_blank(monkeypatch: pytest.MonkeyPatch):
+    state: dict[str, object] = {}
+
+    class _FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+        text = ""
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aread(self) -> bytes:
+            return b"Search answer"
+
+    class _FakeStreamContext:
+        async def __aenter__(self) -> _FakeResponse:
+            return _FakeResponse()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    class _FakeAsyncClient:
+        def __init__(self, **kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> "_FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def stream(self, method: str, url: str, *, headers: dict[str, str], json: dict[str, object]) -> _FakeStreamContext:
+            state["json"] = json
+            return _FakeStreamContext()
+
+    monkeypatch.setattr(web_search_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    tool = web_search_module.create_web_search_tool(
+        12.0,
+        base_url="https://api.example.com",
+        api_key="secret",
+        model=" ",
+    )
+
+    result = await tool.execute("call-1", {"query": "最新模型信息"})
+
+    assert result.content[0].text == "Search answer"
+    assert state["json"]["model"] == web_search_module.DEFAULT_WEB_SEARCH_MODEL
 
 
 @pytest.mark.asyncio
