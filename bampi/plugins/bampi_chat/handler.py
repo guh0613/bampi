@@ -700,22 +700,8 @@ def describe_tool_progress(tool_name: str, args: Any) -> str:
         if action == "run_now":
             return f"正在立即执行定时任务：{task_ref}"
         return f"正在查看定时任务：{task_ref}"
-    if tool_name == "memory_search":
-        query = render_tool_progress_value(payload.get("query"), "历史会话")
-        return f"正在检索记忆：{query}"
-    if tool_name == "memory_time_search":
-        start_time = render_tool_progress_value(payload.get("start_time"), "开始时间")
-        end_time = render_tool_progress_value(payload.get("end_time"), "结束时间")
-        if start_time != "开始时间" or end_time != "结束时间":
-            return f"正在按时间检索记忆：{start_time} ~ {end_time}"
-        return "正在按时间检索记忆"
-    if tool_name == "memory_open":
-        archive_id = render_tool_progress_value(payload.get("archive_id"), "历史会话")
-        return f"正在打开记忆：{archive_id}"
-    if tool_name == "memory_manage":
-        action = render_tool_progress_value(payload.get("action"), "编辑")
-        content = render_tool_progress_value(payload.get("content"), "画像内容")
-        return f"正在更新记忆（{action}）：{content}"
+    if tool_name in {"memory_search", "memory_time_search", "memory_open", "memory_manage"}:
+        return "正在检索记忆"
     display_name = render_tool_progress_value(tool_name, "unknown", limit=40)
     return f"正在执行工具：{display_name}"
 
@@ -1456,7 +1442,7 @@ def build_user_message(
         body = "(无纯文本内容)"
 
     lines = [
-        f"sender_name: {sender_name}",
+        f"sender_name: {sender_name}({event.user_id})",
         f"message_text: {body}",
     ]
 

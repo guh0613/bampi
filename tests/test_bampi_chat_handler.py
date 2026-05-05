@@ -27,6 +27,7 @@ from bampi.plugins.bampi_chat.handler import (
     TriggerDecision,
     build_user_message,
     collect_incoming_media,
+    describe_tool_progress,
     format_tool_progress_message,
     is_clear_command,
     is_compact_command,
@@ -646,6 +647,21 @@ def test_strip_streamed_prefix_keeps_full_text_when_prefix_mismatches():
     assert strip_streamed_prefix(full_text, streamed_text) == full_text
 
 
+def test_memory_tool_progress_hides_internal_arguments():
+    payloads = {
+        "memory_search": {"query": "nginx 证书"},
+        "memory_time_search": {
+            "start_time": "2026-05-05T00:00:00+08:00",
+            "end_time": "2026-05-05T23:59:59+08:00",
+        },
+        "memory_open": {"archive_id": 123},
+        "memory_manage": {"action": "add", "content": "喜欢 Rust"},
+    }
+
+    for tool_name, payload in payloads.items():
+        assert describe_tool_progress(tool_name, payload) == "正在检索记忆"
+
+
 def test_build_user_message_marks_media_only_message():
     event = FakeGroupEvent(
         group_id=1001,
@@ -660,11 +676,12 @@ def test_build_user_message_marks_media_only_message():
         IncomingMedia(saved_paths=["inbox/report.txt"]),
     )
 
-    assert message.content[0].text.startswith("sender_name: Alice")
+    assert message.content[0].text.startswith("sender_name: Alice(42)")
     assert "message_text: (无纯文本内容；本条消息仅包含媒体/文件)" in message.content[0].text
     assert "workspace_attachments:\n- inbox/report.txt" in message.content[0].text
     assert "group_id:" not in message.content[0].text
     assert "sender_id:" not in message.content[0].text
+    assert "sender_user_id:" not in message.content[0].text
 
 
 def test_build_user_message_separates_reply_media_context():
