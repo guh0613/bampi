@@ -121,10 +121,11 @@ class BampiChatConfig(BaseModel):
     bampi_memory_archive_min_messages: int = 3
     bampi_memory_archive_summary_max_tokens: int = 500
     bampi_memory_archive_retention_days: int = 365
+    bampi_memory_archive_llm_summary: bool = True
     bampi_memory_tool_result_preview_chars: int = 1000
     bampi_memory_tool_result_full_max_chars: int = 20_000
     bampi_memory_search_max_results: int = 10
-    bampi_memory_search_snippet_messages: int = 2
+    bampi_memory_search_snippet_messages: int = 3
     bampi_memory_search_like_fallback: bool = True
     bampi_memory_embedding_enabled: bool = False
     bampi_memory_embedding_provider: str = ""

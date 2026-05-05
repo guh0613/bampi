@@ -860,10 +860,12 @@ class GroupSessionManager:
         if reason == "shutdown" or not clear_history:
             return
         try:
-            archive_id = manager.archive_session(
+            archive_id = await manager.archive_session_async(
                 group_id=managed.group_id,
                 messages=list(managed.session.messages),
                 user_turns=list(managed.memory_user_turns),
+                model=managed.session.model,
+                api_key=self._config.bampi_api_key or None,
             )
         except Exception:
             logger.exception(

@@ -16,6 +16,13 @@ from bampi.plugins.bampi_chat.memory import (
     MemoryUserTurn,
     render_search_results,
 )
+from bampi.plugins.bampi_chat.memory.embeddings import (
+    DEFAULT_EMBEDDING_USER_AGENT,
+    OpenAICompatibleEmbeddingProvider,
+    build_embedding_provider,
+    normalize_openai_embedding_base_url,
+    normalize_vector,
+)
 from bampi.plugins.bampi_chat.memory.schema import CURRENT_SCHEMA_VERSION
 from bampi.plugins.bampi_chat.memory.search_text import build_fts_query, extract_search_terms
 from bampi.plugins.bampi_chat.prompt import build_system_prompt
@@ -145,6 +152,43 @@ def _seed_memory(manager: MemoryManager) -> dict[str, int]:
     }
 
 
+class _SemanticEmbeddingProvider:
+    provider = "test-semantic"
+    model = "test-vectors"
+    dimensions = 4
+
+    def embed_text(self, text: str) -> list[float]:
+        folded = text.casefold()
+        vector = [0.0, 0.0, 0.0, 0.0]
+        if any(
+            term in folded
+            for term in ("nginx", "tls", "证书", "https", "certbot", "443", "反向代理")
+        ):
+            vector[0] += 1.0
+        if any(
+            term in folded
+            for term in ("毕业论文", "采集", "爬虫", "crawler", "timeout", "httpx")
+        ):
+            vector[1] += 1.0
+        if any(
+            term in folded
+            for term in ("minecraft", "mc", "whitelist", "白名单", "steve")
+        ):
+            vector[2] += 1.0
+        if any(term in folded for term in ("rust", "clap", "cli", "命令行")):
+            vector[3] += 1.0
+        return normalize_vector(vector)
+
+
+class _FailingEmbeddingProvider:
+    provider = "openai-compatible"
+    model = "failing"
+    dimensions = 0
+
+    def embed_text(self, text: str) -> list[float]:
+        raise RuntimeError("embedding provider unavailable")
+
+
 def test_search_text_generates_cjk_ngrams_and_entities():
     terms = extract_search_terms("上周那个 nginx 反向代理 /etc/nginx/sites-enabled/app.conf 443", for_query=True)
 
@@ -228,6 +272,104 @@ def test_memory_search_uses_tool_events_and_user_filter(tmp_path: Path):
 
     lisi_hits = manager.search(group_id="1001", query="nginx 配置", user_id="7")
     assert lisi_hits == []
+
+
+def test_memory_search_documents_lexical_gap_without_embedding(tmp_path: Path):
+    manager = MemoryManager(tmp_path / "memory.db")
+    ids = _seed_memory(manager)
+
+    hits = manager.search(group_id="1001", query="HTTPS certbot 部署入口", max_results=3)
+    assert hits == []
+
+    exact_hits = manager.search(group_id="1001", query="TLS 证书", max_results=3)
+    assert exact_hits[0].archive.id == ids["nginx"]
+
+
+def test_memory_search_embedding_recovers_semantic_archive(tmp_path: Path):
+    manager = MemoryManager(
+        tmp_path / "memory.db",
+        embedding_provider=_SemanticEmbeddingProvider(),
+    )
+    ids = _seed_memory(manager)
+
+    hits = manager.search(group_id="1001", query="HTTPS certbot 部署入口", max_results=3)
+
+    assert hits
+    assert hits[0].archive.id == ids["nginx"]
+    assert "embedding" in hits[0].matched_sources
+
+
+def test_embedding_provider_factory_supports_openai_compatible():
+    provider = build_embedding_provider(
+        provider="openai-compatible",
+        model="fake-embedding-model",
+        api_key="sk-test",
+        base_url="https://example.test",
+    )
+
+    assert isinstance(provider, OpenAICompatibleEmbeddingProvider)
+    assert provider.provider == "openai-compatible"
+    assert provider.model == "fake-embedding-model"
+    assert provider.base_url == "https://example.test/v1"
+    assert provider.user_agent == DEFAULT_EMBEDDING_USER_AGENT
+    assert (
+        normalize_openai_embedding_base_url("https://example.test/v1/")
+        == "https://example.test/v1"
+    )
+
+
+def test_memory_manager_uses_openai_compatible_when_embedding_model_is_configured(
+    tmp_path: Path,
+):
+    config = BampiChatConfig(
+        bampi_memory_db_path=str(tmp_path / "memory.db"),
+        bampi_memory_embedding_enabled=True,
+        bampi_memory_embedding_model="fake-embedding-model",
+        bampi_api_key="sk-test",
+        bampi_base_url="https://example.test",
+    )
+
+    manager = MemoryManager.from_config(config)
+
+    assert isinstance(manager._embedding_provider, OpenAICompatibleEmbeddingProvider)
+    assert manager._embedding_provider.base_url == "https://example.test/v1"
+
+
+def test_openai_compatible_embedding_requires_model():
+    with pytest.raises(ValueError, match="bampi_memory_embedding_model"):
+        build_embedding_provider(provider="openai-compatible", model="")
+
+
+def test_memory_embedding_failure_falls_back_to_text_search(tmp_path: Path):
+    manager = MemoryManager(
+        tmp_path / "memory.db",
+        embedding_provider=_FailingEmbeddingProvider(),
+    )
+
+    archive_id = manager.archive_conversation(
+        group_id="1001",
+        started_at="2026-05-04T20:00:00+08:00",
+        ended_at="2026-05-04T20:10:00+08:00",
+        participants=[MemoryParticipant(user_id="42", nickname="张三")],
+        title="nginx TLS 配置",
+        summary="讨论 nginx 证书配置。",
+        keywords=["nginx", "TLS", "证书"],
+        messages=[
+            MemoryMessage(
+                role="user",
+                user_id="42",
+                nickname="张三",
+                content="nginx 证书怎么配？",
+                timestamp="2026-05-04T20:00:00+08:00",
+            )
+        ],
+    )
+
+    hits = manager.search(group_id="1001", query="nginx 证书", max_results=3)
+
+    assert hits
+    assert hits[0].archive.id == archive_id
+    assert "embedding" not in hits[0].matched_sources
 
 
 def test_memory_open_returns_compact_transcript_and_tools(tmp_path: Path):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import logging
+from nonebot import logger
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -9,8 +9,8 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from .archiver import build_archive_from_agent_messages
-from .embeddings import LocalHashEmbeddingProvider, MemoryEmbeddingProvider
+from .archiver import build_archive_from_agent_messages, summarize_archive_with_llm
+from .embeddings import MemoryEmbeddingProvider, build_embedding_provider
 from .profiler import build_profile_from_archives, render_memory_context
 from .store import MemoryStore
 from .types import (
@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from ..config import BampiChatConfig
 
 
-logger = logging.getLogger(__name__)
 
 
 class MemoryManager:
@@ -53,6 +52,7 @@ class MemoryManager:
         profile_max_tokens: int = 1500,
         pending_edits_max_inject: int = 10,
         scheduler_timezone: str = "Asia/Shanghai",
+        llm_summary_enabled: bool = True,
     ) -> None:
         self._db_path = Path(db_path)
         self._search_max_results = min(max(1, search_max_results), 10)
@@ -73,6 +73,7 @@ class MemoryManager:
         self._profile_max_tokens = max(200, profile_max_tokens)
         self._pending_edits_max_inject = max(0, pending_edits_max_inject)
         self._scheduler_timezone = scheduler_timezone
+        self._llm_summary_enabled = llm_summary_enabled
         self._store: MemoryStore | None = None
         self._scheduler: AsyncIOScheduler | None = None
 
@@ -80,9 +81,14 @@ class MemoryManager:
     def from_config(cls, config: "BampiChatConfig") -> "MemoryManager":
         embedding_provider: MemoryEmbeddingProvider | None = None
         if config.bampi_memory_embedding_enabled:
-            embedding_provider = LocalHashEmbeddingProvider(
-                provider=config.bampi_memory_embedding_provider or "local-hash",
-                model=config.bampi_memory_embedding_model or "local-hash-v1",
+            provider_name = config.bampi_memory_embedding_provider or (
+                "openai-compatible" if config.bampi_memory_embedding_model else "local-hash"
+            )
+            embedding_provider = build_embedding_provider(
+                provider=provider_name,
+                model=config.bampi_memory_embedding_model,
+                api_key=config.bampi_api_key,
+                base_url=config.bampi_base_url,
             )
         return cls(
             config.bampi_memory_db_path,
@@ -102,6 +108,7 @@ class MemoryManager:
             profile_max_tokens=config.bampi_memory_profile_max_tokens,
             pending_edits_max_inject=config.bampi_memory_pending_edits_max_inject,
             scheduler_timezone=config.bampi_schedule_timezone,
+            llm_summary_enabled=config.bampi_memory_archive_llm_summary,
         )
 
     @property
@@ -206,6 +213,54 @@ class MemoryManager:
             title=built.title,
             summary=_truncate_text(built.summary, self._archive_summary_max_chars),
             keywords=built.keywords,
+            messages=built.messages,
+            tool_events=built.tool_events,
+        )
+
+    async def archive_session_async(
+        self,
+        *,
+        group_id: str,
+        messages: list[Any],
+        user_turns: list[MemoryUserTurn],
+        model: Any = None,
+        api_key: str | None = None,
+    ) -> int | None:
+        built = build_archive_from_agent_messages(
+            group_id=group_id,
+            messages=messages,
+            user_turns=user_turns,
+            min_messages=self._archive_min_messages,
+            tool_result_preview_chars=self._tool_result_preview_chars,
+            tool_result_full_max_chars=self._tool_result_full_max_chars,
+        )
+        if built is None:
+            return None
+
+        title = built.title
+        summary = built.summary
+        keywords = built.keywords
+
+        if self._llm_summary_enabled and model is not None:
+            llm_result = await summarize_archive_with_llm(
+                built.messages,
+                built.tool_events,
+                model=model,
+                api_key=api_key,
+            )
+            if llm_result is not None:
+                title, summary, keywords = llm_result
+                if not keywords:
+                    keywords = built.keywords
+
+        return self.archive_conversation(
+            group_id=group_id,
+            started_at=built.started_at,
+            ended_at=built.ended_at,
+            participants=built.participants,
+            title=title,
+            summary=_truncate_text(summary, self._archive_summary_max_chars),
+            keywords=keywords,
             messages=built.messages,
             tool_events=built.tool_events,
         )

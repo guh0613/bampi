@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from nonebot import logger
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -31,6 +32,7 @@ from .types import (
     MemoryToolEvent,
     OpenArchiveMode,
 )
+
 
 
 @dataclass(slots=True)
@@ -261,6 +263,10 @@ class MemoryStore:
 
             hits: list[MemorySearchHit] = []
             entity_groups = required_entity_groups(normalized_query)
+            embedding_can_bridge_entities = (
+                self._embedding_provider is not None
+                and self._embedding_provider.provider != "local-hash"
+            )
             for candidate in candidates.values():
                 row = conn.execute(
                     "SELECT * FROM conversation_archives WHERE id = ? AND group_id = ?",
@@ -268,11 +274,18 @@ class MemoryStore:
                 ).fetchone()
                 if row is None:
                     continue
-                if entity_groups and not self._archive_contains_entity_groups(
-                    conn,
-                    archive_id=candidate.archive_id,
-                    row=row,
-                    entity_groups=entity_groups,
+                if (
+                    entity_groups
+                    and not (
+                        embedding_can_bridge_entities
+                        and "embedding" in candidate.matched_sources
+                    )
+                    and not self._archive_contains_entity_groups(
+                        conn,
+                        archive_id=candidate.archive_id,
+                        row=row,
+                        entity_groups=entity_groups,
+                    )
                 ):
                     continue
                 if not self._archive_passes_filters(
@@ -291,7 +304,10 @@ class MemoryStore:
                     message_ids=candidate.message_ids,
                     tool_event_ids=candidate.tool_event_ids,
                 )
-                if not snippets and "archive" in candidate.matched_sources:
+                if not snippets and (
+                    "archive" in candidate.matched_sources
+                    or "embedding" in candidate.matched_sources
+                ):
                     snippets.append(
                         MemorySnippet(
                             source="archive",
@@ -901,7 +917,16 @@ class MemoryStore:
         provider = self._embedding_provider
         if provider is None:
             return
-        query_vector = provider.embed_text(query)
+        try:
+            query_vector = provider.embed_text(query)
+        except Exception:
+            logger.warning(
+                "bampi_chat memory embedding query failed provider=%s model=%s",
+                provider.provider,
+                provider.model,
+                exc_info=True,
+            )
+            return
         if not any(query_vector):
             return
 
@@ -925,7 +950,15 @@ class MemoryStore:
                 continue
             scored.append((int(row["archive_id"]), score))
 
-        for archive_id, score in sorted(scored, key=lambda item: item[1], reverse=True)[:20]:
+        scored.sort(key=lambda item: item[1], reverse=True)
+        if not scored:
+            return
+
+        best_score = scored[0][1]
+        relative_floor = max(0.05, best_score - 0.08, best_score * 0.9)
+        for archive_id, score in scored[:20]:
+            if score < relative_floor:
+                continue
             candidates.setdefault(archive_id, _Candidate(archive_id=archive_id)).add(
                 "embedding",
                 2.0 + score * 4.0,
@@ -1155,7 +1188,17 @@ class MemoryStore:
         provider = self._embedding_provider
         if provider is None:
             return
-        vector = provider.embed_text(text)
+        try:
+            vector = provider.embed_text(text)
+        except Exception:
+            logger.warning(
+                "bampi_chat memory archive embedding failed archive_id=%s provider=%s model=%s",
+                archive_id,
+                provider.provider,
+                provider.model,
+                exc_info=True,
+            )
+            return
         if not any(vector):
             return
         conn.execute(

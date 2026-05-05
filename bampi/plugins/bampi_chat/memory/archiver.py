@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from nonebot import logger
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -9,6 +10,7 @@ from bampy.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMe
 
 from .search_text import extract_search_terms, normalize_for_search
 from .types import MemoryMessage, MemoryParticipant, MemoryToolEvent, MemoryUserTurn
+
 
 
 @dataclass(slots=True)
@@ -143,6 +145,92 @@ def summarize_archive(
     if last_assistant:
         pieces.append(f"最后回复停在：{_truncate(last_assistant, 120)}")
     summary = "".join(pieces) or "这次会话没有足够可摘要的文本内容。"
+    return title, summary, keywords
+
+
+_LLM_SUMMARY_SYSTEM_PROMPT = """\
+你是一个会话归档助手。给定一段群聊对话记录，请输出结构化的摘要。
+
+要求：
+1. title: 简短标题（10-25字），概括这次对话的核心主题
+2. summary: 摘要（50-200字），描述对话的起因、过程和结论/结果。重点记录做了什么、解决了什么、结论是什么
+3. keywords: 3-8个关键词，用于后续检索
+
+输出格式（严格遵守，不要输出其他内容）：
+title: <标题>
+summary: <摘要>
+keywords: <关键词1>, <关键词2>, ...\
+"""
+
+_LLM_SUMMARY_MAX_INPUT_CHARS = 12000
+
+
+async def summarize_archive_with_llm(
+    messages: list[MemoryMessage],
+    tool_events: list[MemoryToolEvent],
+    *,
+    model: Any,
+    api_key: str | None = None,
+) -> tuple[str, str, list[str]] | None:
+    from bampy.ai import Context, SimpleStreamOptions, complete_simple
+    from bampy.ai.types import UserMessage as AIUserMessage
+
+    transcript_lines: list[str] = []
+    for msg in messages:
+        prefix = msg.nickname or msg.role
+        transcript_lines.append(f"[{prefix}]: {msg.content}")
+    if tool_events:
+        transcript_lines.append("\n--- 使用过的工具 ---")
+        for event in tool_events[:10]:
+            line = f"工具: {event.tool_name}"
+            if event.result_preview:
+                line += f" → {event.result_preview[:200]}"
+            transcript_lines.append(line)
+
+    transcript = "\n".join(transcript_lines)
+    if len(transcript) > _LLM_SUMMARY_MAX_INPUT_CHARS:
+        transcript = transcript[:_LLM_SUMMARY_MAX_INPUT_CHARS] + "\n...(已截断)"
+
+    context = Context(
+        system_prompt=_LLM_SUMMARY_SYSTEM_PROMPT,
+        messages=[AIUserMessage(content=transcript)],
+    )
+    options = SimpleStreamOptions(api_key=api_key)
+    try:
+        result = await complete_simple(model, context, options)
+    except Exception:
+        logger.warning(
+            "bampi_chat memory LLM summary failed model=%s",
+            getattr(model, "id", model),
+            exc_info=True,
+        )
+        return None
+
+    text = ""
+    for block in result.content:
+        if getattr(block, "type", "") == "text":
+            text += getattr(block, "text", "")
+    if not text.strip():
+        return None
+
+    return _parse_llm_summary_response(text)
+
+
+def _parse_llm_summary_response(text: str) -> tuple[str, str, list[str]] | None:
+    title = ""
+    summary = ""
+    keywords: list[str] = []
+    for line in text.strip().splitlines():
+        lower = line.lower().strip()
+        if lower.startswith("title:") or lower.startswith("标题:"):
+            title = line.split(":", 1)[1].strip()
+        elif lower.startswith("summary:") or lower.startswith("摘要:"):
+            summary = line.split(":", 1)[1].strip()
+        elif lower.startswith("keywords:") or lower.startswith("关键词:"):
+            raw = line.split(":", 1)[1].strip()
+            keywords = [k.strip() for k in raw.split(",") if k.strip()]
+    if not title and not summary:
+        return None
     return title, summary, keywords
 
 
