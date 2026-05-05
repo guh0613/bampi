@@ -118,7 +118,7 @@ class BampiChatConfig(BaseModel):
     bampi_memory_enabled: bool = True
     bampi_memory_storage_mode: MemoryStorageMode = "single"
     bampi_memory_db_path: str = DEFAULT_MEMORY_DB_PATH
-    bampi_memory_archive_min_messages: int = 3
+    bampi_memory_archive_min_messages: int = 1
     bampi_memory_archive_summary_max_tokens: int = 500
     bampi_memory_archive_retention_days: int = 365
     bampi_memory_archive_llm_summary: bool = True
