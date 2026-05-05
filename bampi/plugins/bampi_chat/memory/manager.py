@@ -133,11 +133,9 @@ class MemoryManager:
             timezone = ZoneInfo(self._scheduler_timezone)
             trigger = CronTrigger.from_crontab(self._profile_cron, timezone=timezone)
         except Exception:
-            logger.exception(
-                "bampi_chat memory background tasks not started due to invalid schedule "
-                "cron=%s timezone=%s",
-                self._profile_cron,
-                self._scheduler_timezone,
+            logger.opt(exception=True).error(
+                f"bampi_chat memory background tasks not started due to invalid schedule "
+                f"cron={self._profile_cron} timezone={self._scheduler_timezone}"
             )
             return
         scheduler = AsyncIOScheduler(timezone=timezone)
@@ -151,7 +149,7 @@ class MemoryManager:
         )
         scheduler.start()
         self._scheduler = scheduler
-        logger.info("bampi_chat memory background tasks started cron=%s", self._profile_cron)
+        logger.info(f"bampi_chat memory background tasks started cron={self._profile_cron}")
 
     def close_background_tasks(self) -> None:
         scheduler = self._scheduler
@@ -408,7 +406,7 @@ class MemoryManager:
             )
             generated += 1
         if generated:
-            logger.info("bampi_chat memory generated profiles count=%s", generated)
+            logger.info(f"bampi_chat memory generated profiles count={generated}")
         return generated
 
     def cleanup_old_data(self) -> int:

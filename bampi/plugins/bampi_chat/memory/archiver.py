@@ -199,10 +199,8 @@ async def summarize_archive_with_llm(
     try:
         result = await complete_simple(model, context, options)
     except Exception:
-        logger.warning(
-            "bampi_chat memory LLM summary failed model=%s",
-            getattr(model, "id", model),
-            exc_info=True,
+        logger.opt(exception=True).warning(
+            f"bampi_chat memory LLM summary failed model={getattr(model, 'id', model)}"
         )
         return None
 

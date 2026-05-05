@@ -920,11 +920,8 @@ class MemoryStore:
         try:
             query_vector = provider.embed_text(query)
         except Exception:
-            logger.warning(
-                "bampi_chat memory embedding query failed provider=%s model=%s",
-                provider.provider,
-                provider.model,
-                exc_info=True,
+            logger.opt(exception=True).warning(
+                f"bampi_chat memory embedding query failed provider={provider.provider} model={provider.model}"
             )
             return
         if not any(query_vector):
@@ -1191,12 +1188,8 @@ class MemoryStore:
         try:
             vector = provider.embed_text(text)
         except Exception:
-            logger.warning(
-                "bampi_chat memory archive embedding failed archive_id=%s provider=%s model=%s",
-                archive_id,
-                provider.provider,
-                provider.model,
-                exc_info=True,
+            logger.opt(exception=True).warning(
+                f"bampi_chat memory archive embedding failed archive_id={archive_id} provider={provider.provider} model={provider.model}"
             )
             return
         if not any(vector):
