@@ -414,7 +414,6 @@ class MemoryManager:
                 profile=profile,
                 archives=archives,
                 pending_edits=edits,
-                max_chars=self._profile_max_tokens * 4,
             )
             self.store.profiles.consolidate(
                 group_id=profile.group_id,
@@ -458,7 +457,6 @@ class MemoryManager:
                 profile=profile,
                 archives=archives,
                 pending_edits=edits,
-                max_chars=self._profile_max_tokens * 4,
                 model=model,
                 api_key=api_key,
             )
@@ -472,7 +470,6 @@ class MemoryManager:
                     profile=profile,
                     archives=archives,
                     pending_edits=edits,
-                    max_chars=self._profile_max_tokens * 4,
                 )
             self.store.profiles.consolidate(
                 group_id=profile.group_id,

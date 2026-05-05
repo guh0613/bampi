@@ -83,7 +83,6 @@ def build_profile_from_archives(
     profile: MemoryProfile,
     archives: list[MemoryArchive],
     pending_edits: list[MemoryProfileEdit],
-    max_chars: int,
 ) -> str:
     nickname = profile.nickname or "{nickname}"
     keywords = _top_keywords(archives)
@@ -122,7 +121,7 @@ def build_profile_from_archives(
     else:
         lines.append("暂无更早期的稳定背景。")
 
-    return _truncate_profile("\n".join(lines), max_chars=max_chars)
+    return "\n".join(lines).strip()
 
 
 async def generate_profile_with_llm(
@@ -130,7 +129,6 @@ async def generate_profile_with_llm(
     profile: MemoryProfile,
     archives: list[MemoryArchive],
     pending_edits: list[MemoryProfileEdit],
-    max_chars: int,
     model: Any,
     api_key: str | None = None,
 ) -> str | None:
@@ -175,7 +173,6 @@ async def generate_profile_with_llm(
         text,
         nickname=profile.nickname,
         delete_edits=[edit for edit in pending_edits if edit.edit_type == "delete"],
-        max_chars=max_chars,
     )
 
 
@@ -304,7 +301,6 @@ def _clean_llm_profile(
     *,
     nickname: str,
     delete_edits: list[MemoryProfileEdit],
-    max_chars: int,
 ) -> str | None:
     body = _strip_markdown_fence(text).strip()
     body = _strip_profile_label(body).replace("\r\n", "\n").replace("\r", "\n")
@@ -315,7 +311,7 @@ def _clean_llm_profile(
         return None
     if not any(heading in body for heading in _PROFILE_SECTION_HEADINGS):
         return None
-    return _truncate_profile(body, max_chars=max_chars)
+    return body
 
 
 def _strip_markdown_fence(text: str) -> str:
@@ -394,10 +390,3 @@ def _short_date(value: str) -> str:
         return datetime.fromisoformat(text).date().isoformat()
     except ValueError:
         return value[:10] if len(value) >= 10 else value
-
-
-def _truncate_profile(text: str, *, max_chars: int) -> str:
-    limit = max(200, max_chars)
-    if len(text) <= limit:
-        return text.strip()
-    return text[: max(0, limit - 3)].rstrip() + "..."
