@@ -593,14 +593,19 @@ async def test_profile_generation_scan_uses_llm_and_consolidates_pending_edits(
             content=[
                 TextContent(
                     text=(
-                        "基本信息\n"
-                        "{nickname} 是本群成员。\n\n"
-                        "兴趣与话题\n"
-                        "近期经常参与的话题包括：Rust、CLI、clap。\n\n"
-                        "近期动态\n"
+                        "**Work context**\n"
+                        "{nickname} 常讨论 Rust CLI 工具和参数解析。\n\n"
+                        "**Personal context**\n"
+                        "{nickname} 偏好简洁的命令行界面。\n\n"
+                        "**Top of mind**\n"
                         "2026-05-02 参与了「讨论 Rust CLI 工具」：张三讨论用 Rust 写命令行工具，并关注 clap 参数解析。\n\n"
-                        "早期背景\n"
-                        "偏好简洁的命令行界面。"
+                        "**Brief history**\n"
+                        "*Recent months*\n"
+                        "近期经常参与的话题包括：Rust、CLI、clap。\n\n"
+                        "*Earlier context*\n"
+                        "暂无更早期的可确认上下文。\n\n"
+                        "*Long-term background*\n"
+                        "暂无长期背景。"
                     )
                 )
             ],
@@ -621,14 +626,73 @@ async def test_profile_generation_scan_uses_llm_and_consolidates_pending_edits(
         current_nickname="张三",
     )
 
-    assert "基本信息" in context
+    assert "**Work context**" in context
     assert "Rust、CLI、clap" in context
     assert "偏好简洁的命令行界面" in context
     assert "近期补充" not in context
 
 
 @pytest.mark.asyncio
-async def test_profile_generation_scan_falls_back_when_llm_fails(
+async def test_profile_generation_scan_rejects_legacy_llm_profile_format(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    manager = MemoryManager(
+        tmp_path / "memory.db",
+        profile_session_threshold=1,
+        profile_max_tokens=300,
+    )
+    manager.archive_conversation(
+        group_id="1001",
+        started_at="2026-05-02T20:00:00+08:00",
+        ended_at="2026-05-02T20:20:00+08:00",
+        participants=[MemoryParticipant(user_id="42", nickname="张三")],
+        title="讨论 Rust CLI 工具",
+        summary="张三讨论用 Rust 写命令行工具。",
+        keywords=["Rust", "CLI"],
+        messages=[
+            MemoryMessage(
+                role="user",
+                user_id="42",
+                nickname="张三",
+                content="我最近喜欢用 Rust 写小工具。",
+                timestamp="2026-05-02T20:00:00+08:00",
+            )
+        ],
+    )
+
+    async def fake_complete_simple(_model, _ctx, _options):
+        return AssistantMessage(
+            api="test",
+            provider="test",
+            model="model-a",
+            content=[
+                TextContent(
+                    text=(
+                        "基本信息\n"
+                        "{nickname} 是本群成员。\n\n"
+                        "兴趣与话题\n"
+                        "近期经常参与的话题包括：Rust、CLI。"
+                    )
+                )
+            ],
+        )
+
+    stream_module = importlib.import_module("bampy.ai.stream")
+    monkeypatch.setattr(stream_module, "complete_simple", fake_complete_simple)
+
+    assert await manager.run_profile_generation_scan_async(model=object(), api_key="sk-test") == 0
+    context = manager.get_memory_context_for_turn(
+        group_id="1001",
+        current_user_id="42",
+        current_nickname="张三",
+    )
+
+    assert context == ""
+
+
+@pytest.mark.asyncio
+async def test_profile_generation_scan_keeps_pending_data_when_llm_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -675,16 +739,17 @@ async def test_profile_generation_scan_falls_back_when_llm_fails(
     stream_module = importlib.import_module("bampy.ai.stream")
     monkeypatch.setattr(stream_module, "complete_simple", fake_complete_simple)
 
-    assert await manager.run_profile_generation_scan_async(model=object(), api_key="sk-test") == 1
+    assert await manager.run_profile_generation_scan_async(model=object(), api_key="sk-test") == 0
     context = manager.get_memory_context_for_turn(
         group_id="1001",
         current_user_id="42",
         current_nickname="张三",
     )
 
-    assert "Rust" in context
     assert "偏好简洁的命令行界面" in context
-    assert "近期补充" not in context
+    assert "近期补充" in context
+    assert "**Work context**" not in context
+    assert manager.store.profiles.pending_edits(group_id="1001", user_id="42")
 
 
 def test_profile_delete_edit_hides_matching_profile_lines(tmp_path: Path):

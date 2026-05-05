@@ -481,14 +481,9 @@ class MemoryManager:
             if new_profile is None:
                 logger.warning(
                     f"bampi_chat memory llm profile generation returned empty output "
-                    f"group_id={profile.group_id} user_id={profile.user_id}; "
-                    "falling back to rule-based profile generation"
+                    f"group_id={profile.group_id} user_id={profile.user_id}; skipping until next scan"
                 )
-                new_profile = build_profile_from_archives(
-                    profile=profile,
-                    archives=archives,
-                    pending_edits=edits,
-                )
+                continue
             self.store.profiles.consolidate(
                 group_id=profile.group_id,
                 user_id=profile.user_id,

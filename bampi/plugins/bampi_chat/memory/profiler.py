@@ -9,7 +9,8 @@ from nonebot import logger
 
 from .types import MemoryArchive, MemoryParticipant, MemoryProfile, MemoryProfileEdit
 
-_PROFILE_SECTION_HEADINGS = ("基本信息", "兴趣与话题", "近期动态", "早期背景")
+_PROFILE_SECTION_HEADINGS = ("Work context", "Personal context", "Top of mind", "Brief history")
+_PROFILE_HISTORY_HEADINGS = ("Recent months", "Earlier context", "Long-term background")
 
 _LLM_PROFILE_MAX_INPUT_CHARS = 24_000
 _LLM_PROFILE_SYSTEM_PROMPT = """\
@@ -17,11 +18,29 @@ _LLM_PROFILE_SYSTEM_PROMPT = """\
 
 只输出画像正文，不要输出 Markdown 代码块、JSON、解释、前后缀。
 
-画像格式必须是自然语言文本，包含这些区块标题：
-基本信息
-兴趣与话题
-近期动态
-早期背景
+用户画像的内容格式是：
+
+**Work context**
+...
+
+**Personal context**
+...
+
+**Top of mind**
+...
+
+**Brief history**
+*Recent months* 
+...
+*Earlier context* 
+...
+*Long-term background*
+...
+...
+
+每节内容量根据实际掌握的信息决定——
+已知少则写一句，已知多则写密集段落。
+不要编造信息来填充篇幅，也不要省略已知信息来缩减篇幅。
 
 要求：
 - 只记录有持续价值、可由输入支持的事实，不要臆测。
@@ -84,24 +103,25 @@ def build_profile_from_archives(
     archives: list[MemoryArchive],
     pending_edits: list[MemoryProfileEdit],
 ) -> str:
-    nickname = profile.nickname or "{nickname}"
     keywords = _top_keywords(archives)
     recent_archives = sorted(archives, key=lambda archive: archive.ended_at, reverse=True)[:8]
     additions = [edit for edit in pending_edits if edit.edit_type in {"add", "update"}]
     deletions = [edit for edit in pending_edits if edit.edit_type == "delete"]
 
     lines: list[str] = [
-        "基本信息",
-        f"{{nickname}} 是本群成员。最近看到的群名片是 {nickname}。",
+        "**Work context**",
+        "暂时没有明确的工作或学习上下文。",
         "",
-        "兴趣与话题",
+        "**Personal context**",
+        "{nickname} 是本群成员。",
+        "",
+        "**Top of mind**",
     ]
     if keywords:
         lines.append("近期经常参与的话题包括：" + "、".join(keywords[:8]) + "。")
     else:
-        lines.append("暂时没有足够稳定的话题信息。")
+        lines.append("暂时没有足够稳定的近期话题信息。")
 
-    lines.extend(["", "近期动态"])
     if recent_archives:
         for archive in recent_archives:
             date = _short_date(archive.ended_at)
@@ -115,13 +135,17 @@ def build_profile_from_archives(
         lines.append(f"{_short_date(edit.created_at)} 补充信息：{edit.content}")
 
     prior = _filter_deleted_lines(profile.profile, deletions).strip()
-    lines.extend(["", "早期背景"])
-    if prior:
-        lines.append(prior)
+    lines.extend(["", "**Brief history**", "*Recent months*"])
+    prior_body = _strip_profile_headings(prior)
+    if prior_body:
+        lines.append(prior_body)
     else:
         lines.append("暂无更早期的稳定背景。")
+    lines.extend(["", "*Earlier context*", "暂无更早期的可确认上下文。"])
+    lines.extend(["", "*Long-term background*", "暂无长期背景。"])
 
-    return "\n".join(lines).strip()
+    body = "\n".join(lines).strip()
+    return _replace_nickname_with_placeholder(body, profile.nickname)
 
 
 async def generate_profile_with_llm(
@@ -309,7 +333,7 @@ def _clean_llm_profile(
     body = _collapse_blank_lines(body)
     if not body.strip():
         return None
-    if not any(heading in body for heading in _PROFILE_SECTION_HEADINGS):
+    if not _has_profile_section_structure(body):
         return None
     return body
 
@@ -350,6 +374,30 @@ def _collapse_blank_lines(text: str) -> str:
         lines.append(stripped)
         blank = False
     return "\n".join(lines).strip()
+
+
+def _has_profile_section_structure(text: str) -> bool:
+    folded = text.lower()
+    required_headings = _PROFILE_SECTION_HEADINGS + _PROFILE_HISTORY_HEADINGS
+    return all(heading.lower() in folded for heading in required_headings)
+
+
+def _strip_profile_headings(text: str) -> str:
+    headings = {
+        "基本信息",
+        "兴趣与话题",
+        "近期动态",
+        "早期背景",
+        *{heading.lower() for heading in _PROFILE_SECTION_HEADINGS},
+        *{heading.lower() for heading in _PROFILE_HISTORY_HEADINGS},
+    }
+    lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip().strip("*")
+        if stripped.lower() in headings:
+            continue
+        lines.append(line)
+    return _collapse_blank_lines("\n".join(lines))
 
 
 def _filter_deleted_lines(text: str, delete_edits: list[MemoryProfileEdit]) -> str:
