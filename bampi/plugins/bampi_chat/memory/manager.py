@@ -291,6 +291,24 @@ class MemoryManager:
             max_results=limit,
         )
 
+    def time_search(
+        self,
+        *,
+        group_id: str,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        user_id: str | None = None,
+        max_results: int | None = None,
+    ) -> list[MemorySearchHit]:
+        limit = self._search_max_results if max_results is None else min(max(1, max_results), 10)
+        return self.store.archives.time_search(
+            group_id=group_id,
+            start_time=start_time,
+            end_time=end_time,
+            user_id=user_id,
+            max_results=limit,
+        )
+
     def open_archive(
         self,
         *,

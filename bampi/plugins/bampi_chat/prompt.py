@@ -95,11 +95,15 @@ def build_system_prompt(
         )
     if "memory_search" in tool_names:
         tool_lines.append(
-            "- 用户提到“之前”“上次”“以前聊过”“上周那个配置”等历史上下文时，先用 `memory_search` 搜索候选历史会话；query 写成短的内容关键词，例如 `nginx 配置 证书`。"
+            "- `memory_search` 只做内容语义检索；query 写成短的内容关键词，例如 `nginx 配置 证书`，不要写 `上周`、`之前`、`那个` 这类时间/指代词。"
+        )
+    if "memory_time_search" in tool_names:
+        tool_lines.append(
+            "- 用户问“上周我们聊了什么”“昨天聊过什么”“某个时间段发生了什么”时，先用 `memory_time_search` 按时间范围检索历史会话；把相对时间换成当前 UTC+8 下的 ISO 时间。"
         )
     if "memory_open" in tool_names:
         tool_lines.append(
-            "- `memory_search` 只返回候选 archive；需要继续读取那次上下文时，再用 `memory_open`，默认使用 `compact`，只有需要工具细节时才打开 `tools` 或 `full`。"
+            "- `memory_search` 和 `memory_time_search` 都只返回候选 archive；需要继续读取那次上下文时，再用 `memory_open`，默认使用 `compact`，只有需要工具细节时才打开 `tools` 或 `full`。"
         )
     if "memory_manage" in tool_names:
         tool_lines.append(

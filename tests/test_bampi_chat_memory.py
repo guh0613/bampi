@@ -198,7 +198,7 @@ def test_search_text_generates_cjk_ngrams_and_entities():
     assert "代理" in terms
     assert "app.conf" in terms
     assert "443" in terms
-    assert "上周" not in terms
+    assert "上周" in terms
     assert build_fts_query("nginx 反向代理") != ""
 
 
@@ -259,6 +259,22 @@ def test_memory_search_finds_expected_archive_and_keeps_group_isolation(tmp_path
     assert [hit.archive.id for hit in other_group_hits] == [ids["other_group_nginx"]]
 
 
+def test_memory_time_search_finds_archives_by_range(tmp_path: Path):
+    manager = MemoryManager(tmp_path / "memory.db")
+    ids = _seed_memory(manager)
+
+    hits = manager.time_search(
+        group_id="1001",
+        start_time="2026-04-27T00:00:00+08:00",
+        end_time="2026-04-30T23:59:59+08:00",
+        max_results=5,
+    )
+
+    assert [hit.archive.id for hit in hits] == [ids["crawler"], ids["nginx"]]
+    assert all("time_range" in hit.matched_sources for hit in hits)
+    assert all(hit.snippets for hit in hits)
+
+
 def test_memory_search_uses_tool_events_and_user_filter(tmp_path: Path):
     manager = MemoryManager(tmp_path / "memory.db")
     ids = _seed_memory(manager)
@@ -273,6 +289,20 @@ def test_memory_search_uses_tool_events_and_user_filter(tmp_path: Path):
 
     lisi_hits = manager.search(group_id="1001", query="nginx 配置", user_id="7")
     assert lisi_hits == []
+
+
+def test_memory_time_search_uses_user_filter(tmp_path: Path):
+    manager = MemoryManager(tmp_path / "memory.db")
+    ids = _seed_memory(manager)
+
+    hits = manager.time_search(
+        group_id="1001",
+        start_time="2026-04-27T00:00:00+08:00",
+        end_time="2026-04-30T23:59:59+08:00",
+        user_id="7",
+    )
+
+    assert [hit.archive.id for hit in hits] == [ids["crawler"]]
 
 
 def test_memory_search_documents_lexical_gap_without_embedding(tmp_path: Path):
@@ -419,21 +449,34 @@ async def test_memory_tools_render_search_and_open_results(tmp_path: Path):
         memory_manager=manager,
     )
     search_tool = next(tool for tool in tools if tool.name == "memory_search")
+    time_search_tool = next(tool for tool in tools if tool.name == "memory_time_search")
     open_tool = next(tool for tool in tools if tool.name == "memory_open")
 
     search_result = await search_tool.execute("call-1", {"query": "nginx 证书", "max_results": 2})
     assert f"archive_id={ids['nginx']}" in search_result.content[0].text
     assert search_result.details["archives"][0]["archive"]["id"] == ids["nginx"]
 
-    open_result = await open_tool.execute("call-2", {"archive_id": ids["nginx"], "mode": "compact"})
+    time_search_result = await time_search_tool.execute(
+        "call-2",
+        {
+            "start_time": "2026-04-27T00:00:00+08:00",
+            "end_time": "2026-04-30T23:59:59+08:00",
+            "max_results": 2,
+        },
+    )
+    assert f"archive_id={ids['crawler']}" in time_search_result.content[0].text
+    assert time_search_result.details["archives"][0]["archive"]["id"] == ids["crawler"]
+
+    open_result = await open_tool.execute("call-3", {"archive_id": ids["nginx"], "mode": "compact"})
     assert "TLS 证书" in open_result.content[0].text
     assert open_result.details["archive"]["archive"]["id"] == ids["nginx"]
 
 
 def test_system_prompt_mentions_memory_tools():
-    prompt = build_system_prompt(BampiChatConfig(), ["memory_search", "memory_open", "memory_manage"])
+    prompt = build_system_prompt(BampiChatConfig(), ["memory_search", "memory_time_search", "memory_open", "memory_manage"])
 
     assert "memory_search" in prompt
+    assert "memory_time_search" in prompt
     assert "memory_open" in prompt
     assert "memory_manage" in prompt
     assert "nginx 配置 证书" in prompt

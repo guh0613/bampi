@@ -9,7 +9,7 @@ from .files import (
     WorkspaceReadTool,
     WorkspaceWriteTool,
 )
-from .memory import MemoryManageTool, MemoryOpenTool, MemorySearchTool
+from .memory import MemoryManageTool, MemoryOpenTool, MemorySearchTool, MemoryTimeSearchTool
 from .schedule import ScheduleTool
 from .service import ServiceTool
 from .safe_bash import SafeBashTool
@@ -74,6 +74,7 @@ def create_agent_tools(
         tools.extend(
             [
                 MemorySearchTool(manager=memory_manager, group_id=group_id),
+                MemoryTimeSearchTool(manager=memory_manager, group_id=group_id),
                 MemoryOpenTool(manager=memory_manager, group_id=group_id),
                 MemoryManageTool(
                     manager=memory_manager,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.fields import PydanticUndefined
@@ -24,13 +24,12 @@ class MemorySearchInput(BaseModel):
     query: str = Field(
         min_length=1,
         description=(
-            "Short search-engine style content query extracted from the user's vague reference, "
-            "for example `nginx 配置 证书`."
+            "Short search-engine style content query. Use content words only, for example "
+            "`nginx 配置 证书`; do not include temporal/meta words like `上周`, `之前`, `上次`, "
+            "`那个`, `聊过`, or `聊天记录`. For pure time-range recall, use memory_time_search."
         ),
     )
     user_id: str | None = Field(default=None, description="Optional QQ user id to restrict participation.")
-    after: str | None = Field(default=None, description="Optional ISO lower bound for archive end time.")
-    before: str | None = Field(default=None, description="Optional ISO upper bound for archive start time.")
     max_results: int = Field(default=5, ge=1, le=10, description="Maximum candidate archives to return.")
 
     @model_validator(mode="before")
@@ -50,10 +49,53 @@ class MemorySearchInput(BaseModel):
         return normalized
 
 
+class MemoryTimeSearchInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_time: str | None = Field(
+        default=None,
+        description=(
+            "Optional ISO datetime lower bound for the requested chat time range. "
+            "Use the current UTC+8 time from the system prompt to resolve relative dates."
+        ),
+    )
+    end_time: str | None = Field(
+        default=None,
+        description=(
+            "Optional ISO datetime upper bound for the requested chat time range. "
+            "Use the current UTC+8 time from the system prompt to resolve relative dates."
+        ),
+    )
+    user_id: str | None = Field(default=None, description="Optional QQ user id to restrict participation.")
+    max_results: int = Field(default=5, ge=1, le=10, description="Maximum archives to return.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_nulls_for_defaulted_non_nullable_fields(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        for name, field in cls.model_fields.items():
+            if normalized.get(name) is not None:
+                continue
+            if name not in normalized:
+                continue
+            if field.default in (None, PydanticUndefined):
+                continue
+            normalized.pop(name, None)
+        return normalized
+
+    @model_validator(mode="after")
+    def _require_time_bound(self) -> Self:
+        if not (self.start_time or self.end_time):
+            raise ValueError("start_time or end_time is required")
+        return self
+
+
 class MemoryOpenInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    archive_id: int = Field(description="Archive id returned by memory_search.")
+    archive_id: int = Field(description="Archive id returned by memory_search or memory_time_search.")
     mode: Literal["compact", "transcript", "tools", "full"] = Field(
         default="compact",
         description="How much context to open. Start with compact; use tools/full only when needed.",
@@ -103,9 +145,10 @@ class MemorySearchTool:
     name = "memory_search"
     label = "memory_search"
     description = (
-        "Search this group's archived historical conversations. Use it when the user mentions "
-        "previous, last time, earlier, last week, or otherwise needs old chat context. "
-        "It returns candidate archives, not full transcripts."
+        "Semantically search this group's archived historical conversations by content keywords. "
+        "Use it when the user refers to a topic, entity, file, URL, person, or technical detail from "
+        "past chat. The query must contain content words only. It returns candidate archives, not full "
+        "transcripts."
     )
     parameters = MemorySearchInput
 
@@ -131,8 +174,48 @@ class MemorySearchTool:
             group_id=self._group_id,
             query=arguments.query,
             user_id=arguments.user_id,
-            after=arguments.after,
-            before=arguments.before,
+            max_results=arguments.max_results,
+        )
+        return AgentToolResult(
+            content=[TextContent(text=render_search_results(hits))],
+            details={"archives": [search_hit_to_dict(hit) for hit in hits]},
+        )
+
+
+class MemoryTimeSearchTool:
+    name = "memory_time_search"
+    label = "memory_time_search"
+    description = (
+        "Search this group's archived historical conversations by time range. Use it when the user asks "
+        "what was discussed during a period, such as last week, yesterday, this morning, or a specific "
+        "date/time range. Provide ISO datetimes resolved from the current UTC+8 system time. It returns "
+        "matching archives, not full transcripts."
+    )
+    parameters = MemoryTimeSearchInput
+
+    def __init__(self, *, manager: MemoryManager, group_id: str) -> None:
+        self._manager = manager
+        self._group_id = group_id
+
+    async def execute(
+        self,
+        tool_call_id: str,
+        params: Any,
+        cancellation: CancellationToken | None = None,
+        on_update: AgentToolUpdateCallback | None = None,
+    ) -> AgentToolResult:
+        del tool_call_id, on_update
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
+
+        arguments = MemoryTimeSearchInput.model_validate(
+            params.model_dump() if hasattr(params, "model_dump") else dict(params or {})
+        )
+        hits = self._manager.time_search(
+            group_id=self._group_id,
+            start_time=arguments.start_time,
+            end_time=arguments.end_time,
+            user_id=arguments.user_id,
             max_results=arguments.max_results,
         )
         return AgentToolResult(
@@ -145,8 +228,8 @@ class MemoryOpenTool:
     name = "memory_open"
     label = "memory_open"
     description = (
-        "Open one archived conversation returned by memory_search. Use compact first; "
-        "use transcript/tools/full only if details are needed."
+        "Open one archived conversation returned by memory_search or memory_time_search. "
+        "Use compact first; use transcript/tools/full only if details are needed."
     )
     parameters = MemoryOpenInput
 

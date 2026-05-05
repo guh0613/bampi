@@ -109,6 +109,7 @@ TOOL_PROGRESS_EMOJIS: dict[str, str] = {
     "service": "🚀",
     "schedule": "⏰",
     "memory_search": "🧠",
+    "memory_time_search": "🧠",
     "memory_open": "🧠",
     "memory_manage": "🧠",
 }
@@ -702,6 +703,12 @@ def describe_tool_progress(tool_name: str, args: Any) -> str:
     if tool_name == "memory_search":
         query = render_tool_progress_value(payload.get("query"), "历史会话")
         return f"正在检索记忆：{query}"
+    if tool_name == "memory_time_search":
+        start_time = render_tool_progress_value(payload.get("start_time"), "开始时间")
+        end_time = render_tool_progress_value(payload.get("end_time"), "结束时间")
+        if start_time != "开始时间" or end_time != "结束时间":
+            return f"正在按时间检索记忆：{start_time} ~ {end_time}"
+        return "正在按时间检索记忆"
     if tool_name == "memory_open":
         archive_id = render_tool_progress_value(payload.get("archive_id"), "历史会话")
         return f"正在打开记忆：{archive_id}"

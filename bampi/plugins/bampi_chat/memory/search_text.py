@@ -11,24 +11,6 @@ _ENTITY_RE = re.compile(
 )
 _TRIM_CHARS = " \t\r\n,.;:!?()[]{}<>\"'`，。！？、；：（）【】《》"
 
-QUERY_STOP_TERMS = {
-    "上次",
-    "之前",
-    "以前",
-    "上周",
-    "这次",
-    "那个",
-    "这个",
-    "刚才",
-    "聊天",
-    "聊过",
-    "记得",
-    "继续",
-    "帮我",
-    "看看",
-    "一下",
-}
-
 
 def normalize_for_search(text: object) -> str:
     return " ".join(str(text or "").split())
@@ -96,12 +78,6 @@ def extract_search_terms(
             terms.append(sequence)
         terms.extend(cjk_ngrams(sequence))
 
-    if for_query:
-        terms = [
-            term
-            for term in terms
-            if term not in QUERY_STOP_TERMS
-        ]
     return _dedupe(terms)[:max_terms]
 
 
@@ -126,7 +102,7 @@ def build_fts_query(query: str, *, max_terms: int = 48) -> str:
 def like_terms(query: str, *, max_terms: int = 16) -> list[str]:
     normalized = normalize_for_search(query)
     terms = extract_search_terms(normalized, for_query=True, max_terms=max_terms)
-    if len(normalized) >= 2 and normalized not in QUERY_STOP_TERMS:
+    if len(normalized) >= 2:
         terms.insert(0, normalized)
     return _dedupe(terms)[:max_terms]
 

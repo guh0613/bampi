@@ -70,6 +70,23 @@ class MemoryArchiveStore:
             max_results=max_results,
         )
 
+    def time_search(
+        self,
+        *,
+        group_id: str,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        user_id: str | None = None,
+        max_results: int = 5,
+    ) -> list[MemorySearchHit]:
+        return self._store.time_search(
+            group_id=group_id,
+            start_time=start_time,
+            end_time=end_time,
+            user_id=user_id,
+            max_results=max_results,
+        )
+
     def open(
         self,
         *,

@@ -329,6 +329,66 @@ class MemoryStore:
             hits.sort(key=lambda hit: (hit.score, hit.archive.ended_at, hit.archive.id), reverse=True)
             return hits[:limit]
 
+    def time_search(
+        self,
+        *,
+        group_id: str,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        user_id: str | None = None,
+        max_results: int = 5,
+    ) -> list[MemorySearchHit]:
+        normalized_group_id = str(group_id).strip()
+        normalized_user_id = str(user_id).strip() if user_id is not None else None
+        normalized_start_time = normalize_for_search(start_time)
+        normalized_end_time = normalize_for_search(end_time)
+        start_dt = _parse_required_time_bound(normalized_start_time, name="start_time")
+        end_dt = _parse_required_time_bound(normalized_end_time, name="end_time")
+        if start_dt is not None and end_dt is not None and start_dt > end_dt:
+            raise ValueError("start_time must be before or equal to end_time")
+        limit = min(max(1, int(max_results or 5)), 10)
+
+        with self._connect() as conn:
+            hits: list[MemorySearchHit] = []
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM conversation_archives
+                WHERE group_id = ?
+                ORDER BY ended_at DESC, id DESC
+                """,
+                (normalized_group_id,),
+            ):
+                archive_id = int(row["id"])
+                if not self._archive_overlaps_time_range(
+                    row=row,
+                    start_time=normalized_start_time,
+                    end_time=normalized_end_time,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                ):
+                    continue
+                if not self._archive_passes_filters(
+                    conn,
+                    archive_id=archive_id,
+                    row=row,
+                    user_id=normalized_user_id,
+                    after=None,
+                    before=None,
+                ):
+                    continue
+                hits.append(
+                    MemorySearchHit(
+                        archive=self._archive_from_row(row),
+                        score=0.0,
+                        matched_sources=["time_range"],
+                        snippets=self._build_time_snippets(conn, archive_id=archive_id),
+                    )
+                )
+                if len(hits) >= limit:
+                    break
+            return hits
+
     def open_archive(
         self,
         *,
@@ -1140,6 +1200,71 @@ class MemoryStore:
             )
         ]
 
+    def _archive_overlaps_time_range(
+        self,
+        *,
+        row: sqlite3.Row,
+        start_time: str,
+        end_time: str,
+        start_dt: datetime | None,
+        end_dt: datetime | None,
+    ) -> bool:
+        archive_started = _parse_iso_datetime(row["started_at"])
+        archive_ended = _parse_iso_datetime(row["ended_at"])
+        if archive_started is None or archive_ended is None:
+            if start_time and str(row["ended_at"]) < start_time:
+                return False
+            if end_time and str(row["started_at"]) > end_time:
+                return False
+            return True
+        if start_dt is not None and archive_ended < start_dt:
+            return False
+        if end_dt is not None and archive_started > end_dt:
+            return False
+        return True
+
+    def _build_time_snippets(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        archive_id: int,
+    ) -> list[MemorySnippet]:
+        if self._search_snippet_messages <= 0:
+            return []
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM messages
+            WHERE archive_id = ?
+            ORDER BY id
+            """,
+            (archive_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        selected = rows[: self._search_snippet_messages]
+        if len(rows) > self._search_snippet_messages:
+            tail_room = max(1, self._search_snippet_messages // 2)
+            head_room = max(1, self._search_snippet_messages - tail_room)
+            selected = rows[:head_room] + rows[-tail_room:]
+        snippets: list[MemorySnippet] = []
+        seen: set[int] = set()
+        for row in selected:
+            message_id = int(row["id"])
+            if message_id in seen:
+                continue
+            seen.add(message_id)
+            snippets.append(
+                MemorySnippet(
+                    source="messages",
+                    message_id=message_id,
+                    role=row["role"],
+                    nickname=row["nickname"] or ("assistant" if row["role"] == "assistant" else ""),
+                    text=_truncate(row["content"], 180),
+                )
+            )
+        return snippets
+
     def _insert_message(
         self,
         conn: sqlite3.Connection,
@@ -1756,3 +1881,12 @@ def _parse_iso_datetime(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _parse_required_time_bound(value: str, *, name: str) -> datetime | None:
+    if not value:
+        return None
+    parsed = _parse_iso_datetime(value)
+    if parsed is None:
+        raise ValueError(f"{name} must be an ISO datetime")
+    return parsed
