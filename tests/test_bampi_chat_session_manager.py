@@ -9,6 +9,19 @@ from bampi.plugins.bampi_chat.config import BampiChatConfig
 from bampi.plugins.bampi_chat.session_manager import GroupSessionManager
 
 
+class BlockingArchiveMemoryManager:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.calls: list[dict[str, object]] = []
+
+    async def archive_session_async(self, **kwargs):  # noqa: ANN003
+        self.calls.append(kwargs)
+        self.started.set()
+        await self.release.wait()
+        return 123
+
+
 @pytest.mark.asyncio
 async def test_group_session_manager_reuses_session(tmp_path: Path):
     config = BampiChatConfig(
@@ -232,6 +245,71 @@ async def test_group_session_manager_clear_context_preserves_workspace_files(tmp
         assert recreated.session is not managed.session
         assert recreated.session.messages == []
     finally:
+        await manager.close_all()
+
+
+@pytest.mark.asyncio
+async def test_group_session_manager_clear_context_archives_in_background(tmp_path: Path):
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+    )
+    manager = GroupSessionManager(config)
+    archive_manager = BlockingArchiveMemoryManager()
+    manager._memory_manager = archive_manager
+    managed = await manager.get_or_create("1001")
+    managed.session.messages.append({"role": "user", "content": "hello"})
+    managed.session.session_manager.append_message({"role": "user", "content": "hello"})
+    managed.session.session_manager.append_message({"role": "assistant", "content": "hi"})
+    session_file = Path(managed.session.session_manager.session_file or "")
+
+    try:
+        assert session_file.exists()
+        cleared = await asyncio.wait_for(manager.clear_context("1001"), timeout=0.1)
+
+        assert cleared is True
+        assert not session_file.exists()
+        await asyncio.wait_for(archive_manager.started.wait(), timeout=0.1)
+        assert archive_manager.calls[0]["group_id"] == "1001"
+        assert archive_manager.calls[0]["messages"] == [{"role": "user", "content": "hello"}]
+
+        archive_manager.release.set()
+        await manager.wait_for_background_archives()
+    finally:
+        archive_manager.release.set()
+        await manager.close_all()
+
+
+@pytest.mark.asyncio
+async def test_group_session_manager_close_idle_archives_in_background(tmp_path: Path):
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+        bampi_session_idle_ttl_seconds=60,
+    )
+    manager = GroupSessionManager(config)
+    archive_manager = BlockingArchiveMemoryManager()
+    manager._memory_manager = archive_manager
+    managed = await manager.get_or_create("1001")
+    managed.session.messages.append({"role": "user", "content": "hello"})
+    managed.session.session_manager.append_message({"role": "user", "content": "hello"})
+    managed.session.session_manager.append_message({"role": "assistant", "content": "hi"})
+    session_file = Path(managed.session.session_manager.session_file or "")
+
+    try:
+        assert session_file.exists()
+        managed.last_used_at -= 120
+        await asyncio.wait_for(manager.close_idle(), timeout=0.1)
+
+        assert not session_file.exists()
+        await asyncio.wait_for(archive_manager.started.wait(), timeout=0.1)
+        recreated = await manager.get_or_create("1001")
+        assert recreated.session is not managed.session
+
+        archive_manager.release.set()
+        await manager.wait_for_background_archives()
+    finally:
+        archive_manager.release.set()
         await manager.close_all()
 
 

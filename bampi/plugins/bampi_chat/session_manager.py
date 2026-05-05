@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable, Literal
 
 from nonebot import get_driver, logger
 
+from bampy.agent.messages import clone_message
 from bampy.ai import Model, ModelCost, SimpleStreamOptions, get_model
 from bampy.app import AgentSession, BeforeAgentStartEventResult, ExtensionAPI, SessionManager
 
@@ -128,6 +129,7 @@ class GroupSessionManager:
         self._service_manager: ServiceManager | None = None
         self._schedule_manager = None
         self._memory_manager = MemoryManager.from_config(config) if config.bampi_memory_enabled else None
+        self._background_archive_tasks: set[asyncio.Task[None]] = set()
         self._memory_turn_states: dict[str, MemoryTurnState] = {}
         if config.bampi_service_enabled and config.bampi_bash_mode == "docker":
             self._service_manager = ServiceManager.from_config(config)
@@ -437,6 +439,14 @@ class GroupSessionManager:
         logger.info(f"bampi_chat closing all sessions count={len(sessions)}")
         for managed in sessions:
             await self._dispose_session(managed, reason="shutdown", clear_history=False)
+        await self._cancel_background_archive_tasks()
+
+    async def wait_for_background_archives(self) -> None:
+        while True:
+            tasks = [task for task in self._background_archive_tasks if not task.done()]
+            if not tasks:
+                return
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _memory_current_user(self, group_id: str) -> tuple[str, str] | None:
         state = self._memory_turn_states.get(group_id)
@@ -811,7 +821,7 @@ class GroupSessionManager:
             f"clear_workspace={clear_workspace} "
             f"pending_background_waits={pending_wait_ids}"
         )
-        await self._archive_session_if_needed(
+        self._schedule_archive_session_if_needed(
             managed,
             reason=reason,
             clear_history=clear_history,
@@ -849,7 +859,7 @@ class GroupSessionManager:
                         f"workspace_dir={self.workspace_dir_for_group(managed.group_id)}"
                     )
 
-    async def _archive_session_if_needed(
+    def _schedule_archive_session_if_needed(
         self,
         managed: ManagedGroupSession,
         *,
@@ -861,30 +871,72 @@ class GroupSessionManager:
             return
         if reason == "shutdown" or not clear_history:
             return
+        messages = [clone_message(message) for message in managed.session.messages]
+        if not messages:
+            return
+        user_turns = list(managed.memory_user_turns)
+        model = managed.session.model
+        api_key = self._config.bampi_api_key or None
+        task = asyncio.create_task(
+            self._archive_session_snapshot(
+                manager=manager,
+                group_id=managed.group_id,
+                messages=messages,
+                user_turns=user_turns,
+                model=model,
+                api_key=api_key,
+                reason=reason,
+            ),
+            name=f"bampi-chat-memory-archive-{managed.group_id}",
+        )
+        self._background_archive_tasks.add(task)
+        task.add_done_callback(self._background_archive_tasks.discard)
+
+    async def _archive_session_snapshot(
+        self,
+        *,
+        manager: MemoryManager,
+        group_id: str,
+        messages: list[Any],
+        user_turns: list[MemoryUserTurn],
+        model: Any,
+        api_key: str | None,
+        reason: str,
+    ) -> None:
         try:
             archive_id = await manager.archive_session_async(
-                group_id=managed.group_id,
-                messages=list(managed.session.messages),
-                user_turns=list(managed.memory_user_turns),
-                model=managed.session.model,
-                api_key=self._config.bampi_api_key or None,
+                group_id=group_id,
+                messages=messages,
+                user_turns=user_turns,
+                model=model,
+                api_key=api_key,
             )
         except Exception:
             logger.exception(
-                f"bampi_chat failed to archive memory session group_id={managed.group_id} "
+                f"bampi_chat failed to archive memory session group_id={group_id} "
                 f"reason={reason}"
             )
             return
         if archive_id is None:
             logger.info(
-                f"bampi_chat skipped memory archive group_id={managed.group_id} "
-                f"reason={reason} message_count={len(managed.session.messages)}"
+                f"bampi_chat skipped memory archive group_id={group_id} "
+                f"reason={reason} message_count={len(messages)}"
             )
             return
         logger.info(
-            f"bampi_chat archived memory session group_id={managed.group_id} "
+            f"bampi_chat archived memory session group_id={group_id} "
             f"reason={reason} archive_id={archive_id}"
         )
+
+    async def _cancel_background_archive_tasks(self) -> None:
+        tasks = list(self._background_archive_tasks)
+        if not tasks:
+            return
+        logger.info(f"bampi_chat cancelling background memory archives count={len(tasks)}")
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._background_archive_tasks.clear()
 
     def session_file_for_group(self, group_id: str) -> Path:
         return (self._session_dir / f"group-{group_id}.jsonl").resolve()
