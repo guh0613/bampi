@@ -93,6 +93,18 @@ def build_system_prompt(
         tool_lines.append(
             "- 用 `schedule` 设置定时或周期任务：一次性用 `date` + `run_at`，周期性用 `cron`。"
         )
+    if "memory_search" in tool_names:
+        tool_lines.append(
+            "- 用户提到“之前”“上次”“以前聊过”“上周那个配置”等历史上下文时，先用 `memory_search` 搜索候选历史会话；query 写成短的内容关键词，例如 `nginx 配置 证书`。"
+        )
+    if "memory_open" in tool_names:
+        tool_lines.append(
+            "- `memory_search` 只返回候选 archive；需要继续读取那次上下文时，再用 `memory_open`，默认使用 `compact`，只有需要工具细节时才打开 `tools` 或 `full`。"
+        )
+    if "memory_manage" in tool_names:
+        tool_lines.append(
+            "- 用户明确要求“记住这个”“帮我记一下”“忘掉这个”，或分享了具有长期价值的偏好/背景时，用 `memory_manage`；不要记录临时闲聊、密码、身份证号等敏感信息。"
+        )
 
     env_section = "\n".join(env_lines)
     tool_section = "\n".join(tool_lines) if tool_lines else "- 当前没有可用工具。"

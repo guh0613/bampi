@@ -12,9 +12,10 @@ from typing import Any, Awaitable, Callable, Literal
 from nonebot import get_driver, logger
 
 from bampy.ai import Model, ModelCost, SimpleStreamOptions, get_model
-from bampy.app import AgentSession, SessionManager
+from bampy.app import AgentSession, BeforeAgentStartEventResult, ExtensionAPI, SessionManager
 
 from .config import BampiChatConfig
+from .memory import MemoryManager, MemoryParticipant, MemoryUserTurn
 from .prompt import build_system_prompt
 from .service_manager import ServiceManager
 from .skills import build_prompt_skills, load_chat_skills
@@ -51,6 +52,15 @@ class ManagedGroupSession:
     active_user_id: str | None = None
     pending_background_waits: dict[str, "PendingBackgroundWait"] = field(default_factory=dict)
     background_listener_unsubscribes: list[Callable[[], None]] = field(default_factory=list)
+    memory_user_turns: list[MemoryUserTurn] = field(default_factory=list)
+    memory_participants: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class MemoryTurnState:
+    current_user_id: str
+    current_nickname: str
+    participants: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -117,6 +127,8 @@ class GroupSessionManager:
         self._guard = asyncio.Lock()
         self._service_manager: ServiceManager | None = None
         self._schedule_manager = None
+        self._memory_manager = MemoryManager.from_config(config) if config.bampi_memory_enabled else None
+        self._memory_turn_states: dict[str, MemoryTurnState] = {}
         if config.bampi_service_enabled and config.bampi_bash_mode == "docker":
             self._service_manager = ServiceManager.from_config(config)
         logger.info(
@@ -127,6 +139,8 @@ class GroupSessionManager:
             f"bash_container={config.bampi_bash_container_name} "
             f"bash_workdir={config.bampi_bash_container_workdir} "
             f"service_enabled={config.bampi_service_enabled} "
+            f"memory_enabled={config.bampi_memory_enabled} "
+            f"memory_storage_mode={config.bampi_memory_storage_mode} "
             f"service_port_range={config.bampi_service_port_range} "
             f"service_public_host={config.bampi_service_public_host or '<unset>'} "
             f"idle_ttl={config.bampi_session_idle_ttl_seconds}s"
@@ -148,6 +162,53 @@ class GroupSessionManager:
 
     def attach_schedule_manager(self, manager: object) -> None:
         self._schedule_manager = manager
+
+    @property
+    def memory_manager(self) -> MemoryManager | None:
+        return self._memory_manager
+
+    def start_memory_tasks(self) -> None:
+        if self._memory_manager is None:
+            return
+        self._memory_manager.start_background_tasks()
+
+    def close_memory_tasks(self) -> None:
+        if self._memory_manager is None:
+            return
+        self._memory_manager.close_background_tasks()
+
+    def prepare_memory_for_user_turn(
+        self,
+        managed: ManagedGroupSession,
+        *,
+        user_id: str,
+        nickname: str,
+        message: Any,
+    ) -> None:
+        if self._memory_manager is None:
+            return
+        normalized_user_id = str(user_id).strip()
+        if not normalized_user_id:
+            return
+        normalized_nickname = str(nickname).strip()
+        timestamp = getattr(message, "timestamp", None)
+        try:
+            timestamp_value = float(timestamp) if timestamp is not None else None
+        except (TypeError, ValueError):
+            timestamp_value = None
+        managed.memory_user_turns.append(
+            MemoryUserTurn(
+                user_id=normalized_user_id,
+                nickname=normalized_nickname,
+                timestamp=timestamp_value,
+            )
+        )
+        managed.memory_participants[normalized_user_id] = normalized_nickname
+        self._memory_turn_states[managed.group_id] = MemoryTurnState(
+            current_user_id=normalized_user_id,
+            current_nickname=normalized_nickname,
+            participants=dict(managed.memory_participants),
+        )
 
     async def get_or_create(self, group_id: str) -> ManagedGroupSession:
         await self.close_idle()
@@ -375,6 +436,40 @@ class GroupSessionManager:
         for managed in sessions:
             await self._dispose_session(managed, reason="shutdown", clear_history=False)
 
+    def _memory_current_user(self, group_id: str) -> tuple[str, str] | None:
+        state = self._memory_turn_states.get(group_id)
+        if state is None or not state.current_user_id:
+            return None
+        return (state.current_user_id, state.current_nickname)
+
+    def _build_memory_extension(self, group_id: str):
+        api = ExtensionAPI("bampi_chat_memory")
+
+        def _on_before_agent_start(event: Any, _ctx: Any) -> BeforeAgentStartEventResult | None:
+            manager = self._memory_manager
+            state = self._memory_turn_states.get(group_id)
+            if manager is None or state is None:
+                return None
+            participants = [
+                MemoryParticipant(user_id=user_id, nickname=nickname)
+                for user_id, nickname in state.participants.items()
+                if user_id
+            ]
+            context = manager.get_memory_context_for_turn(
+                group_id=group_id,
+                current_user_id=state.current_user_id,
+                current_nickname=state.current_nickname,
+                session_participants=participants,
+            )
+            if not context.strip():
+                return None
+            return BeforeAgentStartEventResult(
+                system_prompt=f"{event.system_prompt}\n\n## 记忆上下文\n{context.strip()}"
+            )
+
+        api.on("before_agent_start", _on_before_agent_start)
+        return api._build_extension()
+
     def _build_session(self, group_id: str) -> AgentSession:
         return self._create_agent_session(
             group_id,
@@ -402,6 +497,8 @@ class GroupSessionManager:
             container_root=model_workspace_root,
             bash_workdir=container_workspace_dir,
             group_id=group_id,
+            memory_manager=self._memory_manager,
+            memory_current_user_provider=lambda group_id=group_id: self._memory_current_user(group_id),
             service_manager=self._service_manager,
             schedule_manager=self._schedule_manager,
             include_schedule=include_schedule,
@@ -449,11 +546,16 @@ class GroupSessionManager:
                 f"message={diagnostic.message}"
             )
 
+        extensions = []
+        if self._memory_manager is not None:
+            extensions.append(self._build_memory_extension(group_id))
+
         return AgentSession(
             cwd=workspace_dir,
             model=model,
             thinking_level=self._config.bampi_thinking_level,
             tools=tools,
+            extensions=extensions,
             session_manager=session_manager,
             custom_system_prompt=system_prompt,
             augment_custom_system_prompt=False,
@@ -707,8 +809,14 @@ class GroupSessionManager:
             f"clear_workspace={clear_workspace} "
             f"pending_background_waits={pending_wait_ids}"
         )
+        await self._archive_session_if_needed(
+            managed,
+            reason=reason,
+            clear_history=clear_history,
+        )
         await self._close_session_tools(managed.session)
         await managed.session.close()
+        self._memory_turn_states.pop(managed.group_id, None)
         if clear_history and session_file:
             path = Path(session_file)
             try:
@@ -738,6 +846,41 @@ class GroupSessionManager:
                         f"bampi_chat failed to reset workspace files group_id={managed.group_id} "
                         f"workspace_dir={self.workspace_dir_for_group(managed.group_id)}"
                     )
+
+    async def _archive_session_if_needed(
+        self,
+        managed: ManagedGroupSession,
+        *,
+        reason: str,
+        clear_history: bool,
+    ) -> None:
+        manager = self._memory_manager
+        if manager is None:
+            return
+        if reason == "shutdown" or not clear_history:
+            return
+        try:
+            archive_id = manager.archive_session(
+                group_id=managed.group_id,
+                messages=list(managed.session.messages),
+                user_turns=list(managed.memory_user_turns),
+            )
+        except Exception:
+            logger.exception(
+                f"bampi_chat failed to archive memory session group_id={managed.group_id} "
+                f"reason={reason}"
+            )
+            return
+        if archive_id is None:
+            logger.info(
+                f"bampi_chat skipped memory archive group_id={managed.group_id} "
+                f"reason={reason} message_count={len(managed.session.messages)}"
+            )
+            return
+        logger.info(
+            f"bampi_chat archived memory session group_id={managed.group_id} "
+            f"reason={reason} archive_id={archive_id}"
+        )
 
     def session_file_for_group(self, group_id: str) -> Path:
         return (self._session_dir / f"group-{group_id}.jsonl").resolve()

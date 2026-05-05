@@ -108,6 +108,9 @@ TOOL_PROGRESS_EMOJIS: dict[str, str] = {
     "browser": "🧭",
     "service": "🚀",
     "schedule": "⏰",
+    "memory_search": "🧠",
+    "memory_open": "🧠",
+    "memory_manage": "🧠",
 }
 
 STOP_COMMAND = "/stop"
@@ -696,6 +699,16 @@ def describe_tool_progress(tool_name: str, args: Any) -> str:
         if action == "run_now":
             return f"正在立即执行定时任务：{task_ref}"
         return f"正在查看定时任务：{task_ref}"
+    if tool_name == "memory_search":
+        query = render_tool_progress_value(payload.get("query"), "历史会话")
+        return f"正在检索记忆：{query}"
+    if tool_name == "memory_open":
+        archive_id = render_tool_progress_value(payload.get("archive_id"), "历史会话")
+        return f"正在打开记忆：{archive_id}"
+    if tool_name == "memory_manage":
+        action = render_tool_progress_value(payload.get("action"), "编辑")
+        content = render_tool_progress_value(payload.get("content"), "画像内容")
+        return f"正在更新记忆（{action}）：{content}"
     display_name = render_tool_progress_value(tool_name, "unknown", limit=40)
     return f"正在执行工具：{display_name}"
 
@@ -1067,6 +1080,14 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 workspace_dir=workspace_dir,
                 explicit_skills=explicit_skills,
             )
+            prepare_memory_turn = getattr(session_manager, "prepare_memory_for_user_turn", None)
+            if active_status.managed is not None and callable(prepare_memory_turn):
+                prepare_memory_turn(
+                    active_status.managed,
+                    user_id=user_id,
+                    nickname=display_name(event.sender),
+                    message=user_message,
+                )
             active_status.managed.session.steer(user_message)
             return
 
@@ -1144,6 +1165,14 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 workspace_dir=workspace_dir,
                 explicit_skills=explicit_skills,
             )
+            prepare_memory_turn = getattr(session_manager, "prepare_memory_for_user_turn", None)
+            if callable(prepare_memory_turn):
+                prepare_memory_turn(
+                    managed,
+                    user_id=user_id,
+                    nickname=display_name(event.sender),
+                    message=user_message,
+                )
 
             if reservation.action == "steer":
                 managed.session.steer(user_message)

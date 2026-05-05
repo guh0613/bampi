@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
 BashMode = Literal["auto", "docker", "local"]
+MemoryStorageMode = Literal["single"]
 
 SUPPORTED_MODEL_APIS = {
     "auto",
@@ -42,6 +43,7 @@ MODEL_API_ALIASES = {
 DEFAULT_WORKSPACE_DIR = "data/bampi/workspace"
 DEFAULT_SESSION_DIR = "data/bampi/sessions"
 DEFAULT_SCHEDULE_DIR = "data/bampi/schedules"
+DEFAULT_MEMORY_DB_PATH = "data/bampi/memory.db"
 DEFAULT_BASH_CONTAINER_NAME = "bampi-sandbox"
 DEFAULT_BASH_CONTAINER_WORKDIR = "/workspace"
 DEFAULT_BASH_CONTAINER_SHELL = "/bin/bash"
@@ -113,6 +115,26 @@ class BampiChatConfig(BaseModel):
     bampi_schedule_max_active_tasks_per_group: int = 20
     bampi_schedule_tick_seconds: float = 15.0
 
+    bampi_memory_enabled: bool = True
+    bampi_memory_storage_mode: MemoryStorageMode = "single"
+    bampi_memory_db_path: str = DEFAULT_MEMORY_DB_PATH
+    bampi_memory_archive_min_messages: int = 3
+    bampi_memory_archive_summary_max_tokens: int = 500
+    bampi_memory_archive_retention_days: int = 365
+    bampi_memory_tool_result_preview_chars: int = 1000
+    bampi_memory_tool_result_full_max_chars: int = 20_000
+    bampi_memory_search_max_results: int = 10
+    bampi_memory_search_snippet_messages: int = 2
+    bampi_memory_search_like_fallback: bool = True
+    bampi_memory_embedding_enabled: bool = False
+    bampi_memory_embedding_provider: str = ""
+    bampi_memory_embedding_model: str = ""
+    bampi_memory_profile_session_threshold: int = 5
+    bampi_memory_profile_max_staleness_days: int = 7
+    bampi_memory_profile_cron: str = "0 4 * * *"
+    bampi_memory_profile_max_tokens: int = 1500
+    bampi_memory_pending_edits_max_inject: int = 10
+
     bampi_max_inline_image_size: int = 5 * 1024 * 1024
     bampi_max_download_size: int = 50 * 1024 * 1024
     bampi_group_file_upload_host_dir: str = "app/.config/QQ/temp"
@@ -151,6 +173,11 @@ class BampiChatConfig(BaseModel):
         "bampi_workspace_dir",
         "bampi_session_dir",
         "bampi_schedule_dir",
+        "bampi_memory_storage_mode",
+        "bampi_memory_db_path",
+        "bampi_memory_embedding_provider",
+        "bampi_memory_embedding_model",
+        "bampi_memory_profile_cron",
         "bampi_bash_container_name",
         "bampi_bash_container_workdir",
         "bampi_bash_container_shell",
@@ -179,6 +206,13 @@ class BampiChatConfig(BaseModel):
                 + ", ".join(sorted(SUPPORTED_MODEL_APIS))
             )
         return normalized
+
+    @field_validator("bampi_memory_storage_mode", mode="before")
+    @classmethod
+    def _normalize_memory_storage_mode(cls, value: object) -> str:
+        if value is None:
+            return "single"
+        return str(value).strip().lower() or "single"
 
     @field_validator("bampi_bash_container_name")
     @classmethod

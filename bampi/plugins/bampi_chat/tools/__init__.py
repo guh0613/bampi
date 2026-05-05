@@ -9,6 +9,7 @@ from .files import (
     WorkspaceReadTool,
     WorkspaceWriteTool,
 )
+from .memory import MemoryManageTool, MemoryOpenTool, MemorySearchTool
 from .schedule import ScheduleTool
 from .service import ServiceTool
 from .safe_bash import SafeBashTool
@@ -22,6 +23,8 @@ def create_agent_tools(
     container_root: str | None = None,
     bash_workdir: str | None = None,
     group_id: str | None = None,
+    memory_manager=None,
+    memory_current_user_provider=None,
     service_manager=None,
     schedule_manager=None,
     include_schedule: bool = True,
@@ -66,6 +69,18 @@ def create_agent_tools(
                 max_pages=config.bampi_browser_max_pages,
                 inline_image_max_bytes=config.bampi_browser_inline_image_max_bytes,
             )
+        )
+    if config.bampi_memory_enabled and memory_manager is not None and group_id is not None:
+        tools.extend(
+            [
+                MemorySearchTool(manager=memory_manager, group_id=group_id),
+                MemoryOpenTool(manager=memory_manager, group_id=group_id),
+                MemoryManageTool(
+                    manager=memory_manager,
+                    group_id=group_id,
+                    current_user_provider=memory_current_user_provider,
+                ),
+            ]
         )
     if (
         config.bampi_service_enabled

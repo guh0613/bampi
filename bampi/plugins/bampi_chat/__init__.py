@@ -53,6 +53,9 @@ else:
         f"schedule_enabled={plugin_config.bampi_schedule_enabled} "
         f"schedule_dir={plugin_config.bampi_schedule_dir} "
         f"schedule_timezone={plugin_config.bampi_schedule_timezone} "
+        f"memory_enabled={plugin_config.bampi_memory_enabled} "
+        f"memory_storage_mode={plugin_config.bampi_memory_storage_mode} "
+        f"memory_db_path={plugin_config.bampi_memory_db_path} "
         f"reply_quote={plugin_config.bampi_reply_with_quote} "
         f"at_sender={plugin_config.bampi_at_sender} "
         f"live_progress={plugin_config.bampi_live_progress_enabled} "
@@ -65,9 +68,15 @@ else:
         if schedule_manager is not None and plugin_config is not None and plugin_config.bampi_schedule_enabled:
             logger.info("bampi_chat starting schedule manager")
             await schedule_manager.start()
+        if group_session_manager is not None and plugin_config is not None and plugin_config.bampi_memory_enabled:
+            logger.info("bampi_chat starting memory background tasks")
+            group_session_manager.start_memory_tasks()
 
     @driver.on_shutdown
     async def _close_bampi_sessions() -> None:
+        if group_session_manager is not None:
+            logger.info("bampi_chat shutting down memory background tasks")
+            group_session_manager.close_memory_tasks()
         if schedule_manager is not None:
             logger.info("bampi_chat shutting down schedule manager")
             await schedule_manager.close()
