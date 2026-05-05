@@ -11,7 +11,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from .archiver import build_archive_from_agent_messages, summarize_archive_with_llm
 from .embeddings import MemoryEmbeddingProvider, build_embedding_provider
-from .profiler import build_profile_from_archives, render_memory_context
+from .profiler import build_profile_from_archives, generate_profile_with_llm, render_memory_context
 from .store import MemoryStore
 from .types import (
     MemoryMessage,
@@ -126,7 +126,12 @@ class MemoryManager:
             )
         return self._store
 
-    def start_background_tasks(self) -> None:
+    def start_background_tasks(
+        self,
+        *,
+        model: Any | None = None,
+        api_key: str | None = None,
+    ) -> None:
         if self._scheduler is not None:
             return
         try:
@@ -139,8 +144,11 @@ class MemoryManager:
             )
             return
         scheduler = AsyncIOScheduler(timezone=timezone)
+        async def _maintenance_job() -> None:
+            await self.run_memory_maintenance_async(model=model, api_key=api_key)
+
         scheduler.add_job(
-            self.run_memory_maintenance,
+            _maintenance_job,
             trigger,
             id="bampi-memory-maintenance",
             replace_existing=True,
@@ -373,6 +381,16 @@ class MemoryManager:
         deleted = self.cleanup_old_data()
         return {"profiles_generated": generated, "archives_deleted": deleted}
 
+    async def run_memory_maintenance_async(
+        self,
+        *,
+        model: Any | None = None,
+        api_key: str | None = None,
+    ) -> dict[str, int]:
+        generated = await self.run_profile_generation_scan_async(model=model, api_key=api_key)
+        deleted = self.cleanup_old_data()
+        return {"profiles_generated": generated, "archives_deleted": deleted}
+
     def run_profile_generation_scan(self) -> int:
         due_profiles = self.store.profiles.due_for_generation(
             session_threshold=self._profile_session_threshold,
@@ -398,6 +416,64 @@ class MemoryManager:
                 pending_edits=edits,
                 max_chars=self._profile_max_tokens * 4,
             )
+            self.store.profiles.consolidate(
+                group_id=profile.group_id,
+                user_id=profile.user_id,
+                profile=new_profile,
+                edit_ids=[edit.id for edit in edits if edit.id is not None],
+            )
+            generated += 1
+        if generated:
+            logger.info(f"bampi_chat memory generated profiles count={generated}")
+        return generated
+
+    async def run_profile_generation_scan_async(
+        self,
+        *,
+        model: Any | None = None,
+        api_key: str | None = None,
+    ) -> int:
+        if model is None:
+            return self.run_profile_generation_scan()
+
+        due_profiles = self.store.profiles.due_for_generation(
+            session_threshold=self._profile_session_threshold,
+            max_staleness_days=self._profile_max_staleness_days,
+        )
+        generated = 0
+        for profile in due_profiles:
+            edits = self.store.profiles.pending_edits(
+                group_id=profile.group_id,
+                user_id=profile.user_id,
+                limit=None,
+            )
+            archives = self.store.profiles.archives_for_generation(
+                group_id=profile.group_id,
+                user_id=profile.user_id,
+                since=profile.updated_at if profile.profile.strip() else None,
+            )
+            if not archives and not edits:
+                continue
+            new_profile = await generate_profile_with_llm(
+                profile=profile,
+                archives=archives,
+                pending_edits=edits,
+                max_chars=self._profile_max_tokens * 4,
+                model=model,
+                api_key=api_key,
+            )
+            if new_profile is None:
+                logger.warning(
+                    f"bampi_chat memory llm profile generation returned empty output "
+                    f"group_id={profile.group_id} user_id={profile.user_id}; "
+                    "falling back to rule-based profile generation"
+                )
+                new_profile = build_profile_from_archives(
+                    profile=profile,
+                    archives=archives,
+                    pending_edits=edits,
+                    max_chars=self._profile_max_tokens * 4,
+                )
             self.store.profiles.consolidate(
                 group_id=profile.group_id,
                 user_id=profile.user_id,

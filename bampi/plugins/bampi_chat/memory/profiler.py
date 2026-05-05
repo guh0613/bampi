@@ -1,9 +1,36 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
+
+from nonebot import logger
 
 from .types import MemoryArchive, MemoryParticipant, MemoryProfile, MemoryProfileEdit
+
+_PROFILE_SECTION_HEADINGS = ("基本信息", "兴趣与话题", "近期动态", "早期背景")
+
+_LLM_PROFILE_MAX_INPUT_CHARS = 24_000
+_LLM_PROFILE_SYSTEM_PROMPT = """\
+你是一个群聊长期记忆画像生成器。你会根据旧画像、新归档摘要和用户明确编辑，生成一个人的个人画像。
+
+只输出画像正文，不要输出 Markdown 代码块、JSON、解释、前后缀。
+
+画像格式必须是自然语言文本，包含这些区块标题：
+基本信息
+兴趣与话题
+近期动态
+早期背景
+
+要求：
+- 只记录有持续价值、可由输入支持的事实，不要臆测。
+- 近期事件可以更具体，早期内容要逐步概括。
+- 正文中指代画像本人时请使用 `{nickname}`这个占位符，不要使用具体的名字(当前群名片只用于理解输入中的说话人)！正确示例：`{nickname} 经常讨论 Rust 和命令行工具。` 错误示例：`张三 经常讨论 Rust 和命令行工具。`
+- 不要输出 QQ 号、group_id、user_id 等代码侧元数据。
+- delete/忘记/失效类编辑必须从主画像中移除，不要再提及相关内容。
+- 不记录密码、令牌、身份证号、银行卡号、住址等高敏感信息。
+"""
 
 
 @dataclass(slots=True)
@@ -98,6 +125,60 @@ def build_profile_from_archives(
     return _truncate_profile("\n".join(lines), max_chars=max_chars)
 
 
+async def generate_profile_with_llm(
+    *,
+    profile: MemoryProfile,
+    archives: list[MemoryArchive],
+    pending_edits: list[MemoryProfileEdit],
+    max_chars: int,
+    model: Any,
+    api_key: str | None = None,
+) -> str | None:
+    from bampy.ai.stream import complete_simple
+    from bampy.ai.types import Context, SimpleStreamOptions, StopReason, TextContent, UserMessage
+
+    prompt = _build_llm_profile_prompt(
+        profile=profile,
+        archives=archives,
+        pending_edits=pending_edits,
+    )
+    if len(prompt) > _LLM_PROFILE_MAX_INPUT_CHARS:
+        prompt = prompt[:_LLM_PROFILE_MAX_INPUT_CHARS].rstrip() + "\n...(已截断)"
+
+    context = Context(
+        system_prompt=_LLM_PROFILE_SYSTEM_PROMPT,
+        messages=[UserMessage(content=[TextContent(text=prompt)])],
+    )
+    options = SimpleStreamOptions(
+        api_key=api_key,
+        temperature=0.2,
+    )
+    try:
+        result = await complete_simple(model, context, options)
+    except Exception:
+        logger.opt(exception=True).warning(
+            f"bampi_chat memory LLM profile generation failed model={getattr(model, 'id', model)}"
+        )
+        return None
+
+    if getattr(result, "stop_reason", None) == StopReason.ERROR:
+        logger.warning(
+            "bampi_chat memory LLM profile generation returned error "
+            f"model={getattr(model, 'id', model)} error={getattr(result, 'error_message', '')}"
+        )
+        return None
+
+    text = _assistant_text(result)
+    if not text.strip():
+        return None
+    return _clean_llm_profile(
+        text,
+        nickname=profile.nickname,
+        delete_edits=[edit for edit in pending_edits if edit.edit_type == "delete"],
+        max_chars=max_chars,
+    )
+
+
 def _render_profile_body(
     profile_text: str,
     *,
@@ -131,6 +212,148 @@ def _render_profile_body(
         body = "\n".join(lines)
 
     return body
+
+
+def _build_llm_profile_prompt(
+    *,
+    profile: MemoryProfile,
+    archives: list[MemoryArchive],
+    pending_edits: list[MemoryProfileEdit],
+) -> str:
+    deletions = [edit for edit in pending_edits if edit.edit_type == "delete"]
+    old_profile = _filter_deleted_lines(profile.profile, deletions).strip() or "无"
+    archive_text = _render_archives_for_prompt(archives)
+    edit_text = _render_edits_for_prompt(pending_edits)
+    nickname = profile.nickname or "未知群名片"
+    return f"""\
+请为这个群成员生成新的主画像。
+
+<current_display_name_for_reference_do_not_use>
+{nickname}
+</current_display_name_for_reference_do_not_use>
+
+<metadata>
+profile_version: {profile.version}
+pending_sessions: {profile.pending_sessions}
+</metadata>
+
+<old_profile>
+{old_profile}
+</old_profile>
+
+<recent_archives>
+{archive_text}
+</recent_archives>
+
+<pending_edits>
+{edit_text}
+</pending_edits>
+
+请综合以上信息输出新的画像正文。输出中指代本人时，必须写占位符 `{{nickname}}`，不要把上面的当前群名片写进正文。
+"""
+
+
+def _render_archives_for_prompt(archives: list[MemoryArchive]) -> str:
+    if not archives:
+        return "无"
+    lines: list[str] = []
+    for archive in sorted(archives, key=lambda item: item.ended_at, reverse=True)[:20]:
+        participants = "、".join(
+            participant.nickname
+            for participant in archive.participants[:8]
+            if participant.nickname
+        )
+        keywords = "、".join(keyword for keyword in archive.keywords if keyword.strip())
+        lines.extend(
+            [
+                f"- 时间: {_short_date(archive.ended_at)}",
+                f"  标题: {archive.title or '未命名会话'}",
+                f"  摘要: {archive.summary or '无摘要'}",
+                f"  关键词: {keywords or '无'}",
+                f"  参与成员: {participants or '未知'}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _render_edits_for_prompt(edits: list[MemoryProfileEdit]) -> str:
+    if not edits:
+        return "无"
+    lines: list[str] = []
+    for edit in edits:
+        if edit.edit_type == "delete":
+            action = "delete/忘记/失效，必须从主画像移除"
+        elif edit.edit_type == "update":
+            action = "update/更新"
+        else:
+            action = "add/补充"
+        lines.append(f"- [{action}] {_short_date(edit.created_at)}: {edit.content}")
+    return "\n".join(lines)
+
+
+def _assistant_text(result: Any) -> str:
+    text = ""
+    for block in getattr(result, "content", []) or []:
+        if getattr(block, "type", "") == "text":
+            text += getattr(block, "text", "")
+    return text
+
+
+def _clean_llm_profile(
+    text: str,
+    *,
+    nickname: str,
+    delete_edits: list[MemoryProfileEdit],
+    max_chars: int,
+) -> str | None:
+    body = _strip_markdown_fence(text).strip()
+    body = _strip_profile_label(body).replace("\r\n", "\n").replace("\r", "\n")
+    body = _filter_deleted_lines(body, delete_edits)
+    body = _replace_nickname_with_placeholder(body, nickname)
+    body = _collapse_blank_lines(body)
+    if not body.strip():
+        return None
+    if not any(heading in body for heading in _PROFILE_SECTION_HEADINGS):
+        return None
+    return _truncate_profile(body, max_chars=max_chars)
+
+
+def _strip_markdown_fence(text: str) -> str:
+    stripped = text.strip()
+    match = re.fullmatch(r"```(?:[a-zA-Z0-9_-]+)?\s*\n?(.*?)\n?```", stripped, flags=re.DOTALL)
+    return match.group(1).strip() if match else stripped
+
+
+def _strip_profile_label(text: str) -> str:
+    body = text.lstrip()
+    labels = ("profile:", "用户画像:", "用户画像：", "画像:", "画像：", "主画像:", "主画像：")
+    lower = body.lower()
+    for label in labels:
+        if lower.startswith(label.lower()):
+            return body[len(label) :].lstrip(" \n:-：")
+    return body
+
+
+def _replace_nickname_with_placeholder(text: str, nickname: str) -> str:
+    normalized = nickname.strip()
+    if len(normalized) < 2:
+        return text
+    return text.replace(normalized, "{nickname}")
+
+
+def _collapse_blank_lines(text: str) -> str:
+    lines: list[str] = []
+    blank = False
+    for line in text.splitlines():
+        stripped = line.rstrip()
+        if not stripped:
+            if not blank:
+                lines.append("")
+            blank = True
+            continue
+        lines.append(stripped)
+        blank = False
+    return "\n".join(lines).strip()
 
 
 def _filter_deleted_lines(text: str, delete_edits: list[MemoryProfileEdit]) -> str:

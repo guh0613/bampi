@@ -167,10 +167,12 @@ class GroupSessionManager:
     def memory_manager(self) -> MemoryManager | None:
         return self._memory_manager
 
-    def start_memory_tasks(self) -> None:
+    async def start_memory_tasks(self) -> None:
         if self._memory_manager is None:
             return
-        self._memory_manager.start_background_tasks()
+        model = self._build_model()
+        api_key = await self._resolve_api_key(model.provider)
+        self._memory_manager.start_background_tasks(model=model, api_key=api_key)
 
     def close_memory_tasks(self) -> None:
         if self._memory_manager is None:

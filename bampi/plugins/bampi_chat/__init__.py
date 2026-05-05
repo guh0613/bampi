@@ -70,7 +70,7 @@ else:
             await schedule_manager.start()
         if group_session_manager is not None and plugin_config is not None and plugin_config.bampi_memory_enabled:
             logger.info("bampi_chat starting memory background tasks")
-            group_session_manager.start_memory_tasks()
+            await group_session_manager.start_memory_tasks()
 
     @driver.on_shutdown
     async def _close_bampi_sessions() -> None:
