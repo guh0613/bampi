@@ -104,7 +104,7 @@ def test_bampi_chat_defaults_use_docker_sandbox():
     assert config.bampi_bash_container_workdir == "/workspace"
     assert config.bampi_bash_container_shell == "/bin/bash"
     assert config.bampi_group_whitelist == []
-    assert config.bampi_web_search_model == web_search_module.DEFAULT_WEB_SEARCH_MODEL
+    assert config.bampi_web_search_model == "grok-4.20-fast"
 
 
 def test_bampi_chat_group_whitelist_normalizes_entries():

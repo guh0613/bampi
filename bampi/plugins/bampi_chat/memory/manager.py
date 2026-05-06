@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from nonebot import logger
+import asyncio
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
+
+from nonebot import logger
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -259,7 +261,8 @@ class MemoryManager:
                 if not keywords:
                     keywords = built.keywords
 
-        return self.archive_conversation(
+        return await asyncio.to_thread(
+            self.archive_conversation,
             group_id=group_id,
             started_at=built.started_at,
             ended_at=built.ended_at,

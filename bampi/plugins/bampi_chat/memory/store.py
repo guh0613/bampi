@@ -103,6 +103,7 @@ class MemoryStore:
         normalized_participants = self._normalize_participants(participants, normalized_messages)
         normalized_keywords = [str(keyword).strip() for keyword in keywords or [] if str(keyword).strip()]
         now = created_at or _now_iso()
+        embedding_text = "\n".join([title, summary, " ".join(normalized_keywords)])
 
         with self._connect() as conn:
             cursor = conn.execute(
@@ -143,13 +144,6 @@ class MemoryStore:
             conn.execute(
                 "INSERT INTO archive_fts(archive_id, group_id, search_text) VALUES (?, ?, ?)",
                 (archive_id, normalized_group_id, archive_search_text),
-            )
-            self._insert_archive_embedding(
-                conn,
-                archive_id=archive_id,
-                group_id=normalized_group_id,
-                text="\n".join([title, summary, " ".join(normalized_keywords)]),
-                created_at=now,
             )
 
             for message in normalized_messages:
@@ -209,7 +203,13 @@ class MemoryStore:
                 last_active_at=ended_at,
             )
             conn.commit()
-            return archive_id
+        self._insert_archive_embedding(
+            archive_id=archive_id,
+            group_id=normalized_group_id,
+            text=embedding_text,
+            created_at=now,
+        )
+        return archive_id
 
     def search(
         self,
@@ -1300,7 +1300,6 @@ class MemoryStore:
 
     def _insert_archive_embedding(
         self,
-        conn: sqlite3.Connection,
         *,
         archive_id: int,
         group_id: str,
@@ -1312,36 +1311,37 @@ class MemoryStore:
             return
         try:
             vector = provider.embed_text(text)
+            if not any(vector):
+                return
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO archive_embeddings (
+                        archive_id,
+                        group_id,
+                        provider,
+                        model,
+                        dimension,
+                        vector,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        archive_id,
+                        group_id,
+                        provider.provider,
+                        provider.model,
+                        len(vector),
+                        _json_dumps(vector),
+                        created_at,
+                    ),
+                )
+                conn.commit()
         except Exception:
             logger.opt(exception=True).warning(
                 f"bampi_chat memory archive embedding failed archive_id={archive_id} provider={provider.provider} model={provider.model}"
             )
-            return
-        if not any(vector):
-            return
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO archive_embeddings (
-                archive_id,
-                group_id,
-                provider,
-                model,
-                dimension,
-                vector,
-                created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                archive_id,
-                group_id,
-                provider.provider,
-                provider.model,
-                len(vector),
-                _json_dumps(vector),
-                created_at,
-            ),
-        )
 
     def _insert_tool_event(
         self,

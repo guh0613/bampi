@@ -233,7 +233,7 @@ async def test_group_session_manager_session_prompt_lists_installed_skills(tmp_p
     try:
         assert "<available_skills>" in managed.session.system_prompt
         assert "docs-search" in managed.session.system_prompt
-        assert f"Current working directory: /workspace/{group_workspace.name}" in managed.session.system_prompt
+        assert f"工作目录: /workspace/{group_workspace.name}" in managed.session.system_prompt
         assert str(group_workspace.resolve()) not in managed.session.system_prompt
         assert ".agents/builtin-skills/docx/SKILL.md" in managed.session.system_prompt
         assert str((group_workspace / ".agents" / "builtin-skills" / "docx" / "SKILL.md").resolve()) not in managed.session.system_prompt
