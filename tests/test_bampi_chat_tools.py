@@ -45,12 +45,14 @@ def test_workspace_cleanup_removes_stale_work_files_and_preserves_environment(tm
         workspace / "inbox" / "upload.txt",
         workspace / "outbox" / "result.txt",
         workspace / "work" / "notes.md",
+        workspace / "work" / "persistent" / "old.txt",
     ]
     protected_paths = [
         workspace / ".agents" / "skills" / "demo" / "SKILL.md",
         workspace / ".browser" / "camoufox-profile" / "cookies.sqlite",
         workspace / ".venv" / "pyvenv.cfg",
         workspace / "node_modules" / "pkg" / "index.js",
+        workspace / "persistent" / "keep.txt",
         workspace / ".env",
         workspace / "storage-state.json",
     ]
@@ -79,6 +81,7 @@ def test_workspace_cleanup_removes_stale_work_files_and_preserves_environment(tm
     assert fresh_file.exists()
     assert (workspace / "inbox").is_dir()
     assert (workspace / "outbox").is_dir()
+    assert (workspace / "persistent").is_dir()
 
 
 @pytest.mark.asyncio
@@ -180,6 +183,7 @@ def test_system_prompt_mentions_docker_workspace():
 
     assert "/workspace" in prompt
     assert "常用开发环境" in prompt
+    assert "`persistent/` 用于长期保留" in prompt
     assert "Noto Sans CJK SC" in prompt
     assert "WenQuanYi Zen Hei" in prompt
 

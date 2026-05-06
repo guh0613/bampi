@@ -47,8 +47,10 @@ async def test_group_session_manager_reuses_session(tmp_path: Path):
         assert manager.container_workspace_dir_for_group("1001") == f"/workspace/{first_workspace.name}"
         assert (first_workspace / "inbox").exists()
         assert (first_workspace / "outbox").exists()
+        assert (first_workspace / "persistent").exists()
         assert (third_workspace / "inbox").exists()
         assert (third_workspace / "outbox").exists()
+        assert (third_workspace / "persistent").exists()
     finally:
         await manager.close_all()
 
@@ -70,6 +72,7 @@ def test_group_session_manager_uses_private_workspace_alias_and_migrates_legacy_
     assert workspace.name.startswith("chat-")
     assert "1001" not in workspace.name
     assert (workspace / "notes.txt").read_text(encoding="utf-8") == "keep me"
+    assert (workspace / "persistent").is_dir()
     assert not legacy_workspace.exists()
     assert not (workspace_root / ".workspace-group-aliases.json").exists()
     assert (tmp_path / ".workspace-group-aliases.json").exists()
@@ -176,20 +179,25 @@ async def test_group_session_manager_workspace_cleanup_scans_group_workspaces(tm
     workspace = Path(manager.workspace_dir_for_group("1001"))
     stale_file = workspace / "inbox" / "old.txt"
     protected_file = workspace / ".browser" / "camoufox-profile" / "cookies.sqlite"
+    persistent_file = workspace / "persistent" / "keep.txt"
     stale_file.write_text("old", encoding="utf-8")
     protected_file.parent.mkdir(parents=True, exist_ok=True)
     protected_file.write_text("cookie", encoding="utf-8")
+    persistent_file.write_text("keep", encoding="utf-8")
     old_time = time.time() - 4 * 24 * 60 * 60
     os.utime(stale_file, (old_time, old_time))
     os.utime(protected_file, (old_time, old_time))
+    os.utime(persistent_file, (old_time, old_time))
 
     try:
         await manager.run_workspace_cleanup_once()
 
         assert not stale_file.exists()
         assert protected_file.exists()
+        assert persistent_file.exists()
         assert (workspace / "inbox").is_dir()
         assert (workspace / "outbox").is_dir()
+        assert (workspace / "persistent").is_dir()
     finally:
         await manager.close_all()
 

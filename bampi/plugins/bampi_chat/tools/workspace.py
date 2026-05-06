@@ -18,6 +18,7 @@ _GROUP_ALIAS_STORE_LOCK = threading.Lock()
 _GROUP_ALIAS_PATTERN = re.compile(r"^chat-[0-9a-f]{8}(?:[0-9a-f]{8})?$")
 DEFAULT_WORKSPACE_CLEANUP_TTL_SECONDS = 3 * 24 * 60 * 60
 WORKSPACE_CLEANUP_KEEP_ROOT_DIRS = frozenset({"inbox", "outbox"})
+WORKSPACE_CLEANUP_PROTECTED_ROOT_DIR_NAMES = frozenset({"persistent"})
 WORKSPACE_CLEANUP_PROTECTED_DIR_NAMES = frozenset(
     {
         ".agents",
@@ -79,6 +80,7 @@ def ensure_workspace_dirs(workspace_dir: str) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     (root / "inbox").mkdir(parents=True, exist_ok=True)
     (root / "outbox").mkdir(parents=True, exist_ok=True)
+    (root / "persistent").mkdir(parents=True, exist_ok=True)
     return root
 
 
@@ -370,6 +372,8 @@ def _is_cleanup_protected_path(root: Path, path: Path, *, is_dir: bool) -> bool:
     except ValueError:
         return True
 
+    if relative_parts and relative_parts[0] in WORKSPACE_CLEANUP_PROTECTED_ROOT_DIR_NAMES:
+        return True
     if any(part in WORKSPACE_CLEANUP_PROTECTED_DIR_NAMES for part in relative_parts):
         return True
     if is_dir:
