@@ -386,6 +386,11 @@ class GroupSessionManager:
         session_file = self.session_file_for_group(group_id)
         existed = session_file.exists()
         if existed:
+            self._schedule_archive_persisted_session_if_needed(
+                group_id,
+                session_file=session_file,
+                reason="clear_context",
+            )
             try:
                 session_file.unlink(missing_ok=True)
                 logger.info(
@@ -876,18 +881,82 @@ class GroupSessionManager:
             return
         user_turns = list(managed.memory_user_turns)
         model = managed.session.model
-        api_key = self._config.bampi_api_key or None
+        self._schedule_archive_snapshot(
+            manager=manager,
+            group_id=managed.group_id,
+            messages=messages,
+            user_turns=user_turns,
+            model=model,
+            api_key=self._config.bampi_api_key or None,
+            reason=reason,
+        )
+
+    def _schedule_archive_persisted_session_if_needed(
+        self,
+        group_id: str,
+        *,
+        session_file: Path,
+        reason: str,
+    ) -> None:
+        manager = self._memory_manager
+        if manager is None:
+            return
+        try:
+            persisted_session = SessionManager(
+                self.workspace_dir_for_group(group_id),
+                session_file=str(session_file),
+                persist=True,
+            )
+            context = persisted_session.build_session_context()
+            messages = [clone_message(message) for message in context.messages]
+        except Exception:
+            logger.exception(
+                f"bampi_chat failed to load persisted session for memory archive "
+                f"group_id={group_id} session_file={session_file}"
+            )
+            return
+        if not messages:
+            return
+        try:
+            model = self._build_model()
+        except Exception:
+            logger.exception(
+                f"bampi_chat failed to build model for persisted memory archive "
+                f"group_id={group_id} session_file={session_file}"
+            )
+            return
+        self._schedule_archive_snapshot(
+            manager=manager,
+            group_id=group_id,
+            messages=messages,
+            user_turns=[],
+            model=model,
+            api_key=self._config.bampi_api_key or None,
+            reason=reason,
+        )
+
+    def _schedule_archive_snapshot(
+        self,
+        *,
+        manager: MemoryManager,
+        group_id: str,
+        messages: list[Any],
+        user_turns: list[MemoryUserTurn],
+        model: Any,
+        api_key: str | None,
+        reason: str,
+    ) -> None:
         task = asyncio.create_task(
             self._archive_session_snapshot(
                 manager=manager,
-                group_id=managed.group_id,
+                group_id=group_id,
                 messages=messages,
                 user_turns=user_turns,
                 model=model,
                 api_key=api_key,
                 reason=reason,
             ),
-            name=f"bampi-chat-memory-archive-{managed.group_id}",
+            name=f"bampi-chat-memory-archive-{group_id}",
         )
         self._background_archive_tasks.add(task)
         task.add_done_callback(self._background_archive_tasks.discard)
@@ -904,6 +973,10 @@ class GroupSessionManager:
         reason: str,
     ) -> None:
         try:
+            if api_key is None and model is not None:
+                provider = str(getattr(model, "provider", "")).strip()
+                if provider:
+                    api_key = await self._resolve_api_key(provider)
             archive_id = await manager.archive_session_async(
                 group_id=group_id,
                 messages=messages,
