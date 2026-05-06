@@ -461,7 +461,7 @@ class BrowserTool:
     label = "browser"
     description = (
         "Control a real Camoufox browser with persistent state. "
-        "Open pages, click/type/wait on rendered DOM, run JavaScript, manage tabs, and save screenshots."
+        "Open pages, click/type/wait on rendered DOM, run JavaScript, manage tabs, and read/save screenshots."
     )
     parameters = BrowserToolInput
 
