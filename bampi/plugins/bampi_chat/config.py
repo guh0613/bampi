@@ -69,6 +69,9 @@ class BampiChatConfig(BaseModel):
     bampi_max_turns: int = 50
     bampi_session_idle_ttl_seconds: int = 30 * 60
     bampi_background_wait_reminder_seconds: float = 10 * 60
+    bampi_workspace_cleanup_enabled: bool = True
+    bampi_workspace_cleanup_ttl_seconds: int = 3 * 24 * 60 * 60
+    bampi_workspace_cleanup_interval_seconds: float = 24 * 60 * 60
 
     bampi_workspace_dir: str = DEFAULT_WORKSPACE_DIR
     bampi_session_dir: str = DEFAULT_SESSION_DIR

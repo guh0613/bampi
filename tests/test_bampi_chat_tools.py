@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -12,6 +14,7 @@ from bampi.plugins.bampi_chat.prompt import build_system_prompt
 from bampi.plugins.bampi_chat.tools import create_agent_tools
 from bampi.plugins.bampi_chat.tools.files import WorkspaceEditTool, WorkspacePatchTool, WorkspaceReadTool, WorkspaceWriteTool
 from bampi.plugins.bampi_chat.tools.safe_bash import SafeBashTool
+from bampi.plugins.bampi_chat.tools.workspace import cleanup_stale_workspace_files
 from bampi.plugins.bampi_chat.tools import web_search as web_search_module
 
 
@@ -33,6 +36,49 @@ async def test_workspace_tools_round_trip(tmp_path: Path):
     result = await reader.execute("call-3", {"path": "notes.txt"})
 
     assert "BETA" in result.content[0].text
+
+
+def test_workspace_cleanup_removes_stale_work_files_and_preserves_environment(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    stale_paths = [
+        workspace / "scratch.py",
+        workspace / "inbox" / "upload.txt",
+        workspace / "outbox" / "result.txt",
+        workspace / "work" / "notes.md",
+    ]
+    protected_paths = [
+        workspace / ".agents" / "skills" / "demo" / "SKILL.md",
+        workspace / ".browser" / "camoufox-profile" / "cookies.sqlite",
+        workspace / ".venv" / "pyvenv.cfg",
+        workspace / "node_modules" / "pkg" / "index.js",
+        workspace / ".env",
+        workspace / "storage-state.json",
+    ]
+    fresh_file = workspace / "fresh.txt"
+    for path in [*stale_paths, *protected_paths, fresh_file]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.name, encoding="utf-8")
+
+    now = time.time()
+    stale_time = now - 4 * 24 * 60 * 60
+    for path in [*stale_paths, *protected_paths]:
+        os.utime(path, (stale_time, stale_time))
+    os.utime(fresh_file, (now, now))
+
+    result = cleanup_stale_workspace_files(
+        str(workspace),
+        ttl_seconds=3 * 24 * 60 * 60,
+        now=now,
+    )
+
+    assert result.deleted_files == len(stale_paths)
+    for path in stale_paths:
+        assert not path.exists()
+    for path in protected_paths:
+        assert path.exists()
+    assert fresh_file.exists()
+    assert (workspace / "inbox").is_dir()
+    assert (workspace / "outbox").is_dir()
 
 
 @pytest.mark.asyncio
@@ -71,6 +117,22 @@ async def test_workspace_read_tool_adds_skill_root_context(tmp_path: Path):
         "---"
     )
     assert "Run `python scripts/example.py`." in result.content[1].text
+
+
+@pytest.mark.asyncio
+async def test_workspace_read_tool_marks_access_without_changing_mtime(tmp_path: Path):
+    file_path = tmp_path / "notes.txt"
+    file_path.write_text("alpha", encoding="utf-8")
+    old_time = time.time() - 4 * 24 * 60 * 60
+    os.utime(file_path, (old_time, old_time))
+    old_mtime = file_path.stat().st_mtime_ns
+
+    reader = WorkspaceReadTool(str(tmp_path))
+    await reader.execute("call-1", {"path": "notes.txt"})
+
+    stat = file_path.stat()
+    assert stat.st_atime > old_time
+    assert stat.st_mtime_ns == old_mtime
 
 
 @pytest.mark.asyncio

@@ -29,6 +29,7 @@ from .workspace import (
     container_to_host_path,
     ensure_workspace_dirs,
     host_to_container_path,
+    mark_workspace_path_used,
     resolve_workspace_path,
     to_workspace_relative,
 )
@@ -786,6 +787,11 @@ class BrowserTool:
                 workspace_url = self._workspace_file_url(
                     to_workspace_relative(self._workspace_dir, workspace_path)
                 )
+                mark_workspace_path_used(
+                    self._workspace_dir,
+                    str(workspace_path),
+                    container_root=self._container_root,
+                )
                 return workspace_path.as_uri(), [
                     (
                         "Mapped the workspace-relative file URL to the host workspace so the browser can read it."
@@ -800,6 +806,11 @@ class BrowserTool:
         if mapped_path is not None:
             relative_path = to_workspace_relative(self._workspace_dir, mapped_path)
             workspace_url = self._workspace_file_url(relative_path)
+            mark_workspace_path_used(
+                self._workspace_dir,
+                relative_path,
+                container_root=self._container_root,
+            )
             return mapped_path.as_uri(), [
                 (
                     "Mapped the workspace file URL to the host workspace so the browser can read it."

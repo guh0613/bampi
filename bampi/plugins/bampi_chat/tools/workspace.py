@@ -1,16 +1,77 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import mimetypes
+import os
 import re
 import secrets
 import shutil
 import threading
+import time
+from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 
 _GROUP_ALIAS_STORE_VERSION = 1
 _GROUP_ALIAS_STORE_LOCK = threading.Lock()
 _GROUP_ALIAS_PATTERN = re.compile(r"^chat-[0-9a-f]{8}(?:[0-9a-f]{8})?$")
+DEFAULT_WORKSPACE_CLEANUP_TTL_SECONDS = 3 * 24 * 60 * 60
+WORKSPACE_CLEANUP_KEEP_ROOT_DIRS = frozenset({"inbox", "outbox"})
+WORKSPACE_CLEANUP_PROTECTED_DIR_NAMES = frozenset(
+    {
+        ".agents",
+        ".bampi-services",
+        ".bampy",
+        ".browser",
+        ".git",
+        ".hg",
+        ".npm",
+        ".pnpm-store",
+        ".svn",
+        ".uv",
+        ".venv",
+        ".yarn",
+        "node_modules",
+        "venv",
+    }
+)
+WORKSPACE_CLEANUP_PROTECTED_FILE_PATTERNS = frozenset(
+    {
+        ".env",
+        ".env.*",
+        ".npmrc",
+        ".yarnrc",
+        ".yarnrc.yml",
+        "cookies*.json",
+        "storage-state*.json",
+        "storage_state*.json",
+    }
+)
+
+
+@dataclass(slots=True)
+class WorkspaceCleanupResult:
+    workspace_dir: str
+    scanned_files: int = 0
+    scanned_dirs: int = 0
+    skipped_paths: int = 0
+    deleted_files: int = 0
+    deleted_dirs: int = 0
+    deleted_samples: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def deleted_total(self) -> int:
+        return self.deleted_files + self.deleted_dirs
+
+    def record_deleted(self, path: Path, *, root: Path, is_dir: bool) -> None:
+        if is_dir:
+            self.deleted_dirs += 1
+        else:
+            self.deleted_files += 1
+        if len(self.deleted_samples) < 20:
+            self.deleted_samples.append(to_workspace_relative(str(root), path))
 
 
 def ensure_workspace_dirs(workspace_dir: str) -> Path:
@@ -115,15 +176,133 @@ def reset_workspace_files(workspace_dir: str) -> Path:
         if entry.name in {"inbox", "outbox"}:
             _clear_directory_contents(entry)
             continue
-        if entry.name == ".agents":
-            _reset_agents_dir(entry)
-            continue
-        if entry.name == ".bampy":
-            _reset_legacy_skill_dir(entry)
+        if _is_cleanup_protected_path(root, entry, is_dir=entry.is_dir()):
             continue
         _remove_path(entry)
 
     return ensure_workspace_dirs(str(root))
+
+
+def cleanup_stale_workspace_files(
+    workspace_dir: str,
+    *,
+    ttl_seconds: float = DEFAULT_WORKSPACE_CLEANUP_TTL_SECONDS,
+    now: float | None = None,
+) -> WorkspaceCleanupResult:
+    root = ensure_workspace_dirs(workspace_dir)
+    current_time = time.time() if now is None else now
+    cutoff = current_time - max(0.0, ttl_seconds)
+    result = WorkspaceCleanupResult(workspace_dir=str(root))
+
+    dirs_for_empty_prune: list[Path] = []
+    dir_last_used: dict[Path, float] = {}
+    for current_dir, dir_names, file_names in os.walk(root, topdown=True, followlinks=False):
+        directory = Path(current_dir)
+        result.scanned_dirs += 1
+        dirs_for_empty_prune.append(directory)
+        with contextlib.suppress(OSError):
+            dir_last_used[directory] = _path_last_used(directory)
+
+        kept_dirs: list[str] = []
+        for name in dir_names:
+            child = directory / name
+            if _is_cleanup_protected_path(root, child, is_dir=True):
+                result.skipped_paths += 1
+                continue
+            kept_dirs.append(name)
+        dir_names[:] = kept_dirs
+
+        for name in file_names:
+            path = directory / name
+            result.scanned_files += 1
+            if _is_cleanup_protected_path(root, path, is_dir=False):
+                result.skipped_paths += 1
+                continue
+            try:
+                if _path_last_used(path) > cutoff:
+                    continue
+                _remove_path(path)
+                result.record_deleted(path, root=root, is_dir=False)
+            except OSError as exc:
+                result.errors.append(f"{to_workspace_relative(str(root), path)}: {exc}")
+
+    for directory in reversed(dirs_for_empty_prune):
+        if directory == root:
+            continue
+        if directory.parent == root and directory.name in WORKSPACE_CLEANUP_KEEP_ROOT_DIRS:
+            continue
+        if _is_cleanup_protected_path(root, directory, is_dir=True):
+            continue
+        try:
+            last_used = dir_last_used.get(directory)
+            if last_used is None:
+                last_used = _path_last_used(directory)
+            if last_used > cutoff:
+                continue
+            if any(directory.iterdir()):
+                continue
+            directory.rmdir()
+            result.record_deleted(directory, root=root, is_dir=True)
+        except OSError as exc:
+            result.errors.append(f"{to_workspace_relative(str(root), directory)}: {exc}")
+
+    ensure_workspace_dirs(str(root))
+    return result
+
+
+def cleanup_stale_group_workspaces(
+    workspace_root_dir: str,
+    *,
+    ttl_seconds: float = DEFAULT_WORKSPACE_CLEANUP_TTL_SECONDS,
+    now: float | None = None,
+    skip_workspace_dirs: set[str] | None = None,
+) -> list[WorkspaceCleanupResult]:
+    root = Path(workspace_root_dir).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    skipped = {Path(item).resolve() for item in (skip_workspace_dirs or set())}
+    results: list[WorkspaceCleanupResult] = []
+    for workspace_dir in iter_group_workspace_dirs(str(root)):
+        if workspace_dir.resolve() in skipped:
+            continue
+        results.append(
+            cleanup_stale_workspace_files(
+                str(workspace_dir),
+                ttl_seconds=ttl_seconds,
+                now=now,
+            )
+        )
+    return results
+
+
+def iter_group_workspace_dirs(workspace_root_dir: str) -> list[Path]:
+    root = Path(workspace_root_dir).resolve()
+    if not root.exists():
+        return []
+
+    workspaces: list[Path] = []
+    for entry in sorted(root.iterdir(), key=lambda item: item.name):
+        if not entry.is_dir():
+            continue
+        if _is_group_workspace_dir(entry):
+            workspaces.append(ensure_workspace_dirs(str(entry)))
+    return workspaces
+
+
+def mark_workspace_path_used(
+    workspace_dir: str,
+    user_path: str | None,
+    *,
+    container_root: str | None = None,
+) -> None:
+    try:
+        path = resolve_workspace_path(
+            workspace_dir,
+            user_path or ".",
+            container_root=container_root,
+        )
+    except ValueError:
+        return
+    _touch_access_time(path)
 
 
 def resolve_workspace_path(
@@ -177,26 +356,39 @@ def is_image_file(path: Path) -> bool:
     return bool(mime_type and mime_type.startswith("image/"))
 
 
-def _reset_agents_dir(agents_dir: Path) -> None:
-    _prune_directory_except(
-        agents_dir,
-        keep_names={"skills", "builtin-skills"},
-    )
+def _is_group_workspace_dir(path: Path) -> bool:
+    if _GROUP_ALIAS_PATTERN.fullmatch(path.name):
+        return True
+    if path.name.startswith("group-"):
+        return True
+    return (path / "inbox").is_dir() and (path / "outbox").is_dir()
 
 
-def _reset_legacy_skill_dir(legacy_dir: Path) -> None:
-    _prune_directory_except(
-        legacy_dir,
-        keep_names={"skills"},
-    )
+def _is_cleanup_protected_path(root: Path, path: Path, *, is_dir: bool) -> bool:
+    try:
+        relative_parts = path.resolve().relative_to(root).parts
+    except ValueError:
+        return True
+
+    if any(part in WORKSPACE_CLEANUP_PROTECTED_DIR_NAMES for part in relative_parts):
+        return True
+    if is_dir:
+        return False
+    return any(fnmatchcase(path.name, pattern) for pattern in WORKSPACE_CLEANUP_PROTECTED_FILE_PATTERNS)
 
 
-def _prune_directory_except(directory: Path, *, keep_names: set[str]) -> None:
-    directory.mkdir(parents=True, exist_ok=True)
-    for child in directory.iterdir():
-        if child.name in keep_names:
-            continue
-        _remove_path(child)
+def _path_last_used(path: Path) -> float:
+    stat = path.stat(follow_symlinks=False)
+    return max(stat.st_atime, stat.st_mtime)
+
+
+def _touch_access_time(path: Path) -> None:
+    try:
+        stat = path.stat(follow_symlinks=False)
+        now_ns = time.time_ns()
+        os.utime(path, ns=(now_ns, stat.st_mtime_ns), follow_symlinks=False)
+    except OSError:
+        return
 
 
 def _clear_directory_contents(directory: Path) -> None:

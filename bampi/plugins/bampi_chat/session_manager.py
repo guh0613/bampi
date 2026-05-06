@@ -23,6 +23,7 @@ from .skills import build_prompt_skills, load_chat_skills
 from .tools import create_agent_tools
 from .tools.safe_bash import BackgroundSessionExitEvent, SafeBashTool
 from .tools.workspace import (
+    cleanup_stale_group_workspaces,
     reset_workspace_files,
     resolve_group_container_workspace,
     resolve_group_workspace_dir,
@@ -130,6 +131,8 @@ class GroupSessionManager:
         self._schedule_manager = None
         self._memory_manager = MemoryManager.from_config(config) if config.bampi_memory_enabled else None
         self._background_archive_tasks: set[asyncio.Task[None]] = set()
+        self._workspace_cleanup_task: asyncio.Task[None] | None = None
+        self._workspace_cleanup_lock = asyncio.Lock()
         self._memory_turn_states: dict[str, MemoryTurnState] = {}
         if config.bampi_service_enabled and config.bampi_bash_mode == "docker":
             self._service_manager = ServiceManager.from_config(config)
@@ -145,7 +148,10 @@ class GroupSessionManager:
             f"memory_storage_mode={config.bampi_memory_storage_mode} "
             f"service_port_range={config.bampi_service_port_range} "
             f"service_public_host={config.bampi_service_public_host or '<unset>'} "
-            f"idle_ttl={config.bampi_session_idle_ttl_seconds}s"
+            f"idle_ttl={config.bampi_session_idle_ttl_seconds}s "
+            f"workspace_cleanup_enabled={config.bampi_workspace_cleanup_enabled} "
+            f"workspace_cleanup_ttl={config.bampi_workspace_cleanup_ttl_seconds}s "
+            f"workspace_cleanup_interval={config.bampi_workspace_cleanup_interval_seconds}s"
         )
 
     @property
@@ -180,6 +186,76 @@ class GroupSessionManager:
         if self._memory_manager is None:
             return
         self._memory_manager.close_background_tasks()
+
+    def start_workspace_cleanup_tasks(self) -> None:
+        if not self._config.bampi_workspace_cleanup_enabled:
+            return
+        if self._workspace_cleanup_task is not None and not self._workspace_cleanup_task.done():
+            return
+        self._workspace_cleanup_task = asyncio.create_task(
+            self._run_workspace_cleanup_loop(),
+            name="bampi-chat-workspace-cleanup",
+        )
+
+    async def close_workspace_cleanup_tasks(self) -> None:
+        task = self._workspace_cleanup_task
+        self._workspace_cleanup_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def run_workspace_cleanup_once(self) -> None:
+        if not self._config.bampi_workspace_cleanup_enabled:
+            return
+        if self._workspace_cleanup_lock.locked():
+            return
+        async with self._guard:
+            active_workspace_dirs = {
+                self.workspace_dir_for_group(group_id)
+                for group_id in self._sessions
+            }
+        async with self._workspace_cleanup_lock:
+            ttl = max(0, self._config.bampi_workspace_cleanup_ttl_seconds)
+            results = await asyncio.to_thread(
+                cleanup_stale_group_workspaces,
+                self._workspace_root_dir,
+                ttl_seconds=ttl,
+                skip_workspace_dirs=active_workspace_dirs,
+            )
+        deleted_files = sum(result.deleted_files for result in results)
+        deleted_dirs = sum(result.deleted_dirs for result in results)
+        errors = sum(len(result.errors) for result in results)
+        if deleted_files or deleted_dirs or errors:
+            samples = [
+                sample
+                for result in results
+                for sample in result.deleted_samples[:5]
+            ][:10]
+            logger.info(
+                f"bampi_chat workspace cleanup finished "
+                f"workspaces={len(results)} "
+                f"deleted_files={deleted_files} "
+                f"deleted_dirs={deleted_dirs} "
+                f"errors={errors} "
+                f"samples={samples}"
+            )
+
+    async def _run_workspace_cleanup_loop(self) -> None:
+        interval = max(60.0, float(self._config.bampi_workspace_cleanup_interval_seconds))
+        try:
+            while True:
+                try:
+                    await self.run_workspace_cleanup_once()
+                except Exception:
+                    logger.exception("bampi_chat workspace cleanup run failed")
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            logger.debug("bampi_chat workspace cleanup loop cancelled")
+            raise
 
     def prepare_memory_for_user_turn(
         self,
@@ -438,6 +514,7 @@ class GroupSessionManager:
             await self._dispose_session(managed, reason="release", clear_history=False)
 
     async def close_all(self) -> None:
+        await self.close_workspace_cleanup_tasks()
         async with self._guard:
             sessions = list(self._sessions.values())
             self._sessions.clear()

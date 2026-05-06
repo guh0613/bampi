@@ -65,6 +65,9 @@ else:
 
     @driver.on_startup
     async def _start_bampi_schedule_manager() -> None:
+        if group_session_manager is not None and plugin_config is not None:
+            logger.info("bampi_chat starting workspace cleanup task")
+            group_session_manager.start_workspace_cleanup_tasks()
         if schedule_manager is not None and plugin_config is not None and plugin_config.bampi_schedule_enabled:
             logger.info("bampi_chat starting schedule manager")
             await schedule_manager.start()
@@ -74,6 +77,9 @@ else:
 
     @driver.on_shutdown
     async def _close_bampi_sessions() -> None:
+        if group_session_manager is not None:
+            logger.info("bampi_chat shutting down workspace cleanup task")
+            await group_session_manager.close_workspace_cleanup_tasks()
         if group_session_manager is not None:
             logger.info("bampi_chat shutting down memory background tasks")
             group_session_manager.close_memory_tasks()

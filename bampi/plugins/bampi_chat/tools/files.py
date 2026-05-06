@@ -16,7 +16,7 @@ from bampy.app.tools import (
 )
 
 from ..skills import describe_skill_resource_context
-from .workspace import resolve_workspace_path, to_workspace_relative
+from .workspace import mark_workspace_path_used, resolve_workspace_path, to_workspace_relative
 
 
 class _WorkspaceToolMixin:
@@ -52,6 +52,11 @@ class WorkspaceReadTool(_WorkspaceToolMixin):
         payload = dict(params.model_dump() if hasattr(params, "model_dump") else dict(params))
         payload["path"] = self._safe_path(payload.get("path"))
         result = await self._delegate.execute(tool_call_id, payload, cancellation=cancellation, on_update=on_update)
+        mark_workspace_path_used(
+            self._workspace_dir,
+            payload["path"],
+            container_root=self._container_root,
+        )
         return _with_skill_resource_context(result, payload["path"])
 
 
@@ -93,7 +98,13 @@ class WorkspaceWriteTool(_WorkspaceToolMixin):
     ) -> AgentToolResult:
         payload = dict(params.model_dump() if hasattr(params, "model_dump") else dict(params))
         payload["path"] = self._safe_path(payload.get("path"))
-        return await self._delegate.execute(tool_call_id, payload, cancellation=cancellation, on_update=on_update)
+        result = await self._delegate.execute(tool_call_id, payload, cancellation=cancellation, on_update=on_update)
+        mark_workspace_path_used(
+            self._workspace_dir,
+            payload["path"],
+            container_root=self._container_root,
+        )
+        return result
 
 
 class WorkspaceEditTool(_WorkspaceToolMixin):
@@ -114,7 +125,13 @@ class WorkspaceEditTool(_WorkspaceToolMixin):
     ) -> AgentToolResult:
         payload = dict(params.model_dump() if hasattr(params, "model_dump") else dict(params))
         payload["path"] = self._safe_path(payload.get("path"))
-        return await self._delegate.execute(tool_call_id, payload, cancellation=cancellation, on_update=on_update)
+        result = await self._delegate.execute(tool_call_id, payload, cancellation=cancellation, on_update=on_update)
+        mark_workspace_path_used(
+            self._workspace_dir,
+            payload["path"],
+            container_root=self._container_root,
+        )
+        return result
 
 
 class WorkspacePatchTool(_WorkspaceToolMixin):
@@ -155,7 +172,13 @@ class WorkspaceFindTool(_WorkspaceToolMixin):
     ) -> AgentToolResult:
         payload = dict(params.model_dump() if hasattr(params, "model_dump") else dict(params))
         payload["path"] = self._safe_path(payload.get("path"))
-        return await self._delegate.execute(tool_call_id, payload, cancellation=cancellation, on_update=on_update)
+        result = await self._delegate.execute(tool_call_id, payload, cancellation=cancellation, on_update=on_update)
+        mark_workspace_path_used(
+            self._workspace_dir,
+            payload["path"],
+            container_root=self._container_root,
+        )
+        return result
 
 
 class WorkspaceGrepTool(_WorkspaceToolMixin):
@@ -177,4 +200,11 @@ class WorkspaceGrepTool(_WorkspaceToolMixin):
         payload = dict(params.model_dump() if hasattr(params, "model_dump") else dict(params or {}))
         if payload.get("path") is not None:
             payload["path"] = self._safe_path(payload.get("path"))
-        return await self._delegate.execute(tool_call_id, payload, cancellation=cancellation, on_update=on_update)
+        result = await self._delegate.execute(tool_call_id, payload, cancellation=cancellation, on_update=on_update)
+        if payload.get("path") is not None:
+            mark_workspace_path_used(
+                self._workspace_dir,
+                payload["path"],
+                container_root=self._container_root,
+            )
+        return result

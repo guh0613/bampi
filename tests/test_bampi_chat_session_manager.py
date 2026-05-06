@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -159,6 +161,61 @@ async def test_group_session_manager_clears_idle_session_history(tmp_path: Path)
         recreated = await manager.get_or_create("1001")
         assert recreated.session is not managed.session
         assert recreated.session.messages == []
+    finally:
+        await manager.close_all()
+
+
+@pytest.mark.asyncio
+async def test_group_session_manager_workspace_cleanup_scans_group_workspaces(tmp_path: Path):
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+        bampi_workspace_cleanup_ttl_seconds=3 * 24 * 60 * 60,
+    )
+    manager = GroupSessionManager(config)
+    workspace = Path(manager.workspace_dir_for_group("1001"))
+    stale_file = workspace / "inbox" / "old.txt"
+    protected_file = workspace / ".browser" / "camoufox-profile" / "cookies.sqlite"
+    stale_file.write_text("old", encoding="utf-8")
+    protected_file.parent.mkdir(parents=True, exist_ok=True)
+    protected_file.write_text("cookie", encoding="utf-8")
+    old_time = time.time() - 4 * 24 * 60 * 60
+    os.utime(stale_file, (old_time, old_time))
+    os.utime(protected_file, (old_time, old_time))
+
+    try:
+        await manager.run_workspace_cleanup_once()
+
+        assert not stale_file.exists()
+        assert protected_file.exists()
+        assert (workspace / "inbox").is_dir()
+        assert (workspace / "outbox").is_dir()
+    finally:
+        await manager.close_all()
+
+
+@pytest.mark.asyncio
+async def test_group_session_manager_workspace_cleanup_skips_loaded_sessions(tmp_path: Path):
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+        bampi_workspace_cleanup_ttl_seconds=3 * 24 * 60 * 60,
+    )
+    manager = GroupSessionManager(config)
+    await manager.get_or_create("1001")
+    workspace = Path(manager.workspace_dir_for_group("1001"))
+    stale_file = workspace / "inbox" / "old.txt"
+    stale_file.write_text("old", encoding="utf-8")
+    old_time = time.time() - 4 * 24 * 60 * 60
+    os.utime(stale_file, (old_time, old_time))
+
+    try:
+        await manager.run_workspace_cleanup_once()
+        assert stale_file.exists()
+
+        await manager.release("1001")
+        await manager.run_workspace_cleanup_once()
+        assert not stale_file.exists()
     finally:
         await manager.close_all()
 
