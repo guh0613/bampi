@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 SCHEMA_STATEMENTS = [
@@ -109,6 +109,12 @@ SCHEMA_STATEMENTS = [
         ON archive_embeddings(group_id)
     """,
     """
+    CREATE TABLE IF NOT EXISTS archive_embedding_vec_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS user_profiles (
         user_id          TEXT NOT NULL,
         group_id         TEXT NOT NULL,
@@ -139,7 +145,9 @@ SCHEMA_STATEMENTS = [
 ]
 
 
-MIGRATIONS: dict[int, list[str]] = {}
+MIGRATIONS: dict[int, list[str]] = {
+    2: [],
+}
 
 
 def initialize_memory_schema(conn: sqlite3.Connection) -> None:

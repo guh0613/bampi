@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .embeddings import MemoryEmbeddingProvider, cosine_similarity
+from .embeddings import MemoryEmbeddingProvider
 from .schema import CURRENT_SCHEMA_VERSION, initialize_memory_schema
 from .search_text import (
     build_fts_query,
@@ -32,6 +32,7 @@ from .types import (
     MemoryToolEvent,
     OpenArchiveMode,
 )
+from .vector_index import SqliteVecArchiveIndex
 
 
 
@@ -62,6 +63,14 @@ class MemoryStore:
         self._search_snippet_messages = max(0, search_snippet_messages)
         self._like_fallback = like_fallback
         self._embedding_provider = embedding_provider
+        self._vector_index = (
+            SqliteVecArchiveIndex(
+                provider=embedding_provider.provider,
+                model=embedding_provider.model,
+            )
+            if embedding_provider is not None
+            else None
+        )
         self.archives = MemoryArchiveStore(self)
         self.profiles = MemoryProfileStore(self)
         self.maintenance = MemoryMaintenanceStore(self)
@@ -81,6 +90,16 @@ class MemoryStore:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
             initialize_memory_schema(conn)
+            if self._vector_index is not None:
+                self._vector_index.initialize_connection(conn)
+                if (
+                    self._embedding_provider is not None
+                    and self._embedding_provider.dimensions > 0
+                ):
+                    self._vector_index.ensure_ready(
+                        conn,
+                        dimension=self._embedding_provider.dimensions,
+                    )
             conn.commit()
 
     def add_archive(
@@ -823,6 +842,8 @@ class MemoryStore:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
+        if self._vector_index is not None:
+            self._vector_index.load_connection(conn)
         try:
             yield conn
         finally:
@@ -987,25 +1008,19 @@ class MemoryStore:
         if not any(query_vector):
             return
 
+        if self._vector_index is None:
+            return
+
         scored: list[tuple[int, float]] = []
-        for row in conn.execute(
-            """
-            SELECT archive_id, vector
-            FROM archive_embeddings
-            WHERE group_id = ?
-            """,
-            (group_id,),
+        for archive_id, score in self._vector_index.search(
+            conn,
+            group_id=group_id,
+            query_vector=query_vector,
+            limit=20,
         ):
-            vector = _json_loads(row["vector"], default=[])
-            if not isinstance(vector, list):
-                continue
-            score = cosine_similarity(
-                query_vector,
-                [float(value) for value in vector if isinstance(value, (int, float))],
-            )
             if score <= 0.05:
                 continue
-            scored.append((int(row["archive_id"]), score))
+            scored.append((archive_id, score))
 
         scored.sort(key=lambda item: item[1], reverse=True)
         if not scored:
@@ -1311,37 +1326,45 @@ class MemoryStore:
             return
         try:
             vector = provider.embed_text(text)
-            if not any(vector):
-                return
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO archive_embeddings (
-                        archive_id,
-                        group_id,
-                        provider,
-                        model,
-                        dimension,
-                        vector,
-                        created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        archive_id,
-                        group_id,
-                        provider.provider,
-                        provider.model,
-                        len(vector),
-                        _json_dumps(vector),
-                        created_at,
-                    ),
-                )
-                conn.commit()
         except Exception:
             logger.opt(exception=True).warning(
                 f"bampi_chat memory archive embedding failed archive_id={archive_id} provider={provider.provider} model={provider.model}"
             )
+            return
+        if not any(vector):
+            return
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO archive_embeddings (
+                    archive_id,
+                    group_id,
+                    provider,
+                    model,
+                    dimension,
+                    vector,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    archive_id,
+                    group_id,
+                    provider.provider,
+                    provider.model,
+                    len(vector),
+                    _json_dumps(vector),
+                    created_at,
+                ),
+            )
+            if self._vector_index is not None:
+                self._vector_index.upsert(
+                    conn,
+                    archive_id=archive_id,
+                    group_id=group_id,
+                    vector=vector,
+                )
+            conn.commit()
 
     def _insert_tool_event(
         self,
@@ -1471,6 +1494,8 @@ class MemoryStore:
         conn.execute("DELETE FROM archive_fts WHERE archive_id = ?", (archive_id,))
         conn.execute("DELETE FROM message_fts WHERE archive_id = ?", (archive_id,))
         conn.execute("DELETE FROM tool_event_fts WHERE archive_id = ?", (archive_id,))
+        if self._vector_index is not None:
+            self._vector_index.delete(conn, archive_id=archive_id)
         conn.execute("DELETE FROM archive_embeddings WHERE archive_id = ?", (archive_id,))
         conn.execute("DELETE FROM conversation_archives WHERE id = ?", (archive_id,))
         return True

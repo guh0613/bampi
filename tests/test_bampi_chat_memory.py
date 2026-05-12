@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from bampi.plugins.bampi_chat.memory.embeddings import (
 )
 from bampi.plugins.bampi_chat.memory.schema import CURRENT_SCHEMA_VERSION
 from bampi.plugins.bampi_chat.memory.search_text import build_fts_query, extract_search_terms
+from bampi.plugins.bampi_chat.memory.vector_index import load_sqlite_vec
 from bampi.plugins.bampi_chat.prompt import build_system_prompt
 from bampi.plugins.bampi_chat.tools import create_agent_tools
 
@@ -328,6 +330,64 @@ def test_memory_search_embedding_recovers_semantic_archive(tmp_path: Path):
     assert hits
     assert hits[0].archive.id == ids["nginx"]
     assert "embedding" in hits[0].matched_sources
+
+
+def test_memory_embedding_index_migrates_existing_json_vectors(tmp_path: Path):
+    db_path = tmp_path / "memory.db"
+    old_manager = MemoryManager(db_path)
+    ids = _seed_memory(old_manager)
+    provider = _SemanticEmbeddingProvider()
+
+    with sqlite3.connect(db_path) as conn:
+        for archive_id in ids.values():
+            row = conn.execute(
+                """
+                SELECT group_id, title, summary, keywords, created_at
+                FROM conversation_archives
+                WHERE id = ?
+                """,
+                (archive_id,),
+            ).fetchone()
+            text = "\n".join([row[1], row[2], " ".join(json.loads(row[3]))])
+            vector = provider.embed_text(text)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO archive_embeddings (
+                    archive_id,
+                    group_id,
+                    provider,
+                    model,
+                    dimension,
+                    vector,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    archive_id,
+                    row[0],
+                    provider.provider,
+                    provider.model,
+                    len(vector),
+                    json.dumps(vector),
+                    row[4],
+                ),
+            )
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+
+    manager = MemoryManager(db_path, embedding_provider=provider)
+    hits = manager.search(group_id="1001", query="HTTPS certbot 部署入口", max_results=3)
+
+    assert hits
+    assert hits[0].archive.id == ids["nginx"]
+    assert "embedding" in hits[0].matched_sources
+
+    with sqlite3.connect(db_path) as conn:
+        load_sqlite_vec(conn)
+        count = conn.execute("SELECT count(*) FROM archive_embedding_vec").fetchone()[0]
+
+    assert count == len(ids)
 
 
 def test_embedding_provider_factory_supports_openai_compatible():
