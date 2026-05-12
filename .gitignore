@@ -55,6 +55,7 @@ references/
 data/
 app/
 tmp/
+scripts/
 
 builtin_skills/
 

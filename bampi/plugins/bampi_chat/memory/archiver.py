@@ -125,6 +125,12 @@ def summarize_archive(
     )
     keywords = _keyword_list(all_text)
 
+    participants = dict.fromkeys(
+        msg.nickname or msg.user_id
+        for msg in user_messages
+        if msg.nickname or msg.user_id
+    )
+
     if keywords:
         title = "讨论 " + "、".join(keywords[:4])
     elif first_user:
@@ -133,15 +139,19 @@ def summarize_archive(
         title = "未命名群聊会话"
 
     pieces: list[str] = []
+    if participants:
+        pieces.append("参与者：" + "、".join(participants) + "。")
     if first_user:
-        pieces.append(f"本次会话从“{_truncate(first_user, 80)}”开始。")
+        first_sender = user_messages[0].nickname or "用户"
+        pieces.append(f"[{first_sender}]的话题从“{_truncate(first_user, 80)}”开始。")
     if keywords:
         pieces.append("主要涉及：" + "、".join(keywords[:8]) + "。")
     if tool_events:
         tool_names = ", ".join(dict.fromkeys(event.tool_name for event in tool_events if event.tool_name))
         pieces.append(f"期间使用过工具：{tool_names or '若干工具'}。")
     if last_user and last_user != first_user:
-        pieces.append(f"最后的用户问题大致是“{_truncate(last_user, 80)}”。")
+        last_sender = user_messages[-1].nickname or "用户"
+        pieces.append(f"[{last_sender}]最后的问题大致是“{_truncate(last_user, 80)}”。")
     if last_assistant:
         pieces.append(f"最后回复停在：{_truncate(last_assistant, 120)}")
     summary = "".join(pieces) or "这次会话没有足够可摘要的文本内容。"
@@ -151,9 +161,16 @@ def summarize_archive(
 _LLM_SUMMARY_SYSTEM_PROMPT = """\
 你是一个会话归档助手。给定一段群聊对话记录，请输出结构化的摘要。
 
+重要：群聊中不同用户可能在同一时间段内讨论完全不相关的话题。\
+请仔细区分每条消息的发言者（方括号中的名字），判断哪些消息属于同一话题的延续，哪些是独立的对话。\
+只有当多个用户确实在互相回应同一话题时，才将他们视为共同参与者。
+
 要求：
-1. title: 简短标题（10-25字），概括这次对话的核心主题
-2. summary: 摘要（50-200字），描述对话的起因、过程和结论/结果。重点记录做了什么、解决了什么、结论是什么
+1. title: 简短标题（10-25字）。若存在多个不相关话题，用 / 分隔列出
+2. summary: 摘要（50-300字），按参与者分别描述各自讨论的内容。\
+格式为 [用户名]讨论了... 或 [用户名]和[用户名]共同讨论了...（仅当他们确实在互动时）。\
+不要将不同用户各自独立的话题合并成一段笼统描述。\
+对话记录中 [assistant] 是AI助手，摘要中统一称为"AI助手"
 3. keywords: 3-8个关键词，用于后续检索
 
 输出格式（严格遵守，不要输出其他内容）：
@@ -162,7 +179,7 @@ summary: <摘要>
 keywords: <关键词1>, <关键词2>, ...\
 """
 
-_LLM_SUMMARY_MAX_INPUT_CHARS = 12000
+_LLM_SUMMARY_MAX_INPUT_CHARS = 30_000
 
 
 async def summarize_archive_with_llm(
