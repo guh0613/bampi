@@ -44,6 +44,7 @@ _LLM_PROFILE_SYSTEM_PROMPT = """\
 
 要求：
 - 只记录有持续价值、可由输入支持的事实，不要臆测。
+- 内容标题必须严格按照上述格式输出，包含上述格式要求的标题。
 - **重要——参与者归因**：归档摘要来自群聊，同一归档中可能包含多位用户各自独立的对话。\
 只提取画像本人（即 `{nickname}` 指代的用户）实际发起、表达或明确认同的观点、偏好和经历。\
 不要将同一归档中其他参与者独立讨论的话题归因到画像本人身上。\
@@ -197,11 +198,17 @@ async def generate_profile_with_llm(
     text = _assistant_text(result)
     if not text.strip():
         return None
-    return _clean_llm_profile(
+    cleaned = _clean_llm_profile(
         text,
         nickname=profile.nickname,
         delete_edits=[edit for edit in pending_edits if edit.edit_type == "delete"],
     )
+    if cleaned is None:
+        logger.warning(
+            "bampi_chat memory LLM profile generation returned invalid structure "
+            f"model={getattr(model, 'id', model)} group_id={profile.group_id} user_id={profile.user_id}"
+        )
+    return cleaned
 
 
 def _render_profile_body(
@@ -385,8 +392,7 @@ def _collapse_blank_lines(text: str) -> str:
 
 def _has_profile_section_structure(text: str) -> bool:
     folded = text.lower()
-    required_headings = _PROFILE_SECTION_HEADINGS + _PROFILE_HISTORY_HEADINGS
-    return all(heading.lower() in folded for heading in required_headings)
+    return all(heading.lower() in folded for heading in _PROFILE_SECTION_HEADINGS)
 
 
 def _strip_profile_headings(text: str) -> str:
