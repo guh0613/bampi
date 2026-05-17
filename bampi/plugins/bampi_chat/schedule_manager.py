@@ -713,7 +713,7 @@ class ScheduleManager:
                 message=build_group_reply_message(
                     config=self._config,
                     target=target,
-                    text=f"定时任务 `{task_name}` 执行失败：{error_message}",
+                    text=f"定时任务 `{task_name}` 执行失败。",
                 ),
             )
         except Exception:

@@ -117,19 +117,19 @@ TOOL_PROGRESS_EMOJIS: dict[str, str] = {
 STOP_COMMAND = "/stop"
 CLEAR_COMMANDS = {"/clear", "/new"}
 COMPACT_COMMAND = "/compact"
-ACTIVE_SESSION_BUSY_MESSAGE = "当前群里已有进行中的会话，只有发起者可以继续跟进；如需中止，请让发起者发送 /stop。"
-ACTIVE_SESSION_WINDING_DOWN_MESSAGE = "当前会话正在收尾，请稍等结果发出。"
-ACTIVE_SESSION_BACKGROUND_WAIT_MESSAGE = "当前会话正在后台等待命令结果，完成后会自动继续，请稍等。"
-STOP_NO_ACTIVE_MESSAGE = "当前没有你发起的进行中会话。"
-STOP_NOT_OWNER_MESSAGE = "当前会话不是你发起的，不能由你停止；如需中止，请让发起者发送 /stop。"
-STOPPED_SESSION_MESSAGE = "已停止你发起的当前会话。"
-STOPPED_WAITING_SESSION_MESSAGE = "已停止你发起的当前会话，并取消等待中的后台命令。"
-FORCE_STOPPED_SESSION_MESSAGE = "已强制停止当前群会话。"
-FORCE_STOPPED_WAITING_SESSION_MESSAGE = "已强制停止当前群会话，并取消等待中的后台命令。"
-CLEARED_SESSION_MESSAGE = "已清空当前群的对话上下文。"
-CLEAR_NO_CONTEXT_MESSAGE = "当前群还没有可清空的上下文。"
-COMPACT_NO_CONTEXT_MESSAGE = "当前群还没有可压缩的上下文。"
-COMPACT_FORBIDDEN_MESSAGE = "只有 NoneBot superuser 可以使用 /compact。"
+ACTIVE_SESSION_BUSY_MESSAGE = "当前群有进行中的会话。如需中止，请让发起者发送 /stop。"
+ACTIVE_SESSION_WINDING_DOWN_MESSAGE = "当前会话正在收尾，请稍候。"
+ACTIVE_SESSION_BACKGROUND_WAIT_MESSAGE = "当前会话正在等待后台任务完成，请稍候。"
+STOP_NO_ACTIVE_MESSAGE = "当前没有进行中的会话。"
+STOP_NOT_OWNER_MESSAGE = "当前会话非你发起，无法停止。如需中止，请让发起者发送 /stop。"
+STOPPED_SESSION_MESSAGE = "已停止当前会话。"
+STOPPED_WAITING_SESSION_MESSAGE = "已停止当前会话并取消后台任务。"
+FORCE_STOPPED_SESSION_MESSAGE = "已强制停止当前会话。"
+FORCE_STOPPED_WAITING_SESSION_MESSAGE = "已强制停止当前会话并取消后台任务。"
+CLEARED_SESSION_MESSAGE = "已清空对话上下文。"
+CLEAR_NO_CONTEXT_MESSAGE = "当前没有可清空的上下文。"
+COMPACT_NO_CONTEXT_MESSAGE = "当前没有可压缩的上下文。"
+COMPACT_FORBIDDEN_MESSAGE = "权限不足，仅管理员可使用 /compact。"
 
 
 @dataclass(slots=True)
@@ -700,8 +700,22 @@ def describe_tool_progress(tool_name: str, args: Any) -> str:
         if action == "run_now":
             return f"正在立即执行定时任务：{task_ref}"
         return f"正在查看定时任务：{task_ref}"
-    if tool_name in {"memory_search", "memory_time_search", "memory_open", "memory_manage"}:
-        return "正在检索记忆"
+    if tool_name == "memory_search":
+        return "正在搜索记忆"
+    if tool_name == "memory_time_search":
+        return "正在搜索记忆"
+    if tool_name == "memory_open":
+        return "正在查看记忆"
+    if tool_name == "memory_manage":
+        payload = args if isinstance(args, dict) else {}
+        action = payload.get("action", "")
+        if action == "add":
+            return "正在记录记忆"
+        if action == "update":
+            return "正在更新记忆"
+        if action == "delete":
+            return "正在删除记忆"
+        return "正在编辑记忆"
     display_name = render_tool_progress_value(tool_name, "unknown", limit=40)
     return f"正在执行工具：{display_name}"
 
@@ -842,9 +856,9 @@ async def _handle_skill_command(
                 install_sources.append(command.argument)
             else:
                 await matcher.send(
-                    "你发送的url有误。\n"
-                    "请直接发送或引用 skill 压缩包/Markdown 文件后执行 `/skill install`，"
-                    "或使用 `/skill install https://...`。"
+                    "URL 无效。\n"
+                    "请发送或引用 skill 文件后执行 `/skill install`，"
+                    "或使用 `/skill install <url>`。"
                 )
                 return True
         else:
@@ -852,7 +866,7 @@ async def _handle_skill_command(
                 media = await collect_incoming_media(bot, event, config, workspace_dir)
             except Exception:
                 logger.exception("bampi_chat failed to collect media for skill installation")
-                await matcher.send("读取这次安装消息里的附件失败了，可以重新发送或重新引用一次。")
+                await matcher.send("附件读取失败，请重新发送或引用。")
                 return True
 
             install_sources.extend(media.saved_paths)
@@ -881,16 +895,15 @@ async def _handle_skill_command(
                 replaced_names.extend(result.replaced_names)
                 collected_diagnostics.extend(result.diagnostics)
         except Exception as exc:
-            await matcher.send(f"安装 skill 失败：{exc}")
+            logger.warning(f"skill installation error: {exc}")
+            await matcher.send("安装 skill 失败，请检查文件格式后重试。")
             return True
 
         await session_manager.release(group_id)
 
         lines = [
             f"已安装 {len(installed_names)} 个 skill：{', '.join(installed_names)}",
-            f"安装目录：{Path(workspace_dir, '.agents/skills').resolve().as_posix()}",
-            "显式调用：在普通消息最开头写 `/skill-name`。",
-            "当前群会话已刷新；其他现有会话会在下次重建后看到新 skill。",
+            "使用方法：在消息开头写 `/skill-name` 即可调用。",
         ]
         if replaced_names:
             lines.append(f"已覆盖：{', '.join(replaced_names)}")
@@ -976,7 +989,7 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                     result = await managed.session.compact()
             except Exception:
                 logger.exception("bampi_chat manual compaction failed")
-                await matcher.send("这次上下文压缩失败了，请检查模型配置或稍后再试。")
+                await matcher.send("上下文压缩失败，请稍后重试。")
                 return
             finally:
                 await session_manager.complete_interaction(group_id)
@@ -1057,7 +1070,7 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 media = await collect_incoming_media(bot, event, config, workspace_dir)
             except Exception:
                 logger.exception("bampi_chat failed to collect follow-up media")
-                await matcher.send("这条跟进消息处理失败了，你可以重新发一次。")
+                await matcher.send("消息处理失败，请重试。")
                 return
             explicit_skills = resolve_explicit_skills(
                 decision.cleaned_text,
@@ -1111,14 +1124,14 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 f"direct={decision.direct}"
             )
             if decision.direct:
-                await matcher.send("这会儿有点忙，稍后再戳我一下。")
+                await matcher.send("当前繁忙，请稍后重试。")
             return
 
         try:
             reservation = await session_manager.reserve_interaction(group_id, user_id)
         except Exception:
             logger.exception("bampi_chat failed to create or restore group session")
-            await matcher.send("agent 会话初始化失败了，先检查模型配置、API Key 或会话目录。")
+            await matcher.send("会话启动失败，请稍后重试。")
             return
 
         if reservation.action == "busy":
@@ -1221,7 +1234,7 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                         await managed.session.prompt(user_message, source="qq_group")
                     except Exception:
                         logger.exception("bampi_chat session prompt failed")
-                        await matcher.send("这次调用 agent 失败了，检查一下模型配置、网络或工具环境。")
+                        await matcher.send("本次回复失败，请重试。")
                         return
 
                     managed.last_used_at = time.monotonic()
@@ -1273,7 +1286,7 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                     await reporter.close()
         except Exception:
             logger.exception("bampi_chat failed while preparing or delivering interaction")
-            await matcher.send("处理这条消息时出了点问题，请稍后再试一次。")
+            await matcher.send("消息处理异常，请稍后重试。")
             return
         finally:
             if reservation.action == "start":
@@ -1947,8 +1960,8 @@ def _create_background_wait_reminder_callback(
                 config=config,
                 target=target,
                 text=(
-                    f"你之前启动的后台终端 `{event.session_id}` 已运行超过 {minutes} 分钟，"
-                    "如果它看起来卡住了，可以发送 /stop 停止当前群会话。"
+                    f"后台任务已运行超过 {minutes} 分钟。"
+                    "如需终止，请发送 /stop。"
                     f"{command_hint}"
                 ),
             ),
@@ -2019,8 +2032,8 @@ def _create_background_resume_callback(
                     config=config,
                     target=target,
                     text=(
-                        f"后台终端 `{exit_event.session_id}` 已结束，但自动续跑失败了。"
-                        "你可以直接发一句话让我继续处理。"
+                        "后台任务已结束，但后续处理失败。"
+                        "可以发送新消息继续。"
                     ),
                 )
                 await _send_group_message_via_bot(
@@ -2095,7 +2108,7 @@ async def send_background_agent_response(
                 message=build_group_reply_message(
                     config=config,
                     target=target,
-                    text="这次自动续跑失败了，请检查 API Key、模型配置或上游服务。",
+                    text="后续处理失败，可以发送新消息继续。",
                 ),
             )
             return ResponseDispatchResult(delivered=False, rollback_context=True)
@@ -2118,7 +2131,7 @@ async def send_background_agent_response(
             message=build_group_reply_message(
                 config=config,
                 target=target,
-                text="这次自动续跑没有生成可发送的内容，你可以直接发一句话让我继续。",
+                text="后续处理完成，无新内容可回复。可以发送新消息继续。",
             ),
         )
         return ResponseDispatchResult(delivered=False, rollback_context=True)
@@ -2186,7 +2199,7 @@ async def send_background_agent_response(
                 message=build_group_reply_message(
                     config=config,
                     target=target,
-                    text=f"这些产物已经生成，但自动发送失败了：{', '.join(failed_artifacts)}",
+                    text=f"有 {len(failed_artifacts)} 个文件已生成但发送失败。",
                 ),
             )
     finally:
@@ -2246,7 +2259,7 @@ async def send_agent_response(
                 f"stop_reason={stop_reason} "
                 f"error={log_preview(error_message)!r}"
             )
-            await matcher.send("这次调用模型失败了，请检查 API Key、模型配置或上游服务。")
+            await matcher.send("本次回复失败，请重试。")
             return ResponseDispatchResult(delivered=False, rollback_context=True)
         if streamed_any_text:
             logger.info(
@@ -2261,7 +2274,7 @@ async def send_agent_response(
             f"group_id={event.group_id} "
             f"message_id={event.message_id}"
         )
-        await matcher.send("这次没有生成可发送的内容，你可以换个说法再试一次。")
+        await matcher.send("本次未生成回复内容，请换个说法重试。")
         return ResponseDispatchResult(delivered=False, rollback_context=True)
 
     message = Message()
@@ -2326,7 +2339,7 @@ async def send_agent_response(
                 failed_artifacts.append(path.name)
         if failed_artifacts:
             await matcher.send(
-                f"这些产物已经生成，但自动发送失败了：{', '.join(failed_artifacts)}"
+                f"有 {len(failed_artifacts)} 个文件已生成但发送失败。"
             )
     finally:
         for path in uploaded_files:
