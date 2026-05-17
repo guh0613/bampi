@@ -11,6 +11,19 @@ _ENTITY_RE = re.compile(
 )
 _TRIM_CHARS = " \t\r\n,.;:!?()[]{}<>\"'`，。！？、；：（）【】《》"
 
+_CJK_STOPWORDS: set[str] = {
+    "的", "了", "是", "在", "我", "有", "和", "就", "不", "人",
+    "都", "一", "一个", "上", "也", "很", "到", "说", "要", "去",
+    "你", "会", "着", "没有", "看", "好", "自己", "这", "他", "她",
+    "什么", "为什么", "怎么", "那个", "这个", "那些", "这些",
+    "可以", "不是", "就是", "还是", "但是", "因为", "所以",
+    "如果", "虽然", "而且", "或者", "已经", "可能", "应该",
+    "比较", "一下", "一些", "这样", "那样", "怎样",
+    "吗", "吧", "呢", "啊", "哦", "嗯", "呀", "哈",
+}
+
+_WEAK_NUMERIC_RE = re.compile(r"^\d{2}$")
+
 
 def normalize_for_search(text: object) -> str:
     return " ".join(str(text or "").split())
@@ -68,7 +81,10 @@ def extract_search_terms(
 
     terms: list[str] = []
     for match in _ENTITY_RE.finditer(normalized):
-        terms.extend(_entity_variants(match.group(0)))
+        token = match.group(0)
+        if for_query and _WEAK_NUMERIC_RE.match(token):
+            continue
+        terms.extend(_entity_variants(token))
 
     for match in _CJK_RE.finditer(normalized):
         sequence = match.group(0)
@@ -76,7 +92,10 @@ def extract_search_terms(
             terms.append(sequence)
         elif len(sequence) == 1 and not for_query:
             terms.append(sequence)
-        terms.extend(cjk_ngrams(sequence))
+        ngrams = cjk_ngrams(sequence)
+        if for_query:
+            ngrams = [ng for ng in ngrams if ng not in _CJK_STOPWORDS]
+        terms.extend(ngrams)
 
     return _dedupe(terms)[:max_terms]
 

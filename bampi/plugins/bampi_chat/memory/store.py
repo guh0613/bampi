@@ -36,18 +36,42 @@ from .vector_index import SqliteVecArchiveIndex
 
 
 
+_TOOL_EVENT_SCORE_CAP = 2
+_EMBEDDING_BOOST_WEIGHT = 0.65
+
+_MANAGEMENT_TITLE_PATTERNS = (
+    "删除记忆", "删除画像", "画像管理", "记忆管理",
+    "清除记忆", "重置画像", "移除记忆",
+)
+_MANAGEMENT_PENALTY = 0.4
+
+
 @dataclass(slots=True)
 class _Candidate:
     archive_id: int
     score: float = 0.0
+    lexical_score: float = 0.0
+    embedding_score: float = 0.0
     matched_sources: set[str] = field(default_factory=set)
     message_ids: set[int] = field(default_factory=set)
     tool_event_ids: set[int] = field(default_factory=set)
+    _tool_event_hits: int = 0
 
     def add(self, source: str, weight: float, *, rank: float | None = None) -> None:
+        if source == "tool_events":
+            self._tool_event_hits += 1
+            if self._tool_event_hits > _TOOL_EVENT_SCORE_CAP:
+                self.matched_sources.add(source)
+                return
         rank_boost = 0.0 if rank is None else 1.0 / (1.0 + abs(rank))
-        self.score += weight + rank_boost
+        score_delta = weight + rank_boost
+        self.score += score_delta
+        self.lexical_score += score_delta
         self.matched_sources.add(source)
+
+    def add_embedding(self, similarity: float) -> None:
+        self.embedding_score = similarity
+        self.matched_sources.add("embedding")
 
 
 class MemoryStore:
@@ -345,8 +369,45 @@ class MemoryStore:
                     )
                 )
 
-            hits.sort(key=lambda hit: (hit.score, hit.archive.ended_at, hit.archive.id), reverse=True)
+            self._apply_reranking(hits, candidates)
             return hits[:limit]
+
+    def _apply_reranking(
+        self,
+        hits: list[MemorySearchHit],
+        candidates: dict[int, _Candidate],
+    ) -> None:
+        has_embedding = any(c.embedding_score > 0 for c in candidates.values())
+
+        if has_embedding:
+            max_lexical = max(
+                (
+                    candidates[hit.archive.id].lexical_score
+                    for hit in hits
+                    if hit.archive.id in candidates
+                ),
+                default=0.0,
+            )
+            for hit in hits:
+                cand = candidates.get(hit.archive.id)
+                if cand is None:
+                    continue
+                emb_sim = cand.embedding_score
+                if max_lexical > 0:
+                    norm_lexical = cand.lexical_score / max_lexical
+                    hit.score = norm_lexical + emb_sim * _EMBEDDING_BOOST_WEIGHT
+                else:
+                    hit.score = emb_sim
+
+        for hit in hits:
+            title = (hit.archive.title or "").casefold()
+            if any(pat in title for pat in _MANAGEMENT_TITLE_PATTERNS):
+                hit.score *= _MANAGEMENT_PENALTY
+
+        hits.sort(
+            key=lambda h: (h.score, h.archive.ended_at, h.archive.id),
+            reverse=True,
+        )
 
     def time_search(
         self,
@@ -885,7 +946,7 @@ class MemoryStore:
             table="tool_event_fts",
             select_id="tool_event_id",
             source="tool_events",
-            weight=5.0,
+            weight=2.5,
             group_id=group_id,
             fts_query=fts_query,
             candidates=candidates,
@@ -984,7 +1045,7 @@ class MemoryStore:
             ):
                 archive_id = int(row["archive_id"])
                 candidate = candidates.setdefault(archive_id, _Candidate(archive_id=archive_id))
-                candidate.add("tool_events", 2.5)
+                candidate.add("tool_events", 1.5)
                 candidate.tool_event_ids.add(int(row["id"]))
 
     def _collect_embedding_candidates(
@@ -1031,10 +1092,7 @@ class MemoryStore:
         for archive_id, score in scored[:20]:
             if score < relative_floor:
                 continue
-            candidates.setdefault(archive_id, _Candidate(archive_id=archive_id)).add(
-                "embedding",
-                2.0 + score * 4.0,
-            )
+            candidates.setdefault(archive_id, _Candidate(archive_id=archive_id)).add_embedding(score)
 
     def _archive_passes_filters(
         self,
@@ -1109,7 +1167,12 @@ class MemoryStore:
             )
 
         folded = " ".join(str(part or "") for part in text_parts).casefold()
-        return all(any(term.casefold() in folded for term in group) for group in entity_groups)
+        matched = sum(
+            1 for group in entity_groups
+            if any(term.casefold() in folded for term in group)
+        )
+        required = len(entity_groups) if len(entity_groups) <= 3 else (len(entity_groups) + 1) // 2
+        return matched >= required
 
     def _build_snippets(
         self,

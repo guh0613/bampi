@@ -192,6 +192,18 @@ class _FailingEmbeddingProvider:
         raise RuntimeError("embedding provider unavailable")
 
 
+class _MismatchedEmbeddingProvider:
+    provider = "test-mismatch"
+    model = "test-vectors"
+    dimensions = 2
+
+    def embed_text(self, text: str) -> list[float]:
+        folded = text.casefold().strip()
+        if folded == "raretoken" or "semantic neighbor" in folded:
+            return [1.0, 0.0]
+        return [0.0, 1.0]
+
+
 def test_search_text_generates_cjk_ngrams_and_entities():
     terms = extract_search_terms("上周那个 nginx 反向代理 /etc/nginx/sites-enabled/app.conf 443", for_query=True)
 
@@ -330,6 +342,57 @@ def test_memory_search_embedding_recovers_semantic_archive(tmp_path: Path):
     assert hits
     assert hits[0].archive.id == ids["nginx"]
     assert "embedding" in hits[0].matched_sources
+
+
+def test_memory_search_keeps_exact_lexical_hit_ahead_of_embedding_only_candidate(
+    tmp_path: Path,
+):
+    manager = MemoryManager(
+        tmp_path / "memory.db",
+        embedding_provider=_MismatchedEmbeddingProvider(),
+    )
+    exact_id = manager.archive_conversation(
+        group_id="1001",
+        started_at="2026-05-17T10:00:00+08:00",
+        ended_at="2026-05-17T10:01:00+08:00",
+        participants=[MemoryParticipant(user_id="42", nickname="张三")],
+        title="Exact RARETOKEN answer",
+        summary="This archive contains RARETOKEN exactly.",
+        keywords=["RARETOKEN"],
+        messages=[
+            MemoryMessage(
+                role="user",
+                user_id="42",
+                nickname="张三",
+                content="RARETOKEN exact answer lives here.",
+                timestamp="2026-05-17T10:00:00+08:00",
+            )
+        ],
+    )
+    semantic_neighbor_id = manager.archive_conversation(
+        group_id="1001",
+        started_at="2026-05-17T10:02:00+08:00",
+        ended_at="2026-05-17T10:03:00+08:00",
+        participants=[MemoryParticipant(user_id="7", nickname="李四")],
+        title="Semantic neighbor",
+        summary="This archive is intentionally unrelated to the exact token.",
+        keywords=["neighbor"],
+        messages=[
+            MemoryMessage(
+                role="user",
+                user_id="7",
+                nickname="李四",
+                content="unrelated content",
+                timestamp="2026-05-17T10:02:00+08:00",
+            )
+        ],
+    )
+
+    hits = manager.search(group_id="1001", query="RARETOKEN", max_results=5)
+
+    assert [hit.archive.id for hit in hits[:2]] == [exact_id, semantic_neighbor_id]
+    assert "embedding" not in hits[0].matched_sources
+    assert hits[0].score > hits[1].score
 
 
 def test_memory_embedding_index_migrates_existing_json_vectors(tmp_path: Path):
