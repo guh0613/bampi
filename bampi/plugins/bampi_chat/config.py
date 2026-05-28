@@ -99,6 +99,9 @@ class BampiChatConfig(BaseModel):
     bampi_web_search_model: str = "grok-4.20-fast"
     bampi_web_search_base_url: str = ""
     bampi_web_search_api_key: str = ""
+    bampi_web_search_exa_api_key: str = ""
+    bampi_web_search_exa_timeout: float = 20.0
+    bampi_web_search_exa_num_results: int = 5
     bampi_browser_enabled: bool = True
     bampi_browser_headless: bool = True
     bampi_browser_block_images: bool = False
@@ -173,6 +176,7 @@ class BampiChatConfig(BaseModel):
         "bampi_web_search_model",
         "bampi_web_search_base_url",
         "bampi_web_search_api_key",
+        "bampi_web_search_exa_api_key",
         "bampi_persona",
         "bampi_workspace_dir",
         "bampi_session_dir",

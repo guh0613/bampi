@@ -73,8 +73,22 @@ def build_system_prompt(
         tool_lines.append(
             "- 可用 `bash` 的 `action=start` 并传 `notify_on_exit=true` 让长时间命令在结束后自动回调，你不用一直等待。"
         )
+    if "web_search" in tool_names or "web_ask" in tool_names:
+        tool_lines.append(
+            "- 需要外部信息时不要凭空猜测，使用搜索工具获取。"
+            "两个搜索工具各有所长，按场景选择："
+        )
     if "web_search" in tool_names:
-        tool_lines.append("- 查最新事实、新闻、模型信息或外部资料时用 `web_search`，不要凭空猜测。批量查询时考虑聚合到一个调用中。")
+        tool_lines.append(
+            "  - `web_search`：返回原始页面内容和来源 URL。"
+            "适合查文档、API 参考、产品参数、官方文章等需要准确引用原文的场景。"
+            "用自然语言描述你要找什么，不要用关键词或搜索引擎语法。"
+        )
+    if "web_ask" in tool_names:
+        tool_lines.append(
+            "  - `web_ask`：检索范围更广、时效性更强，能触达更多来源和最新信息。"
+            "返回总结后的答案而非原始页面。适合需要广撒网、追最新动态的场景。"
+        )
     if "browser" in tool_names:
         tool_lines.append(
             "- 需要真实打开网页、等待 JS 渲染、点击/输入、截图时用 `browser`；快速查资料用 `web_search`。截图默认写入 `outbox/browser/` 仅供检查；若用户要收到截图，显式把 `path` 设为 `outbox/xxx.png`。"

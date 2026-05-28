@@ -104,6 +104,7 @@ TOOL_PROGRESS_EMOJIS: dict[str, str] = {
     "write": "📝",
     "edit": "🛠️",
     "patch": "🩹",
+    "web_ask": "🌐",
     "web_search": "🌐",
     "browser": "🧭",
     "service": "🚀",
@@ -644,7 +645,7 @@ def describe_tool_progress(tool_name: str, args: Any) -> str:
         return f"正在修改：{path}"
     if tool_name == "patch":
         return "正在应用补丁"
-    if tool_name == "web_search":
+    if tool_name in ("web_ask", "web_search"):
         query = render_tool_progress_value(payload.get("query") or payload.get("q"), "查询内容")
         return f"正在搜索网页：{query}"
     if tool_name == "browser":

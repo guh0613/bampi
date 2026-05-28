@@ -189,7 +189,7 @@ def test_system_prompt_mentions_docker_workspace():
 
 
 def test_system_prompt_mentions_browser_tool():
-    prompt = build_system_prompt(BampiChatConfig(), ["browser", "web_search"])
+    prompt = build_system_prompt(BampiChatConfig(), ["browser", "web_search", "web_ask"])
 
     assert "browser" in prompt
     assert "outbox/browser/" in prompt
@@ -286,9 +286,9 @@ async def test_create_agent_tools_web_search_uses_dedicated_config(
         str(tmp_path),
         container_root="/workspace",
     )
-    web_search_tool = next(tool for tool in tools if getattr(tool, "name", None) == "web_search")
+    web_ask_tool = next(tool for tool in tools if getattr(tool, "name", None) == "web_ask")
 
-    result = await web_search_tool.execute("call-1", {"query": "最新模型信息"})
+    result = await web_ask_tool.execute("call-1", {"query": "最新模型信息"})
 
     assert result.content[0].text == "Search answer"
     assert state["client_kwargs"] == {"timeout": 15.0}
@@ -517,7 +517,7 @@ async def test_web_search_tool_uses_chat_completions(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(web_search_module.httpx, "AsyncClient", _FakeAsyncClient)
 
-    tool = web_search_module.create_web_search_tool(
+    tool = web_search_module.create_web_ask_tool(
         12.0,
         base_url="https://api.example.com",
         api_key="secret",
@@ -591,7 +591,7 @@ async def test_web_search_tool_falls_back_to_default_model_when_blank(monkeypatc
 
     monkeypatch.setattr(web_search_module.httpx, "AsyncClient", _FakeAsyncClient)
 
-    tool = web_search_module.create_web_search_tool(
+    tool = web_search_module.create_web_ask_tool(
         12.0,
         base_url="https://api.example.com",
         api_key="secret",
@@ -623,7 +623,7 @@ async def test_web_search_reads_sse_and_compacts_thinking_trace():
 
 @pytest.mark.asyncio
 async def test_web_search_tool_reports_configuration_errors():
-    tool = web_search_module.create_web_search_tool(
+    tool = web_search_module.create_web_ask_tool(
         12.0,
         base_url="",
         api_key="secret",
@@ -632,6 +632,6 @@ async def test_web_search_tool_reports_configuration_errors():
     result = await tool.execute("call-1", {"query": "最新模型信息"})
 
     assert result.content[0].text == (
-        "Web search failed for: 最新模型信息\n"
+        "Web ask failed for: 最新模型信息\n"
         "Error: web_search is not configured: bampi_web_search_base_url is empty"
     )

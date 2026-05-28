@@ -13,7 +13,7 @@ from .memory import MemoryManageTool, MemoryOpenTool, MemorySearchTool, MemoryTi
 from .schedule import ScheduleTool
 from .service import ServiceTool
 from .safe_bash import SafeBashTool
-from .web_search import create_web_search_tool
+from .web_search import create_web_ask_tool, create_web_search_tool
 
 
 def create_agent_tools(
@@ -47,11 +47,16 @@ def create_agent_tools(
         WorkspaceEditTool(workspace_dir, container_root=effective_container_root),
         WorkspacePatchTool(workspace_dir, container_root=effective_container_root),
         WorkspaceWriteTool(workspace_dir, container_root=effective_container_root),
-        create_web_search_tool(
+        create_web_ask_tool(
             config.bampi_web_search_timeout,
             base_url=config.bampi_web_search_base_url,
             api_key=config.bampi_web_search_api_key,
             model=config.bampi_web_search_model,
+        ),
+        create_web_search_tool(
+            api_key=config.bampi_web_search_exa_api_key,
+            timeout=config.bampi_web_search_exa_timeout,
+            default_num_results=config.bampi_web_search_exa_num_results,
         ),
     ]
     if config.bampi_browser_enabled:

@@ -13,8 +13,38 @@ DEFAULT_WEB_SEARCH_MODEL = "grok-4.20-auto"
 DEFAULT_WEB_SEARCH_USER_AGENT = "Mozilla/5.0 (compatible; BampiBot/0.1; +https://example.invalid)"
 
 
+class WebAskInput(BaseModel):
+    query: str = Field(min_length=1, description="The question to ask the web-enabled AI agent")
+
+
 class WebSearchInput(BaseModel):
-    query: str = Field(min_length=1, description="The search query to look up on the web")
+    query: str = Field(
+        min_length=1,
+        description="A natural-language description of what you are looking for",
+    )
+    category: str | None = Field(
+        default=None,
+        description=(
+            "Optional category filter to narrow results. "
+            "One of: company, research paper, news, personal site, financial report, people"
+        ),
+    )
+    include_domains: list[str] | None = Field(
+        default=None,
+        description="Only return results from these domains, e.g. ['github.com', 'arxiv.org']",
+    )
+    num_results: int | None = Field(
+        default=None,
+        ge=1,
+        le=20,
+        description="Number of results to return (default 5). Fewer results + more text per result for deep reading; more results + less text for broad discovery.",
+    )
+    max_text_chars: int | None = Field(
+        default=None,
+        ge=500,
+        le=10000,
+        description="Max characters of page text per result (default 2000). Increase for detailed docs, decrease for quick lookups.",
+    )
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -161,7 +191,7 @@ async def _query_search_agent(
     return answer
 
 
-def create_web_search_tool(
+def create_web_ask_tool(
     timeout: float,
     *,
     base_url: str,
@@ -170,11 +200,17 @@ def create_web_search_tool(
     user_agent: str = DEFAULT_WEB_SEARCH_USER_AGENT,
 ):
     @tool(
-        name="web_search",
-        description="An AI agent which has the ability to search.It will search for current external information and return a concise answer with sources.",
-        parameters=WebSearchInput,
+        name="web_ask",
+        description=(
+            "Search the web via an AI agent with broad, real-time retrieval capabilities. "
+            "Reaches more sources and fresher information than web_search, "
+            "but returns a summarized answer instead of raw page content. "
+            "Best when you need the widest net or the most up-to-date results. "
+            "Use web_search instead when you need original page text, exact quotes, or source URLs."
+        ),
+        parameters=WebAskInput,
     )
-    async def web_search(query: str) -> str:
+    async def web_ask(query: str) -> str:
         try:
             answer = await _query_search_agent(
                 query,
@@ -185,7 +221,106 @@ def create_web_search_tool(
                 user_agent=user_agent,
             )
         except Exception as exc:
-            return f"Web search failed for: {query}\nError: {exc}"
+            return f"Web ask failed for: {query}\nError: {exc}"
         return answer
+
+    return web_ask
+
+
+EXA_SEARCH_URL = "https://api.exa.ai/search"
+EXA_VALID_CATEGORIES = frozenset(
+    {"company", "research paper", "news", "personal site", "financial report", "people"}
+)
+
+
+def _format_exa_results(results: list[dict], query: str) -> str:
+    if not results:
+        return f"No results found for: {query}"
+
+    parts: list[str] = []
+    for i, item in enumerate(results, 1):
+        title = item.get("title", "")
+        url = item.get("url", "")
+        header = f"[{i}] {title}\n    {url}"
+
+        extras: list[str] = []
+        if author := item.get("author"):
+            extras.append(f"Author: {author}")
+        if date := item.get("publishedDate"):
+            extras.append(f"Published: {date[:10]}")
+
+        block = header
+        if extras:
+            block += "\n    " + " | ".join(extras)
+        if highlights := item.get("highlights"):
+            block += "\n" + "\n".join(f"  > {h.strip()}" for h in highlights if h.strip())
+        if text := item.get("text"):
+            block += "\n" + text.strip()
+        parts.append(block)
+
+    return "\n\n".join(parts)
+
+
+def create_web_search_tool(
+    *,
+    api_key: str,
+    timeout: float = 20.0,
+    default_num_results: int = 5,
+):
+    @tool(
+        name="web_search",
+        description=(
+            "Search the web and retrieve actual page content with source URLs. "
+            "Returns original text and highlights from real web pages. "
+            "Best for finding documentation, official information, articles, product specs, "
+            "or any query where you need verifiable sources and raw content. "
+            "Use natural-language queries describing what you want to find — NOT keyword strings or search-engine syntax."
+        ),
+        parameters=WebSearchInput,
+    )
+    async def web_search(
+        query: str,
+        category: str | None = None,
+        include_domains: list[str] | None = None,
+        num_results: int | None = None,
+        max_text_chars: int | None = None,
+    ) -> str:
+        if not api_key.strip():
+            return "web_search is not configured: exa api key is empty"
+
+        n = min(max(num_results or default_num_results, 1), 20)
+        text_chars = min(max(max_text_chars or 2000, 500), 10000)
+
+        body: dict = {
+            "query": query.strip(),
+            "type": "auto",
+            "numResults": n,
+            "contents": {
+                "text": {"maxCharacters": text_chars, "verbosity": "compact"},
+                "highlights": True,
+            },
+        }
+        if category and category in EXA_VALID_CATEGORIES:
+            body["category"] = category
+        if include_domains:
+            body["includeDomains"] = include_domains[:50]
+
+        headers = {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "x-api-key": api_key.strip(),
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(EXA_SEARCH_URL, headers=headers, json=body)
+                resp.raise_for_status()
+            data = resp.json()
+            return _format_exa_results(data.get("results", []), query)
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:400].strip()
+            return f"Web search failed ({exc.response.status_code}): {detail}"
+        except Exception as exc:
+            return f"Web search failed: {exc}"
 
     return web_search
