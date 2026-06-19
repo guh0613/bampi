@@ -588,6 +588,7 @@ class GroupSessionManager:
         tools = create_agent_tools(
             self._config,
             workspace_dir,
+            supports_images="image" in model.input_types,
             container_root=model_workspace_root,
             bash_workdir=container_workspace_dir,
             group_id=group_id,
@@ -625,6 +626,7 @@ class GroupSessionManager:
             f"provider={model.provider} "
             f"api={model.api} "
             f"model={model.id} "
+            f"input_types={model.input_types} "
             f"session_file={session_file or '<in-memory>'} "
             f"bash_mode={self._config.bampi_bash_mode} "
             f"bash_container={self._config.bampi_bash_container_name} "
@@ -1207,7 +1209,7 @@ class GroupSessionManager:
             provider=provider,
             base_url=self._config.bampi_base_url,
             reasoning=False,
-            input_types=["text", "image"],
+            input_types=list(self._config.bampi_model_input_types or ["text"]),
             context_window=128_000,
             max_tokens=16_384,
             cost=ModelCost(),
@@ -1224,6 +1226,14 @@ class GroupSessionManager:
             updates["api"] = api
         if self._config.bampi_base_url:
             updates["base_url"] = self._config.bampi_base_url
+        configured_input_types = self._config.bampi_model_input_types
+        if configured_input_types is not None and configured_input_types != model.input_types:
+            logger.warning(
+                f"bampi_chat overriding model input types "
+                f"provider={model.provider} model={model.id} "
+                f"from={model.input_types} to={configured_input_types}"
+            )
+            updates["input_types"] = list(configured_input_types)
         if not updates:
             return model
         return model.model_copy(update=updates)

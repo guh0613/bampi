@@ -20,6 +20,7 @@ def create_agent_tools(
     config,
     workspace_dir: str,
     *,
+    supports_images: bool = True,
     container_root: str | None = None,
     bash_workdir: str | None = None,
     group_id: str | None = None,
@@ -32,7 +33,11 @@ def create_agent_tools(
     effective_container_root = container_root or config.bampi_bash_container_workdir
     effective_bash_workdir = bash_workdir or effective_container_root
     tools: list[object] = [
-        WorkspaceReadTool(workspace_dir, container_root=effective_container_root),
+        WorkspaceReadTool(
+            workspace_dir,
+            container_root=effective_container_root,
+            supports_images=supports_images,
+        ),
         WorkspaceFindTool(workspace_dir, container_root=effective_container_root),
         WorkspaceGrepTool(workspace_dir, container_root=effective_container_root),
         SafeBashTool(

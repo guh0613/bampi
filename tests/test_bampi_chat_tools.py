@@ -188,6 +188,33 @@ def test_system_prompt_mentions_docker_workspace():
     assert "WenQuanYi Zen Hei" in prompt
 
 
+def test_read_tool_advertises_images_for_multimodal_models(tmp_path: Path):
+    tools = create_agent_tools(
+        BampiChatConfig(),
+        str(tmp_path),
+        supports_images=True,
+        container_root="/workspace",
+    )
+
+    read_tool = next(tool for tool in tools if tool.name == "read")
+
+    assert "common images" in read_tool.description
+
+
+def test_read_tool_does_not_advertise_images_for_text_only_models(tmp_path: Path):
+    tools = create_agent_tools(
+        BampiChatConfig(),
+        str(tmp_path),
+        supports_images=False,
+        container_root="/workspace",
+    )
+
+    read_tool = next(tool for tool in tools if tool.name == "read")
+
+    assert "image" not in read_tool.description.lower()
+    assert "text file" in read_tool.description.lower()
+
+
 def test_system_prompt_mentions_browser_tool():
     prompt = build_system_prompt(BampiChatConfig(), ["browser", "web_search", "web_ask"])
 

@@ -34,12 +34,27 @@ class _WorkspaceToolMixin:
 
 
 class WorkspaceReadTool(_WorkspaceToolMixin):
-    def __init__(self, workspace_dir: str, container_root: str | None = None) -> None:
+    _TEXT_ONLY_DESCRIPTION = (
+        "Read the contents of a text file. Text output may be truncated. "
+        "Use offset/limit for large files."
+    )
+
+    def __init__(
+        self,
+        workspace_dir: str,
+        container_root: str | None = None,
+        *,
+        supports_images: bool = True,
+    ) -> None:
         super().__init__(workspace_dir, container_root=container_root)
         self._delegate = create_read_tool(self._workspace_dir)
         self.name = self._delegate.name
         self.label = self._delegate.label
-        self.description = self._delegate.description
+        self.description = (
+            self._delegate.description
+            if supports_images
+            else self._TEXT_ONLY_DESCRIPTION
+        )
         self.parameters = self._delegate.parameters
 
     async def execute(

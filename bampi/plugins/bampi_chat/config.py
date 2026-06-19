@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import PurePosixPath
 from typing import Literal
 
@@ -7,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
+ModelInputType = Literal["text", "image"]
 BashMode = Literal["auto", "docker", "local"]
 MemoryStorageMode = Literal["single"]
 
@@ -55,6 +57,7 @@ class BampiChatConfig(BaseModel):
     bampi_model_provider: str = "openai"
     bampi_model_id: str = "gpt-5-mini"
     bampi_model_api: str = "auto"
+    bampi_model_input_types: list[ModelInputType] | None = None
     bampi_api_key: str = ""
     bampi_base_url: str = ""
     bampi_thinking_level: ThinkingLevel = "off"
@@ -167,6 +170,44 @@ class BampiChatConfig(BaseModel):
             if text:
                 result.append(text)
         return result
+
+    @field_validator("bampi_model_input_types", mode="before")
+    @classmethod
+    def _normalize_model_input_types(cls, value: object) -> list[str] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("bampi_model_input_types must not be empty")
+            if value.startswith("["):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        "bampi_model_input_types must be a valid JSON array or "
+                        "comma-separated list"
+                    ) from exc
+            else:
+                value = value.split(",")
+        if not isinstance(value, (list, tuple)):
+            raise TypeError("bampi_model_input_types must be a list of input types")
+
+        normalized: list[str] = []
+        for item in value:
+            input_type = str(item).strip().lower()
+            if input_type not in {"text", "image"}:
+                raise ValueError(
+                    "bampi_model_input_types entries must be 'text' or 'image'"
+                )
+            if input_type not in normalized:
+                normalized.append(input_type)
+
+        if not normalized:
+            raise ValueError("bampi_model_input_types must not be empty")
+        if "text" not in normalized:
+            raise ValueError("bampi_model_input_types must include 'text'")
+        return normalized
 
     @field_validator(
         "bampi_model_provider",
