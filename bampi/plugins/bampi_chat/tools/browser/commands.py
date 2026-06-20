@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 import json
 from pathlib import Path
 import shlex
@@ -20,13 +21,13 @@ from .snapshot import SnapshotEngine
 UpdateCallback = Callable[[str], Awaitable[None]]
 
 
-HELP_TEXT = """Browser commands (targets are snapshot refs like @e3, CSS, css=..., or text=...):
-  open URL | goto URL | snapshot [--max N]
+HELP_TEXT = """Browser commands (targets: @e3, CSS/css=..., text=..., label=..., placeholder=..., testid=..., role=button[name=Submit]):
+  open URL | goto URL | snapshot [--interactive] [--depth N] [--scope TARGET] [--urls] [--max N]
   click TARGET [--right] | dblclick TARGET | hover TARGET | focus TARGET
   fill TARGET "text" | type TARGET "text" | press KEY | select TARGET VALUE...
   check TARGET | uncheck TARGET | drag SOURCE TARGET [--html5] | upload TARGET PATH...
-  wait SECONDS | wait --url GLOB | wait --text TEXT | wait TARGET [--state visible|hidden|detached]
-  extract [TARGET] [--html] [--max N] | eval "JavaScript"
+  wait SECONDS | wait --url GLOB | wait --text TEXT | wait TARGET [--state visible|hidden|detached] | wait --load domcontentloaded|load|networkidle | wait --fn JS
+  extract [TARGET] [--html] [--max N] | get attr TARGET NAME | get value TARGET | get count TARGET | eval "JavaScript"
   scroll up|down|left|right|top|bottom|TARGET [AMOUNT]
   tabs | tab PAGE_ID | close [PAGE_ID] | reload | back | forward
   screenshot [PATH] [--target TARGET] [--full] [--annotate] [--jpeg] [--quality N] [--no-inline]
@@ -144,18 +145,40 @@ class BrowserCommandDispatcher:
             await self._navigate(page, resolved)
             return CommandOutput(self._page_summary(page, notes))
         if name == "snapshot":
+            interactive = _flag(tokens, "--interactive")
+            show_urls = _flag(tokens, "--urls")
+            scope = _take_option(tokens, "--scope")
+            depth_raw = _take_option(tokens, "--depth")
+            if depth_raw is None:
+                max_depth = None
+            else:
+                try:
+                    max_depth = int(depth_raw)
+                except ValueError as exc:
+                    raise CommandError("--depth must be an integer.") from exc
+                if not 0 <= max_depth <= 30:
+                    raise CommandError("--depth must be between 0 and 30.")
             max_nodes = _positive_int(_take_option(tokens, "--max"), name="--max", default=180, maximum=600)
-            self._expect_count(tokens, exact=0, usage="snapshot [--max N]")
+            self._expect_count(tokens, exact=0, usage="snapshot [--interactive] [--depth N] [--scope TARGET] [--urls] [--max N]")
             page = self.page()
             await self.runtime.refresh_page_info(page)
-            result = await self.snapshot.capture(page, max_nodes=max_nodes)
+            result = await self.snapshot.capture(
+                page,
+                max_nodes=max_nodes,
+                interactive=interactive,
+                max_depth=max_depth,
+                scope=scope,
+                show_urls=show_urls,
+            )
             return CommandOutput(result.text)
         if name in {"click", "dblclick"}:
             right = _flag(tokens, "--right")
             self._expect_count(tokens, exact=1, usage=f"{name} TARGET [--right]")
             page = self.page()
+            generation = page.document_generation
+            page_count = len(self.runtime.pages)
             await self.interaction.click(page, tokens[0], count=2 if name == "dblclick" else 1, button="right" if right else "left")
-            await asyncio.sleep(0.05)
+            page = await self._settle_after_action(page, generation=generation, page_count=page_count)
             await self.runtime.refresh_page_info(page)
             return CommandOutput(f"{name}ed {tokens[0]} on {page.page_id}. URL: {self.runtime.policy.display_url(page.url)}")
         if name in {"hover", "focus"}:
@@ -205,6 +228,8 @@ class BrowserCommandDispatcher:
             page = self.page()
             text = await self.interaction.extract(page, tokens[0] if tokens else None, html=html, max_chars=max_chars)
             return CommandOutput(text)
+        if name == "get":
+            return await self._get(tokens)
         if name in {"eval", "evaluate"}:
             expression = self._raw_remainder(command)
             if not expression:
@@ -319,6 +344,7 @@ class BrowserCommandDispatcher:
         async def run() -> CommandOutput:
             summaries: list[str] = []
             last_image: CommandOutput | None = None
+            failures = 0
             for index, line in enumerate(commands, 1):
                 self._cancel_check()
                 try:
@@ -330,13 +356,18 @@ class BrowserCommandDispatcher:
                     if on_update:
                         await on_update(f"batch {index}/{len(commands)} ✓ {line}: {summary[:160]}")
                 except Exception as exc:
+                    failures += 1
                     summaries.append(f"{index}. ✗ {line} — {exc}")
                     if on_update:
                         await on_update(f"batch {index}/{len(commands)} ✗ {line}: {exc}")
                     if not continue_on_error:
-                        summaries.append(f"Stopped; {len(commands) - index} command(s) skipped.")
-                        break
-            text = "Batch result:\n" + "\n".join(summaries)
+                        skipped = len(commands) - index
+                        raise CommandError(
+                            f"Batch failed at step {index}/{len(commands)}; {skipped} command(s) skipped.\n"
+                            + "\n".join(summaries)
+                        ) from exc
+            heading = "Batch completed" + (f" with {failures} failure(s)" if failures else " successfully")
+            text = heading + ":\n" + "\n".join(summaries)
             return CommandOutput(
                 text=text,
                 image_data=last_image.image_data if last_image else None,
@@ -373,10 +404,15 @@ class BrowserCommandDispatcher:
     async def _wait(self, tokens: list[str]) -> CommandOutput:
         url = _take_option(tokens, "--url")
         text = _take_option(tokens, "--text")
+        load = _take_option(tokens, "--load")
+        condition = _take_option(tokens, "--fn")
         state = _take_option(tokens, "--state", "visible") or "visible"
         timeout_raw = _take_option(tokens, "--timeout")
         timeout = float(timeout_raw) if timeout_raw is not None else None
         page = self.page()
+        selected = sum(value is not None for value in (url, text, load, condition))
+        if selected > 1:
+            raise CommandError("wait accepts only one of --url, --text, --load, or --fn.")
         if url is not None:
             self._expect_count(tokens, exact=0, usage="wait --url GLOB")
             await self.interaction.wait(page, url=url, timeout=timeout)
@@ -385,6 +421,16 @@ class BrowserCommandDispatcher:
             self._expect_count(tokens, exact=0, usage="wait --text TEXT")
             await self.interaction.wait(page, text=text, timeout=timeout)
             return CommandOutput(f"Text appeared: {text!r}")
+        if load is not None:
+            self._expect_count(tokens, exact=0, usage="wait --load domcontentloaded|load|networkidle")
+            if load not in {"domcontentloaded", "load", "networkidle"}:
+                raise CommandError("wait --load must be domcontentloaded, load, or networkidle.")
+            await self.interaction.wait(page, load=load, timeout=timeout)
+            return CommandOutput(f"Page reached {load}.")
+        if condition is not None:
+            self._expect_count(tokens, exact=0, usage='wait --fn "JavaScript condition"')
+            await self.interaction.wait(page, condition=condition, timeout=timeout)
+            return CommandOutput("JavaScript wait condition became truthy.")
         self._expect_count(tokens, exact=1, usage="wait SECONDS | wait TARGET [--state STATE]")
         try:
             seconds = float(tokens[0])
@@ -397,6 +443,36 @@ class BrowserCommandDispatcher:
             raise CommandError("Wait duration must be between 0 and 120 seconds.")
         await self.interaction.wait(page, seconds=seconds)
         return CommandOutput(f"Waited {seconds:g}s.")
+
+    async def _settle_after_action(self, page: PageState, *, generation: int, page_count: int) -> PageState:
+        await asyncio.sleep(0.05)
+        if len(self.runtime.pages) > page_count:
+            popup = next(reversed(self.runtime.pages.values()))
+            self.active_page_id = popup.page_id
+            with suppress(CommandError):
+                await self._wait_ready(popup)
+            return popup
+        if page.document_generation != generation:
+            with suppress(CommandError):
+                await self._wait_ready(page)
+        return page
+
+    async def _get(self, tokens: list[str]) -> CommandOutput:
+        self._expect_count(tokens, minimum=2, usage="get attr TARGET NAME | get value TARGET | get count TARGET")
+        action = tokens.pop(0).lower()
+        page = self.page()
+        if action == "attr":
+            self._expect_count(tokens, exact=2, usage="get attr TARGET NAME")
+            value = await self.interaction.get_attribute(page, tokens[0], tokens[1])
+            return CommandOutput("null" if value is None else str(value))
+        if action == "value":
+            self._expect_count(tokens, exact=1, usage="get value TARGET")
+            value = await self.interaction.get_value(page, tokens[0])
+            return CommandOutput(json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value)
+        if action == "count":
+            self._expect_count(tokens, exact=1, usage="get count TARGET")
+            return CommandOutput(str(await self.interaction.count(page, tokens[0])))
+        raise CommandError("get action must be attr, value, or count.")
 
     async def _tabs(self) -> str:
         lines = ["Open tabs:"]

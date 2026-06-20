@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+import time
 from typing import Any
 
 
@@ -35,6 +36,8 @@ class PageState:
     console: deque[str] = field(default_factory=lambda: deque(maxlen=200))
     errors: deque[str] = field(default_factory=lambda: deque(maxlen=100))
     network: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=300))
+    network_inflight: set[str] = field(default_factory=set)
+    last_network_activity: float = field(default_factory=time.monotonic)
 
 
 @dataclass(slots=True)

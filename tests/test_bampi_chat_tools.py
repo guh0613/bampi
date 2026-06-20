@@ -215,16 +215,14 @@ def test_read_tool_does_not_advertise_images_for_text_only_models(tmp_path: Path
     assert "text file" in read_tool.description.lower()
 
 
-def test_system_prompt_mentions_browser_tool():
+def test_system_prompt_does_not_duplicate_browser_tool_schema():
     prompt = build_system_prompt(BampiChatConfig(), ["browser", "web_search", "web_ask"])
 
-    assert "browser" in prompt
-    assert "outbox/browser/" in prompt
     assert "只有 `outbox/` 根目录的新文件会自动发回群里" in prompt
-    assert "显式写到 `outbox/xxx.png`" in prompt
-    assert "`snapshot`" in prompt
-    assert "`click @e1`" in prompt
-    assert "batch" in prompt
+    assert "browser 直接支持" not in prompt
+    assert "常用流程：`open URL`" not in prompt
+    assert "batch --continue" not in prompt
+    assert "outbox/browser/" not in prompt
 
 
 def test_system_prompt_mentions_background_bash_sessions():

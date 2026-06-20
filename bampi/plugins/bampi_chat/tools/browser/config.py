@@ -6,6 +6,9 @@ from dataclasses import dataclass
 @dataclass(frozen=True, slots=True)
 class BrowserConfig:
     executable_path: str | None = None
+    auto_install: bool = True
+    cache_dir: str | None = None
+    install_timeout: float = 300.0
     headless: bool = True
     block_images: bool = False
     launch_timeout: float = 45.0

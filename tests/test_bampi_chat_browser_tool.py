@@ -9,7 +9,14 @@ from pydantic import ValidationError
 from bampi.plugins.bampi_chat.tools.browser import BrowserTool, BrowserToolInput
 from bampi.plugins.bampi_chat.tools.browser.commands import BrowserCommandDispatcher, HELP_TEXT, _split
 from bampi.plugins.bampi_chat.tools.browser.config import BrowserConfig
-from bampi.plugins.bampi_chat.tools.browser.errors import CommandError
+from bampi.plugins.bampi_chat.tools.browser.errors import BrowserLaunchError, CommandError
+from bampi.plugins.bampi_chat.tools.browser.installer import (
+    _select_download,
+    chrome_binary_in,
+    default_cache_dir,
+    find_cached_chrome,
+    platform_key,
+)
 from bampi.plugins.bampi_chat.tools.browser.policy import NavigationPolicy
 
 
@@ -36,6 +43,73 @@ def test_browser_command_uses_shell_quoting_without_shell_execution() -> None:
     assert _split("eval 'document.title'") == ["eval", "document.title"]
     with pytest.raises(CommandError, match="quoting"):
         _split('fill @e1 "unterminated')
+
+
+def test_chrome_for_testing_metadata_and_cache_resolution(tmp_path: Path) -> None:
+    metadata = {
+        "channels": {
+            "Stable": {
+                "version": "150.0.1.2",
+                "downloads": {
+                    "chrome": [
+                        {"platform": "linux64", "url": "https://example.test/linux.zip"},
+                        {"platform": "mac-arm64", "url": "https://example.test/mac.zip"},
+                    ]
+                },
+            }
+        }
+    }
+
+    assert _select_download(metadata, "mac-arm64") == ("150.0.1.2", "https://example.test/mac.zip")
+    with pytest.raises(BrowserLaunchError):
+        _select_download({}, "mac-arm64")
+
+    cache = tmp_path / "browsers"
+    key = platform_key()
+    relative = {
+        "linux64": Path("chrome-linux64/chrome"),
+        "mac-arm64": Path("chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),
+        "mac-x64": Path("chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),
+        "win64": Path("chrome-win64/chrome.exe"),
+    }[key]
+    older = cache / "chrome-149.0.0.1" / relative
+    newer = cache / "chrome-150.0.0.1" / relative
+    for binary in (older, newer):
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text("binary", encoding="utf-8")
+        binary.chmod(0o755)
+
+    assert chrome_binary_in(cache / "chrome-150.0.0.1", key) == newer
+    assert find_cached_chrome(cache) == newer
+
+
+def test_chrome_for_testing_default_cache_is_project_local(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("BAMPI_BROWSER_CACHE_DIR", raising=False)
+
+    assert default_cache_dir() == tmp_path / ".bampi" / "browser" / "chrome-for-testing"
+
+
+@pytest.mark.asyncio
+async def test_batch_default_failure_is_a_tool_error() -> None:
+    class _Dispatcher(BrowserCommandDispatcher):
+        async def _single(self, command: str):
+            if command == "fail":
+                raise CommandError("expected failure")
+            return SimpleNamespace(text=command, image_data=None, image_mime_type=None)
+
+    runtime = SimpleNamespace(config=SimpleNamespace(batch_max_commands=32, batch_timeout=10.0))
+    dispatcher = _Dispatcher(runtime, active_page_id=None, cancellation=None)
+
+    with pytest.raises(CommandError, match="step 2/3"):
+        await dispatcher.execute("batch\nok\nfail\nskipped")
+
+    result = await dispatcher.execute("batch --continue\nok\nfail\ncontinued")
+    assert "with 1 failure" in result.text
+    assert "continued" in result.text
 
 
 @pytest.mark.asyncio

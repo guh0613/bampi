@@ -107,6 +107,9 @@ class BampiChatConfig(BaseModel):
     bampi_web_search_exa_num_results: int = 5
     bampi_browser_enabled: bool = True
     bampi_browser_executable_path: str = ""
+    bampi_browser_auto_install: bool = True
+    bampi_browser_cache_dir: str = ""
+    bampi_browser_install_timeout: float = 300.0
     bampi_browser_headless: bool = True
     bampi_browser_block_images: bool = False
     bampi_browser_launch_timeout: float = 45.0

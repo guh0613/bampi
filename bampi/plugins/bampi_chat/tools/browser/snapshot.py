@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections import Counter
 from contextlib import suppress
-import json
+import re
 from typing import Any
 
+from .errors import CommandError
+from .interaction import InteractionEngine
 from .models import PageState, RefEntry, SnapshotResult
 from .runtime import BrowserRuntime
 
@@ -15,11 +17,10 @@ INTERACTIVE_ROLES = {
     "slider", "spinbutton", "switch", "tab", "textbox", "treeitem",
 }
 CONTENT_ROLES = {"article", "cell", "heading", "img", "listitem", "region", "row"}
-SKIP_ROLES = {"InlineTextBox", "none", "presentation"}
+SKIP_ROLES = {"Iframe", "InlineTextBox", "none", "presentation"}
 
 _CURSOR_SCRIPT = r"""
 (() => {
-  const attr = %s;
   const limit = %d;
   const visible = (el) => {
     const r = el.getBoundingClientRect();
@@ -29,9 +30,18 @@ _CURSOR_SCRIPT = r"""
   };
   const nativeInteractive = new Set(['A','BUTTON','INPUT','SELECT','TEXTAREA','SUMMARY','OPTION']);
   const result = [];
+  const seen = new Set();
+  const add = (el) => { if (el && !seen.has(el) && result.length < limit) { seen.add(el); result.push(el); } };
+  for (const label of document.querySelectorAll('label')) {
+    const control = label.control || label.querySelector('input[type=checkbox],input[type=radio]');
+    if (!control || !['checkbox','radio'].includes(control.type) || !visible(label)) continue;
+    const r = control.getBoundingClientRect();
+    const s = getComputedStyle(control);
+    if (r.width < 2 || r.height < 2 || s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity || 1) < 0.01) add(label);
+  }
   let i = 0;
   for (const el of document.querySelectorAll('*')) {
-    if (i >= limit) break;
+    if (result.length >= limit) break;
     if (!visible(el) || nativeInteractive.has(el.tagName)) continue;
     const cursor = getComputedStyle(el).cursor;
     const parentCursor = el.parentElement && getComputedStyle(el.parentElement).cursor;
@@ -40,11 +50,7 @@ _CURSOR_SCRIPT = r"""
     const interactive = el.hasAttribute('onclick') || el.isContentEditable ||
       (el.hasAttribute('tabindex') && el.tabIndex >= 0) || (ownPointer && !parentPointer);
     if (!interactive) continue;
-    const marker = `${attr}-${i++}`;
-    el.setAttribute('data-bampi-cdp-ref', marker);
-    const label = (el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || el.textContent || '')
-      .replace(/\s+/g, ' ').trim().slice(0, 120);
-    result.push({marker, label, role: el.getAttribute('role') || 'clickable'});
+    add(el); i++;
   }
   return result;
 })()
@@ -59,7 +65,8 @@ def _ax_value(node: dict[str, Any], key: str) -> Any:
 
 
 def _clean(value: Any, limit: int = 180) -> str:
-    text = " ".join(str(value or "").split())
+    text = re.sub(r"[\u200b\u200c\u200d\u2060\ufeff]", "", str(value or ""))
+    text = " ".join(text.split())
     if len(text) > limit:
         return text[: limit - 1] + "…"
     return text
@@ -69,19 +76,35 @@ class SnapshotEngine:
     def __init__(self, runtime: BrowserRuntime) -> None:
         self.runtime = runtime
 
-    async def capture(self, page: PageState, *, max_nodes: int = 180) -> SnapshotResult:
+    async def capture(
+        self,
+        page: PageState,
+        *,
+        max_nodes: int = 180,
+        interactive: bool = False,
+        max_depth: int | None = None,
+        scope: str | None = None,
+        show_urls: bool = False,
+    ) -> SnapshotResult:
         page.snapshot_sequence += 1
         refs: dict[str, RefEntry] = {}
         lines: list[str] = []
         next_ref = 1
         node_count = 0
+        scope_session: str | None = None
+        allowed_backend_ids: set[int] | None = None
+        if scope:
+            scope_session, allowed_backend_ids = await self._scope_backend_ids(page, scope)
 
-        main = await self._capture_tree(
-            page, page.session_id, frame_id=None, params={}, refs=refs,
-            next_ref=next_ref, max_nodes=max_nodes, include_cursor=True,
-        )
-        lines.extend(main[0])
-        next_ref, node_count = main[1], main[2]
+        if scope_session in {None, page.session_id}:
+            main = await self._capture_tree(
+                page, page.session_id, frame_id=None, params={}, refs=refs,
+                next_ref=next_ref, max_nodes=max_nodes, include_cursor=True,
+                interactive=interactive, max_depth=max_depth, show_urls=show_urls,
+                allowed_backend_ids=allowed_backend_ids,
+            )
+            lines.extend(main[0])
+            next_ref, node_count = main[1], main[2]
 
         with suppress(Exception):
             frame_tree = (await self.runtime.client.call("Page.getFrameTree", session_id=page.session_id)).get("frameTree", {})
@@ -90,17 +113,21 @@ class SnapshotEngine:
                 if node_count >= max_nodes:
                     break
                 effective_session = self.runtime.frame_sessions.get(frame_id, page.session_id)
+                if scope_session is not None and effective_session != scope_session:
+                    continue
                 params = {} if effective_session != page.session_id else {"frameId": frame_id}
                 try:
                     child = await self._capture_tree(
                         page, effective_session, frame_id=frame_id, params=params, refs=refs,
-                        next_ref=next_ref, max_nodes=max_nodes - node_count, include_cursor=False,
+                        next_ref=next_ref, max_nodes=max_nodes - node_count, include_cursor=True,
+                        interactive=interactive, max_depth=max_depth, show_urls=show_urls,
+                        allowed_backend_ids=allowed_backend_ids,
                     )
                 except Exception:
                     continue
                 if child[0]:
-                    lines.append(f'  - iframe "{_clean(frame_url, 120)}"')
-                    lines.extend("    " + line for line in child[0])
+                    lines.append(f'- iframe "{_clean(frame_url, 120)}"')
+                    lines.extend("  " + line for line in child[0])
                     next_ref, added = child[1], child[2]
                     node_count += added
 
@@ -121,8 +148,12 @@ class SnapshotEngine:
         next_ref: int,
         max_nodes: int,
         include_cursor: bool,
+        interactive: bool,
+        max_depth: int | None,
+        show_urls: bool,
+        allowed_backend_ids: set[int] | None,
     ) -> tuple[list[str], int, int]:
-        cursor = await self._cursor_elements(session_id, page.snapshot_sequence) if include_cursor else {}
+        cursor = await self._cursor_elements(session_id, page.snapshot_sequence, frame_id) if include_cursor else {}
         result = await self.runtime.client.call(
             "Accessibility.getFullAXTree", params, session_id=session_id,
             timeout=self.runtime.config.action_timeout,
@@ -142,7 +173,7 @@ class SnapshotEngine:
 
         def visit(node_id: str, depth: int, parent_name: str = "") -> None:
             nonlocal next_ref, rendered
-            if rendered >= max_nodes:
+            if rendered >= max_nodes or (max_depth is not None and depth > max_depth):
                 return
             node = by_id.get(node_id)
             if node is None:
@@ -165,8 +196,10 @@ class SnapshotEngine:
             should_ref = backend_id is not None and (
                 role in INTERACTIVE_ROLES or (role in CONTENT_ROLES and bool(name)) or cursor_info is not None
             )
+            in_scope = allowed_backend_ids is None or backend_id is None or backend_id in allowed_backend_ids
+            should_render = in_scope and (not interactive or should_ref)
             ref_text = ""
-            if should_ref and backend_id is not None:
+            if should_ref and backend_id is not None and in_scope:
                 ref = f"@e{next_ref}"
                 next_ref += 1
                 key = (role, name)
@@ -195,6 +228,11 @@ class SnapshotEngine:
                 if not isinstance(prop, dict):
                     continue
                 prop_name = str(prop.get("name") or "")
+                if prop_name == "url" and show_urls:
+                    prop_value = _clean(_ax_value(prop, "value"), 240)
+                    if prop_value:
+                        properties.append(f'url="{prop_value}"')
+                    continue
                 if prop_name not in {"checked", "disabled", "expanded", "focused", "level", "pressed", "required", "selected"}:
                     continue
                 prop_value = _ax_value(prop, "value")
@@ -202,11 +240,11 @@ class SnapshotEngine:
                     properties.append(f"{prop_name}={str(prop_value).lower()}")
             suffix = (" " + " ".join(properties)) if properties else ""
             indent = "  " * depth
-            if role == "StaticText":
+            if should_render and role == "StaticText":
                 if name and name != parent_name:
                     lines.append(f'{indent}- text "{name}"')
                     rendered += 1
-            elif (role and role != "generic") or name or ref_text:
+            elif should_render and ((role and role != "generic") or name or ref_text):
                 display_role = role or "generic"
                 label = f' "{name}"' if name else ""
                 duplicate = duplicate_counts[(role, name)]
@@ -216,7 +254,7 @@ class SnapshotEngine:
             for child in children:
                 visit(
                     child,
-                    depth + (1 if role not in {"generic", "RootWebArea", "WebArea"} else 0),
+                    depth + (1 if should_render and role not in {"generic", "RootWebArea", "WebArea"} else 0),
                     name or parent_name,
                 )
 
@@ -227,6 +265,8 @@ class SnapshotEngine:
             if rendered >= max_nodes:
                 break
             if backend_id in rendered_backend:
+                continue
+            if allowed_backend_ids is not None and backend_id not in allowed_backend_ids:
                 continue
             ref = f"@e{next_ref}"
             next_ref += 1
@@ -242,48 +282,92 @@ class SnapshotEngine:
             rendered += 1
         return lines, next_ref, rendered
 
-    async def _cursor_elements(self, session_id: str, sequence: int) -> dict[int, dict[str, str]]:
-        token = f"b{sequence}"
-        expression = _CURSOR_SCRIPT % (json.dumps(token), 120)
-        result = await self.runtime.client.call(
-            "Runtime.evaluate",
-            {"expression": expression, "returnByValue": True},
-            session_id=session_id,
-        )
-        value = result.get("result", {}).get("value", [])
-        info_by_marker = {
-            item.get("marker"): item for item in value if isinstance(item, dict) and isinstance(item.get("marker"), str)
+    async def _cursor_elements(
+        self,
+        session_id: str,
+        sequence: int,
+        frame_id: str | None,
+    ) -> dict[int, dict[str, str]]:
+        object_group = f"bampi-snapshot-{sequence}-{frame_id or 'main'}"
+        params: dict[str, Any] = {
+            "expression": _CURSOR_SCRIPT % 120,
+            "returnByValue": False,
+            "objectGroup": object_group,
         }
-        if not info_by_marker:
-            return {}
+        if frame_id:
+            context = self.runtime.execution_contexts.get(frame_id)
+            if context is not None and context[0] == session_id:
+                params["contextId"] = context[1]
         output: dict[int, dict[str, str]] = {}
         try:
-            document = await self.runtime.client.call(
-                "DOM.getDocument", {"depth": 1, "pierce": True}, session_id=session_id
+            result = await self.runtime.client.call("Runtime.evaluate", params, session_id=session_id)
+            array_id = result.get("result", {}).get("objectId")
+            if not array_id:
+                return {}
+            properties = await self.runtime.client.call(
+                "Runtime.getProperties", {"objectId": array_id, "ownProperties": True}, session_id=session_id
             )
-            root_id = document.get("root", {}).get("nodeId")
-            nodes = await self.runtime.client.call(
-                "DOM.querySelectorAll", {"nodeId": root_id, "selector": "[data-bampi-cdp-ref]"}, session_id=session_id
-            )
-            for node_id in nodes.get("nodeIds", []):
+            element_ids = []
+            for prop in properties.get("result", []):
+                if not isinstance(prop, dict) or not str(prop.get("name", "")).isdigit():
+                    continue
+                object_id = prop.get("value", {}).get("objectId")
+                if object_id:
+                    element_ids.append(object_id)
+            for object_id in element_ids:
+                metadata = await self.runtime.client.call(
+                    "Runtime.callFunctionOn",
+                    {
+                        "objectId": object_id,
+                        "functionDeclaration": "function(){const c=this.matches('label')?(this.control||this.querySelector('input[type=checkbox],input[type=radio]')):null;const label=(this.getAttribute('aria-label')||this.getAttribute('title')||this.innerText||this.textContent||'').replace(/\\s+/g,' ').trim().slice(0,120);return {label,role:c?.type||this.getAttribute('role')||'clickable'}}",
+                        "returnByValue": True,
+                    },
+                    session_id=session_id,
+                )
                 described = await self.runtime.client.call(
-                    "DOM.describeNode", {"nodeId": node_id}, session_id=session_id
+                    "DOM.describeNode", {"objectId": object_id}, session_id=session_id
                 )
                 node = described.get("node", {})
-                attrs = node.get("attributes", [])
-                attr_map = dict(zip(attrs[0::2], attrs[1::2], strict=False))
-                marker = attr_map.get("data-bampi-cdp-ref")
                 backend = node.get("backendNodeId")
-                if marker in info_by_marker and isinstance(backend, int):
-                    output[backend] = info_by_marker[marker]
+                info = metadata.get("result", {}).get("value")
+                if isinstance(backend, int) and isinstance(info, dict):
+                    output[backend] = info
         finally:
             with suppress(Exception):
                 await self.runtime.client.call(
-                    "Runtime.evaluate",
-                    {"expression": "document.querySelectorAll('[data-bampi-cdp-ref]').forEach(e=>e.removeAttribute('data-bampi-cdp-ref'))"},
+                    "Runtime.releaseObjectGroup", {"objectGroup": object_group},
                     session_id=session_id,
                 )
         return output
+
+    async def _scope_backend_ids(self, page: PageState, scope: str) -> tuple[str, set[int]]:
+        element = await InteractionEngine(self.runtime).resolve(page, scope)
+        described = await self.runtime.client.call(
+            "DOM.describeNode",
+            {"backendNodeId": element.backend_node_id, "depth": -1, "pierce": True},
+            session_id=element.session_id,
+        )
+        ids: set[int] = set()
+
+        def collect(node: Any) -> None:
+            if isinstance(node, list):
+                for item in node:
+                    collect(item)
+                return
+            if not isinstance(node, dict):
+                return
+            backend = node.get("backendNodeId")
+            if isinstance(backend, int):
+                ids.add(backend)
+            for key in ("children", "shadowRoots", "pseudoElements", "distributedNodes"):
+                collect(node.get(key))
+            collect(node.get("contentDocument"))
+            collect(node.get("templateContent"))
+
+        collect(described.get("node"))
+        if not ids:
+            raise CommandError(f"Could not build a snapshot scope for {scope!r}.")
+        return element.session_id, ids
 
     @staticmethod
     def _flatten_child_frames(tree: dict[str, Any]) -> list[tuple[str, str]]:

@@ -67,12 +67,24 @@ class InteractionEngine:
             if entry.session_generation != page.session_generations.get(entry.session_id, 0):
                 raise StaleRefError(f"Ref {target} is stale because its frame navigated. Run `snapshot` again.")
             return await self._resolve_ref(page, entry)
+        if target.startswith("role="):
+            return await self._resolve_role(page, target)
         expression = self._selector_expression(target)
         remote = await self.runtime.client.call(
             "Runtime.evaluate",
             {"expression": expression, "returnByValue": False, "awaitPromise": False},
             session_id=page.session_id,
         )
+        details = remote.get("exceptionDetails")
+        if isinstance(details, dict):
+            description = str(details.get("exception", {}).get("description") or details.get("text") or "")
+            match = re.search(r"__BAMPI_AMBIGUOUS__:(\d+)", description)
+            if match:
+                raise CommandError(
+                    f"Target {target!r} matched {match.group(1)} elements. Use `snapshot` and an @ref, "
+                    "or make the selector/semantic target unique."
+                )
+            raise CommandError(description or f"Could not resolve {target!r}.")
         result = remote.get("result", {})
         object_id = result.get("objectId")
         if not object_id or result.get("subtype") == "null":
@@ -90,6 +102,46 @@ class InteractionEngine:
         if not isinstance(backend, int):
             raise CommandError(f"Could not resolve DOM identity for {target!r}.")
         return ResolvedElement(page.session_id, backend, object_id, target)
+
+    async def _resolve_role(self, page: PageState, target: str) -> ResolvedElement:
+        match = re.fullmatch(r"role=([^\[]+?)(?:\[name=(.*)\])?", target, flags=re.IGNORECASE)
+        if match is None:
+            raise CommandError("Role targets use role=button or role=button[name=Submit].")
+        role = match.group(1).strip().lower()
+        raw_name = match.group(2)
+        name = raw_name.strip().strip("\"'") if raw_name is not None else None
+        tree = await self.runtime.client.call("Accessibility.getFullAXTree", session_id=page.session_id)
+        role_matches: list[tuple[int, str]] = []
+        for node in tree.get("nodes", []):
+            if not isinstance(node, dict):
+                continue
+            node_role = str(node.get("role", {}).get("value") or "").lower()
+            node_name = " ".join(str(node.get("name", {}).get("value") or "").split())
+            backend = node.get("backendDOMNodeId")
+            if node_role == role and isinstance(backend, int):
+                role_matches.append((backend, node_name))
+        matches = role_matches
+        if name is not None:
+            normalized = " ".join(name.split())
+            exact = [item for item in role_matches if item[1] == normalized]
+            matches = exact or [item for item in role_matches if normalized.casefold() in item[1].casefold()]
+        if not matches:
+            suffix = f" with name {name!r}" if name is not None else ""
+            raise CommandError(f"No element matched role={role}{suffix}.")
+        if len(matches) != 1:
+            suffix = f"[name={name}]" if name is not None else ""
+            raise CommandError(
+                f"Target role={role}{suffix} matched {len(matches)} elements. "
+                "Use `snapshot` and an @ref or provide a unique accessible name."
+            )
+        backend, accessible_name = matches[0]
+        resolved = await self.runtime.client.call(
+            "DOM.resolveNode", {"backendNodeId": backend}, session_id=page.session_id
+        )
+        object_id = resolved.get("object", {}).get("objectId")
+        if not object_id:
+            raise CommandError(f"Could not resolve role target {target!r} to a DOM element.")
+        return ResolvedElement(page.session_id, backend, object_id, f"{role} {accessible_name!r}")
 
     async def _resolve_ref(self, page: PageState, entry: RefEntry) -> ResolvedElement:
         try:
@@ -130,14 +182,96 @@ class InteractionEngine:
     def _selector_expression(target: str) -> str:
         if target.startswith("css="):
             target = target[4:]
+        if target.startswith("label="):
+            query = json.dumps(target[6:])
+            return r"""(()=>{const q=%s,n=s=>' '.concat(s||'').replace(/\s+/g,' ').trim();const labels=[...document.querySelectorAll('label')];const exact=labels.filter(e=>n(e.innerText||e.textContent)===n(q));const m=exact.length?exact:labels.filter(e=>n(e.innerText||e.textContent).toLowerCase().includes(n(q).toLowerCase()));const controls=m.map(e=>e.control||e.querySelector('input,textarea,select,button')).filter(Boolean);if(controls.length>1)throw new Error('__BAMPI_AMBIGUOUS__:'+controls.length);return controls[0]||null})()""" % query
+        if target.startswith("placeholder="):
+            query = json.dumps(target[12:])
+            return r"""(()=>{const q=%s,n=s=>' '.concat(s||'').replace(/\s+/g,' ').trim();const all=[...document.querySelectorAll('[placeholder]')];const exact=all.filter(e=>n(e.getAttribute('placeholder'))===n(q));const m=exact.length?exact:all.filter(e=>n(e.getAttribute('placeholder')).toLowerCase().includes(n(q).toLowerCase()));if(m.length>1)throw new Error('__BAMPI_AMBIGUOUS__:'+m.length);return m[0]||null})()""" % query
+        if target.startswith("testid="):
+            query = json.dumps(target[7:])
+            return """(()=>{const q=%s;const m=[...document.querySelectorAll('[data-testid]')].filter(e=>e.getAttribute('data-testid')===q);if(m.length>1)throw new Error('__BAMPI_AMBIGUOUS__:'+m.length);return m[0]||null})()""" % query
         if target.startswith("text="):
             text = json.dumps(target[5:])
             return (
-                "(()=>{const q=" + text + ";const all=[...document.querySelectorAll('button,a,input,label,[role],summary,option,*')];"
-                "return all.find(e=>((e.innerText||e.textContent||e.value||'').trim()===q))||"
-                "all.find(e=>(e.innerText||e.textContent||e.value||'').includes(q))||null})()"
+                "(()=>{const q=" + text + ",n=s=>' '.concat(s||'').replace(/\\s+/g,' ').trim();"
+                "const all=[...document.querySelectorAll('button,a,input,label,[role],summary,option,h1,h2,h3,h4,h5,h6,p,li,td,th')];"
+                "const exact=all.filter(e=>n(e.innerText||e.textContent||e.value)===n(q));"
+                "const m=exact.length?exact:all.filter(e=>n(e.innerText||e.textContent||e.value).toLowerCase().includes(n(q).toLowerCase()));"
+                "if(m.length>1)throw new Error('__BAMPI_AMBIGUOUS__:'+m.length);return m[0]||null})()"
             )
-        return f"document.querySelector({json.dumps(target)})"
+        selector = json.dumps(target)
+        return (
+            f"(()=>{{const m=[...document.querySelectorAll({selector})];"
+            "if(m.length>1)throw new Error('__BAMPI_AMBIGUOUS__:'+m.length);return m[0]||null})()"
+        )
+
+    async def get_attribute(self, page: PageState, target: str, name: str) -> str | None:
+        element = await self.resolve(page, target)
+        result = await self.runtime.client.call(
+            "Runtime.callFunctionOn",
+            {
+                "objectId": element.object_id,
+                "functionDeclaration": "function(name){return this.getAttribute(name)}",
+                "arguments": [{"value": name}],
+                "returnByValue": True,
+            },
+            session_id=element.session_id,
+        )
+        return result.get("result", {}).get("value")
+
+    async def get_value(self, page: PageState, target: str) -> Any:
+        element = await self.resolve(page, target)
+        result = await self.runtime.client.call(
+            "Runtime.callFunctionOn",
+            {
+                "objectId": element.object_id,
+                "functionDeclaration": "function(){return 'value' in this?this.value:(this.textContent||'')}",
+                "returnByValue": True,
+            },
+            session_id=element.session_id,
+        )
+        return result.get("result", {}).get("value")
+
+    async def count(self, page: PageState, target: str) -> int:
+        if target.startswith("role="):
+            match = re.fullmatch(r"role=([^\[]+?)(?:\[name=(.*)\])?", target, flags=re.IGNORECASE)
+            if match is None:
+                raise CommandError("Role targets use role=button or role=button[name=Submit].")
+            role = match.group(1).strip().lower()
+            name = match.group(2)
+            if name is not None:
+                name = " ".join(name.strip().strip("\"'").split())
+            tree = await self.runtime.client.call("Accessibility.getFullAXTree", session_id=page.session_id)
+            count = 0
+            for node in tree.get("nodes", []):
+                if not isinstance(node, dict) or str(node.get("role", {}).get("value") or "").lower() != role:
+                    continue
+                node_name = " ".join(str(node.get("name", {}).get("value") or "").split())
+                if name is None or node_name == name:
+                    count += 1
+            return count
+        expression = self._count_expression(target)
+        value = await self.evaluate(page, expression)
+        return int(value or 0)
+
+    @staticmethod
+    def _count_expression(target: str) -> str:
+        if target.startswith("css="):
+            target = target[4:]
+        if target.startswith("label="):
+            query = json.dumps(target[6:])
+            return f"[...document.querySelectorAll('label')].filter(e=>(e.innerText||e.textContent||'').trim()==={query}).length"
+        if target.startswith("placeholder="):
+            query = json.dumps(target[12:])
+            return f"[...document.querySelectorAll('[placeholder]')].filter(e=>e.getAttribute('placeholder')==={query}).length"
+        if target.startswith("testid="):
+            query = json.dumps(target[7:])
+            return f"[...document.querySelectorAll('[data-testid]')].filter(e=>e.getAttribute('data-testid')==={query}).length"
+        if target.startswith("text="):
+            query = json.dumps(target[5:])
+            return f"[...document.querySelectorAll('button,a,input,label,[role],summary,option,h1,h2,h3,h4,h5,h6,p,li,td,th')].filter(e=>(e.innerText||e.textContent||e.value||'').trim()==={query}).length"
+        return f"document.querySelectorAll({json.dumps(target)}).length"
 
     async def box(self, element: ResolvedElement) -> tuple[float, float, float, float]:
         await self.runtime.client.call(
@@ -163,7 +297,7 @@ class InteractionEngine:
             "Runtime.callFunctionOn",
             {
                 "objectId": element.object_id,
-                "functionDeclaration": "function(x,y){const h=document.elementFromPoint(x,y);return {ok:!!h&&(h===this||this.contains(h)),hit:h?`${h.tagName.toLowerCase()}${h.id?'#'+h.id:''}`:'none'}}",
+                "functionDeclaration": "function(x,y){let d=this.ownerDocument||document;while(d.defaultView&&d.defaultView.frameElement)d=d.defaultView.frameElement.ownerDocument;let lx=x,ly=y,h=d.elementFromPoint(lx,ly);while(h&&(h.tagName==='IFRAME'||h.tagName==='FRAME')&&h.contentDocument&&h!==this){const r=h.getBoundingClientRect();lx-=r.x+h.clientLeft;ly-=r.y+h.clientTop;d=h.contentDocument;h=d.elementFromPoint(lx,ly)}const up=n=>n&&(n.parentNode||n.host||(n.getRootNode&&n.getRootNode().host));let ok=h===this;for(let n=h;!ok&&n;n=up(n))ok=n===this;for(let n=this;!ok&&n;n=up(n))ok=n===h;return {ok,hit:h?`${h.tagName.toLowerCase()}${h.id?'#'+h.id:''}`:'none'}}",
                 "arguments": [{"value": x}, {"value": y}],
                 "returnByValue": True,
             },
@@ -188,7 +322,7 @@ class InteractionEngine:
         x, y = await self._center(element)
         await self._check_hit_target(element, x, y)
         await self.runtime.client.call(
-            "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}, session_id=page.session_id
+            "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}, session_id=element.session_id
         )
         for click_count in range(1, count + 1):
             pressed = False
@@ -196,7 +330,7 @@ class InteractionEngine:
                 await self.runtime.client.call(
                     "Input.dispatchMouseEvent",
                     {"type": "mousePressed", "x": x, "y": y, "button": button, "clickCount": click_count},
-                    session_id=page.session_id,
+                    session_id=element.session_id,
                 )
                 pressed = True
             finally:
@@ -205,7 +339,7 @@ class InteractionEngine:
                         self.runtime.client.call(
                             "Input.dispatchMouseEvent",
                             {"type": "mouseReleased", "x": x, "y": y, "button": button, "clickCount": click_count},
-                            session_id=page.session_id,
+                            session_id=element.session_id,
                         )
                     )
                     try:
@@ -223,7 +357,7 @@ class InteractionEngine:
         element = await self.resolve(page, target)
         x, y = await self._center(element)
         await self.runtime.client.call(
-            "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}, session_id=page.session_id
+            "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}, session_id=element.session_id
         )
 
     async def focus(self, page: PageState, target: str) -> None:
@@ -300,6 +434,8 @@ class InteractionEngine:
     async def drag(self, page: PageState, source: str, target: str, *, html5: bool = False) -> None:
         source_el = await self.resolve(page, source)
         target_el = await self.resolve(page, target)
+        if source_el.session_id != target_el.session_id:
+            raise CommandError("Drag source and target must be in the same page or frame.")
         if html5:
             result = await self.runtime.client.call(
                 "Runtime.callFunctionOn",
@@ -315,19 +451,19 @@ class InteractionEngine:
             return
         sx, sy = await self._center(source_el)
         tx, ty = await self._center(target_el)
-        await self.runtime.client.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": sx, "y": sy}, session_id=page.session_id)
-        await self.runtime.client.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": sx, "y": sy, "button": "left", "buttons": 1, "clickCount": 1}, session_id=page.session_id)
+        await self.runtime.client.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": sx, "y": sy}, session_id=source_el.session_id)
+        await self.runtime.client.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": sx, "y": sy, "button": "left", "buttons": 1, "clickCount": 1}, session_id=source_el.session_id)
         try:
             for step in range(1, 11):
                 ratio = step / 10
                 await self.runtime.client.call(
                     "Input.dispatchMouseEvent",
                     {"type": "mouseMoved", "x": sx + (tx - sx) * ratio, "y": sy + (ty - sy) * ratio, "button": "left", "buttons": 1},
-                    session_id=page.session_id,
+                    session_id=source_el.session_id,
                 )
                 await asyncio.sleep(0.02)
         finally:
-            await self.runtime.client.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": tx, "y": ty, "button": "left", "buttons": 0, "clickCount": 1}, session_id=page.session_id)
+            await self.runtime.client.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": tx, "y": ty, "button": "left", "buttons": 0, "clickCount": 1}, session_id=source_el.session_id)
 
     async def upload(self, page: PageState, target: str, paths: list[Path]) -> None:
         element = await self.resolve(page, target)
@@ -381,6 +517,8 @@ class InteractionEngine:
         text: str | None = None,
         target: str | None = None,
         state: str = "visible",
+        load: str | None = None,
+        condition: str | None = None,
         timeout: float | None = None,
     ) -> None:
         if seconds is not None:
@@ -407,11 +545,28 @@ class InteractionEngine:
                     is_visible = bool(visible.get("result", {}).get("value"))
                     if (state == "visible" and is_visible) or (state == "hidden" and not is_visible):
                         return
+                if load is not None:
+                    ready_state = str(await self.evaluate(page, "document.readyState") or "")
+                    if load == "domcontentloaded" and ready_state in {"interactive", "complete"}:
+                        return
+                    if load == "load" and ready_state == "complete":
+                        return
+                    if (
+                        load == "networkidle"
+                        and not page.network_inflight
+                        and time.monotonic() - page.last_network_activity >= 0.5
+                    ):
+                        return
+                if condition is not None and bool(await self.evaluate(page, condition)):
+                    return
             except Exception as exc:
                 last_error = exc
                 if target is not None and state in {"hidden", "detached"}:
                     return
             await asyncio.sleep(0.1)
-        expectation = f"url={url!r}" if url else f"text={text!r}" if text else f"{target!r} state={state}"
+        expectation = (
+            f"url={url!r}" if url else f"text={text!r}" if text else
+            f"{target!r} state={state}" if target else f"load={load}" if load else f"condition={condition!r}"
+        )
         suffix = f" Last error: {last_error}" if last_error else ""
         raise CommandError(f"Timed out waiting for {expectation}.{suffix}")

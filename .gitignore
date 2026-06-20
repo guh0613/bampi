@@ -26,6 +26,8 @@ htmlcov/
 
 # ruff
 .ruff_cache/
+.bampi/
+/benchmark/
 
 # mypy / type checkers
 .mypy_cache/

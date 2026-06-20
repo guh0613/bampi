@@ -242,6 +242,10 @@ class BrowserRuntime:
             page.errors.append(str(text))
         elif method == "Network.requestWillBeSent":
             request = params.get("request", {})
+            request_id = params.get("requestId")
+            if isinstance(request_id, str):
+                page.network_inflight.add(request_id)
+            page.last_network_activity = time.monotonic()
             page.network.append(
                 {"kind": "request", "method": request.get("method"), "url": request.get("url"), "type": params.get("type")}
             )
@@ -250,6 +254,11 @@ class BrowserRuntime:
             page.network.append(
                 {"kind": "response", "status": response.get("status"), "url": response.get("url"), "type": params.get("type")}
             )
+        elif method in {"Network.loadingFinished", "Network.loadingFailed"}:
+            request_id = params.get("requestId")
+            if isinstance(request_id, str):
+                page.network_inflight.discard(request_id)
+            page.last_network_activity = time.monotonic()
 
     async def create_page(self, url: str = "about:blank") -> PageState:
         if len(self.pages) >= self.config.max_pages:

@@ -22,11 +22,12 @@ class BrowserToolInput(BaseModel):
     command: str = Field(
         min_length=1,
         description=(
-            "Browser command. Core syntax: open/goto URL; snapshot; click/dblclick/hover/focus TARGET; "
-            "fill/type TARGET TEXT; press KEY; select/check/uncheck; wait; extract/eval; scroll; "
+            "Browser command. Core syntax: open/goto URL; snapshot [--interactive]; click/dblclick/hover/focus TARGET; "
+            "fill/type TARGET TEXT; press KEY; select/check/uncheck; wait TARGET or --text/--url/--load/--fn; extract/eval; scroll; "
             "tabs/tab/close/reload/back/forward; drag SOURCE TARGET; upload TARGET PATH; "
             "screenshot/PDF; record start|stop; and multiline batch. TARGET may be @eN from snapshot, CSS, "
-            "css=..., or text=.... Use `help` only for low-frequency cookies/storage/network syntax."
+            "css=..., text=..., label=..., placeholder=..., testid=..., or role=button[name=Submit]. "
+            "Use get attr/value/count for compact inspection; use `help` only for low-frequency syntax."
         ),
     )
 
@@ -51,6 +52,9 @@ class BrowserTool:
         container_name: str | None = None,
         bridge_localhost: bool = False,
         executable_path: str | None = None,
+        auto_install: bool = True,
+        cache_dir: str | None = None,
+        install_timeout: float = 300.0,
         headless: bool = True,
         block_images: bool = False,
         launch_timeout: float = 45.0,
@@ -74,6 +78,9 @@ class BrowserTool:
         self._bridge_localhost = bridge_localhost
         self._config = BrowserConfig(
             executable_path=executable_path,
+            auto_install=auto_install,
+            cache_dir=cache_dir,
+            install_timeout=install_timeout,
             headless=headless,
             block_images=block_images,
             launch_timeout=launch_timeout,

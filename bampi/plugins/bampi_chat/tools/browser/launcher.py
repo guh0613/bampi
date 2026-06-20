@@ -13,6 +13,7 @@ import time
 from .cdp import CdpClient
 from .config import BrowserConfig
 from .errors import BrowserLaunchError
+from .installer import default_cache_dir, ensure_chrome_for_testing, find_cached_chrome
 
 
 @dataclass(slots=True)
@@ -51,13 +52,19 @@ def _terminate_process_group(process: asyncio.subprocess.Process, sig: signal.Si
         process.terminate()
 
 
-def find_chromium(explicit: str | None = None) -> str:
+def find_chromium(explicit: str | None = None) -> str | None:
     candidates: list[str] = []
     if explicit:
-        candidates.append(explicit)
+        expanded = str(Path(explicit).expanduser())
+        if Path(expanded).is_file() and os.access(expanded, os.X_OK):
+            return expanded
+        raise BrowserLaunchError(f"Configured Chromium executable is not usable: {expanded}")
     env_path = os.environ.get("BAMPI_BROWSER_EXECUTABLE")
     if env_path:
-        candidates.append(env_path)
+        expanded = str(Path(env_path).expanduser())
+        if Path(expanded).is_file() and os.access(expanded, os.X_OK):
+            return expanded
+        raise BrowserLaunchError(f"BAMPI_BROWSER_EXECUTABLE is not usable: {expanded}")
     if sys.platform == "darwin":
         candidates.extend(
             [
@@ -87,14 +94,27 @@ def find_chromium(explicit: str | None = None) -> str:
         resolved = shutil.which(candidate)
         if resolved:
             return resolved
+    return None
+
+
+async def resolve_chromium(config: BrowserConfig) -> str:
+    system = find_chromium(config.executable_path)
+    if system is not None:
+        return system
+    cache_dir = Path(config.cache_dir).expanduser() if config.cache_dir else default_cache_dir()
+    cached = find_cached_chrome(cache_dir)
+    if cached is not None:
+        return str(cached)
+    if config.auto_install:
+        return str(await ensure_chrome_for_testing(cache_dir, timeout=config.install_timeout))
     raise BrowserLaunchError(
-        "No Chromium browser was found. Install Google Chrome/Chromium or set "
-        "bampi_browser_executable_path (or BAMPI_BROWSER_EXECUTABLE)."
+        "No Chromium browser was found and automatic Chrome for Testing installation is disabled. "
+        "Install Chrome/Chromium or configure bampi_browser_executable_path."
     )
 
 
 async def launch_chromium(workspace_dir: Path, config: BrowserConfig) -> LaunchedChromium:
-    executable = find_chromium(config.executable_path)
+    executable = await resolve_chromium(config)
     profile_dir = workspace_dir / ".browser" / "chromium-profile"
     profile_dir.mkdir(parents=True, exist_ok=True)
     port_file = profile_dir / "DevToolsActivePort"
