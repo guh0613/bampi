@@ -649,16 +649,9 @@ def describe_tool_progress(tool_name: str, args: Any) -> str:
         query = render_tool_progress_value(payload.get("query") or payload.get("q"), "查询内容")
         return f"正在搜索网页：{query}"
     if tool_name == "browser":
-        action = render_tool_progress_value(payload.get("action"), "操作")
-        url = render_tool_progress_value(payload.get("url"), "")
-        selector = render_tool_progress_value(payload.get("selector"), "")
-        if action in {"open", "goto"} and url:
-            return f"正在浏览网页（{action}）：{url}"
-        if action in {"click", "type", "wait", "extract", "screenshot"} and selector:
-            return f"正在操作网页（{action}）：{selector}"
-        if action in {"pages", "switch", "close_page", "reload", "back", "forward", "scroll", "reset"}:
-            return f"正在操作浏览器：{action}"
-        return f"正在操作浏览器：{action}"
+        command = render_tool_progress_value(payload.get("command"), "操作网页")
+        first_line = command.splitlines()[0] if command else "操作网页"
+        return f"正在操作浏览器：{first_line}"
     if tool_name == "service":
         action = render_tool_progress_value(payload.get("action"), "status")
         service_ref = render_tool_progress_value(

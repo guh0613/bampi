@@ -178,7 +178,7 @@ async def test_group_session_manager_workspace_cleanup_scans_group_workspaces(tm
     manager = GroupSessionManager(config)
     workspace = Path(manager.workspace_dir_for_group("1001"))
     stale_file = workspace / "inbox" / "old.txt"
-    protected_file = workspace / ".browser" / "camoufox-profile" / "cookies.sqlite"
+    protected_file = workspace / ".browser" / "chromium-profile" / "Default" / "Cookies"
     persistent_file = workspace / "persistent" / "keep.txt"
     stale_file.write_text("old", encoding="utf-8")
     protected_file.parent.mkdir(parents=True, exist_ok=True)

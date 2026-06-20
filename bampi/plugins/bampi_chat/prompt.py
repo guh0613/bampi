@@ -91,10 +91,16 @@ def build_system_prompt(
         )
     if "browser" in tool_names:
         tool_lines.append(
-            "- 需要真实打开网页、等待 JS 渲染、点击/输入、截图时用 `browser`；快速查资料用 `web_search`。截图默认写入 `outbox/browser/` 仅供检查；若用户要收到截图，显式把 `path` 设为 `outbox/xxx.png`。"
+            "- 需要真实打开网页、等待 JS 渲染、交互或截图时用 `browser`；快速查资料用 `web_search`。`browser` 只接收一个 command 字符串。常用流程：`open URL` → `snapshot` → `click @e1` / `fill @e2 \"内容\"`。"
         )
         tool_lines.append(
-            "- `browser` 的 `observe` 会返回元素 ref；点击 ref 用 `click_ref`，截取 ref 用 `screenshot_ref`，不要把 ref 传给普通 `click`。"
+            "- browser 直接支持 open/goto、snapshot、click/dblclick/hover/focus、fill/type/press/select/check、wait/extract/eval、scroll、tabs/tab/close/reload/back/forward、drag、upload、screenshot、pdf、record 和 batch；元素可用 snapshot 返回的 `@eN`、CSS 或 `text=文字`。"
+        )
+        tool_lines.append(
+            "- 连续的确定性步骤优先使用多行 batch：首行 `batch`，随后每行一个 browser 命令；默认遇错停止，可用 `batch --continue`。batch 中途生成的 snapshot 不能供同一次 batch 后续由模型临时决策。"
+        )
+        tool_lines.append(
+            "- 截图默认写入 `outbox/browser/` 仅供检查；若用户要收到文件，显式写到 `outbox/xxx.png`。低频 cookies/storage/network 等语法才需要 `help`。"
         )
     if "service" in tool_names:
         tool_lines.append(

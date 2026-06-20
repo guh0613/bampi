@@ -71,6 +71,7 @@ def create_agent_tools(
                 container_root=effective_container_root,
                 container_name=config.bampi_bash_container_name if config.bampi_bash_mode == "docker" else None,
                 bridge_localhost=config.bampi_bash_mode == "docker",
+                executable_path=config.bampi_browser_executable_path or None,
                 headless=config.bampi_browser_headless,
                 block_images=config.bampi_browser_block_images,
                 launch_timeout=config.bampi_browser_launch_timeout,
@@ -78,6 +79,13 @@ def create_agent_tools(
                 idle_ttl_seconds=config.bampi_browser_idle_ttl_seconds,
                 max_pages=config.bampi_browser_max_pages,
                 inline_image_max_bytes=config.bampi_browser_inline_image_max_bytes,
+                viewport_width=config.bampi_browser_viewport_width,
+                viewport_height=config.bampi_browser_viewport_height,
+                batch_max_commands=config.bampi_browser_batch_max_commands,
+                batch_timeout=config.bampi_browser_batch_timeout,
+                recording_fps=config.bampi_browser_recording_fps,
+                recording_max_seconds=config.bampi_browser_recording_max_seconds,
+                allow_private_network=config.bampi_browser_allow_private_network,
             )
         )
     if config.bampi_memory_enabled and memory_manager is not None and group_id is not None:

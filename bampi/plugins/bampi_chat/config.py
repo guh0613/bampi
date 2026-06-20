@@ -106,6 +106,7 @@ class BampiChatConfig(BaseModel):
     bampi_web_search_exa_timeout: float = 20.0
     bampi_web_search_exa_num_results: int = 5
     bampi_browser_enabled: bool = True
+    bampi_browser_executable_path: str = ""
     bampi_browser_headless: bool = True
     bampi_browser_block_images: bool = False
     bampi_browser_launch_timeout: float = 45.0
@@ -113,6 +114,13 @@ class BampiChatConfig(BaseModel):
     bampi_browser_idle_ttl_seconds: int = 5 * 60
     bampi_browser_max_pages: int = 6
     bampi_browser_inline_image_max_bytes: int = 1_000_000
+    bampi_browser_viewport_width: int = 1440
+    bampi_browser_viewport_height: int = 1000
+    bampi_browser_batch_max_commands: int = 32
+    bampi_browser_batch_timeout: float = 120.0
+    bampi_browser_recording_fps: int = 10
+    bampi_browser_recording_max_seconds: int = 10 * 60
+    bampi_browser_allow_private_network: bool = False
     bampi_service_enabled: bool = True
     bampi_service_port_range: str = "46000-46031"
     bampi_service_public_host: str = "127.0.0.1"

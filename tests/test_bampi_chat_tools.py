@@ -49,7 +49,7 @@ def test_workspace_cleanup_removes_stale_work_files_and_preserves_environment(tm
     ]
     protected_paths = [
         workspace / ".agents" / "skills" / "demo" / "SKILL.md",
-        workspace / ".browser" / "camoufox-profile" / "cookies.sqlite",
+        workspace / ".browser" / "chromium-profile" / "Default" / "Cookies",
         workspace / ".venv" / "pyvenv.cfg",
         workspace / "node_modules" / "pkg" / "index.js",
         workspace / "persistent" / "keep.txt",
@@ -221,8 +221,10 @@ def test_system_prompt_mentions_browser_tool():
     assert "browser" in prompt
     assert "outbox/browser/" in prompt
     assert "只有 `outbox/` 根目录的新文件会自动发回群里" in prompt
-    assert "path` 设为 `outbox/xxx.png`" in prompt
-    assert "点击 ref 用 `click_ref`" in prompt
+    assert "显式写到 `outbox/xxx.png`" in prompt
+    assert "`snapshot`" in prompt
+    assert "`click @e1`" in prompt
+    assert "batch" in prompt
 
 
 def test_system_prompt_mentions_background_bash_sessions():
