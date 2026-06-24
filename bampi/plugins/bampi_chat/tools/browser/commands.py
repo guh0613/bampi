@@ -29,7 +29,7 @@ HELP_TEXT = """Browser commands (targets: @e3, CSS/css=..., text=..., label=...,
   wait SECONDS | wait --url GLOB | wait --text TEXT | wait TARGET [--state visible|hidden|detached] | wait --load domcontentloaded|load|networkidle | wait --fn JS
   extract [TARGET] [--html] [--max N] | get attr TARGET NAME | get value TARGET | get count TARGET | eval "JavaScript"
   scroll up|down|left|right|top|bottom|TARGET [AMOUNT]
-  tabs | tab PAGE_ID | close [PAGE_ID] | reload | back | forward
+  tabs | tab PAGE_ID | close [PAGE_ID...] [--all] [--others] | reload | back | forward
   screenshot [PATH] [--target TARGET] [--full] [--annotate] [--jpeg] [--quality N] [--no-inline]
   pdf [PATH] | record start [PATH.mp4|PATH.webm] | record stop | downloads
   cookies [get|clear|set NAME VALUE] | storage local|session [get|clear|set KEY VALUE]
@@ -254,7 +254,37 @@ class BrowserCommandDispatcher:
             await self.runtime.client.call("Page.bringToFront", session_id=page.session_id)
             return CommandOutput(f"Active tab: {self._page_summary(page)}")
         if name in {"close", "close-tab"}:
-            self._expect_count(tokens, minimum=0, maximum=1, usage="close [PAGE_ID]")
+            close_all = _flag(tokens, "--all")
+            close_others = _flag(tokens, "--others")
+            if close_all and close_others:
+                raise CommandError("Cannot combine --all and --others.")
+            if close_all:
+                self._expect_count(tokens, exact=0, usage="close --all")
+                closed = list(self.runtime.pages.values())
+                for page in closed:
+                    await self.runtime.close_page(page)
+                self.active_page_id = None
+                return CommandOutput(f"Closed {len(closed)} tab(s). 0 tab(s) remain.")
+            if close_others:
+                self._expect_count(tokens, minimum=0, maximum=1, usage="close --others [PAGE_ID]")
+                keep = self.page(tokens[0] if tokens else None)
+                to_close = [p for p in self.runtime.pages.values() if p.page_id != keep.page_id]
+                for page in to_close:
+                    await self.runtime.close_page(page)
+                self.active_page_id = keep.page_id
+                return CommandOutput(f"Closed {len(to_close)} tab(s). Kept {keep.page_id}. {len(self.runtime.pages)} tab(s) remain.")
+            if len(tokens) > 1:
+                ids = list(tokens)
+                closed_ids: list[str] = []
+                for pid in ids:
+                    page = self.runtime.pages.get(pid)
+                    if page is None:
+                        raise CommandError(f"Unknown tab {pid}. Use `tabs` to list open tabs.")
+                    await self.runtime.close_page(page)
+                    closed_ids.append(pid)
+                if self.active_page_id not in self.runtime.pages:
+                    self.active_page_id = next(reversed(self.runtime.pages), None)
+                return CommandOutput(f"Closed {', '.join(closed_ids)}. {len(self.runtime.pages)} tab(s) remain.")
             page = self.page(tokens[0] if tokens else None)
             await self.runtime.close_page(page)
             self.active_page_id = next(reversed(self.runtime.pages), None)

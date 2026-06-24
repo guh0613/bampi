@@ -34,7 +34,7 @@ class BrowserToolInput(BaseModel):
             "  extract [TARGET] | eval \"JS\" | get attr|value|count — inspection\n"
             "  scroll up|down|left|right|top|bottom|TARGET [AMOUNT]\n"
             "  screenshot [PATH] [--target TARGET] [--full] [--annotate] [--jpeg]\n"
-            "  pdf [PATH] | record start|stop | tabs | tab PAGE_ID | close | reload | back | forward\n"
+            "  pdf [PATH] | record start|stop | tabs | tab PAGE_ID | close [PAGE_ID...] [--all] [--others] | reload | back | forward\n"
             "  drag SOURCE TARGET | upload TARGET PATH\n"
             "  batch [--continue] followed by one command per line (max 32)\n"
             "TARGET: @eN (from snapshot), css=..., text=..., label=..., placeholder=..., testid=..., role=button[name=Submit].\n"
