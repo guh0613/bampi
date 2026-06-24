@@ -209,7 +209,11 @@ class BrowserRuntime:
         page = self.pages.get(page_id)
         if page is None:
             return
-        if method == "Page.frameNavigated":
+        if method == "Page.frameStartedLoading":
+            frame_id = params.get("frameId")
+            if session_id == page.session_id and (frame_id == page.main_frame_id or page.main_frame_id is None):
+                page.navigating = True
+        elif method == "Page.frameNavigated":
             frame = params.get("frame") if isinstance(params.get("frame"), dict) else {}
             if session_id:
                 page.session_generations[session_id] = page.session_generations.get(session_id, 0) + 1
@@ -218,6 +222,7 @@ class BrowserRuntime:
                 page.main_frame_id = str(frame.get("id") or "") or None
                 page.url = str(frame.get("url") or page.url)
                 page.document_generation += 1
+                page.navigating = False
                 page.refs.clear()
         elif method == "Page.javascriptDialogOpening":
             page.dialog = {

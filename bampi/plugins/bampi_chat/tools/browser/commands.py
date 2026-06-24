@@ -455,6 +455,17 @@ class BrowserCommandDispatcher:
         if page.document_generation != generation:
             with suppress(CommandError):
                 await self._wait_ready(page)
+            return page
+        if page.navigating:
+            deadline = asyncio.get_running_loop().time() + self.runtime.config.action_timeout
+            while page.navigating and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.05)
+                if self.cancellation and self.cancellation.cancelled:
+                    break
+            if page.document_generation != generation:
+                with suppress(CommandError):
+                    await self._wait_ready(page)
+            return page
         return page
 
     async def _get(self, tokens: list[str]) -> CommandOutput:

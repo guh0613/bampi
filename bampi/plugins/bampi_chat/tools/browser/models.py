@@ -28,6 +28,7 @@ class PageState:
     url: str = "about:blank"
     title: str = ""
     document_generation: int = 0
+    navigating: bool = False
     main_frame_id: str | None = None
     refs: dict[str, RefEntry] = field(default_factory=dict)
     snapshot_sequence: int = 0
