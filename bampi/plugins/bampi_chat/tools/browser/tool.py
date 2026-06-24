@@ -22,12 +22,23 @@ class BrowserToolInput(BaseModel):
     command: str = Field(
         min_length=1,
         description=(
-            "Browser command. Core syntax: open/goto URL; snapshot [--interactive]; click/dblclick/hover/focus TARGET; "
-            "fill/type TARGET TEXT; press KEY; select/check/uncheck; wait TARGET or --text/--url/--load/--fn; extract/eval; scroll; "
-            "tabs/tab/close/reload/back/forward; drag SOURCE TARGET; upload TARGET PATH; "
-            "screenshot/PDF; record start|stop; and multiline batch. TARGET may be @eN from snapshot, CSS, "
-            "css=..., text=..., label=..., placeholder=..., testid=..., or role=button[name=Submit]. "
-            "Use get attr/value/count for compact inspection; use `help` only for low-frequency syntax."
+            "Browser command. Core syntax:\n"
+            "  open URL | goto URL — navigate to a page\n"
+            "  snapshot [--interactive] [--depth N] [--scope TARGET] — capture page state with @eN refs\n"
+            "  click @eN | dblclick | hover | focus — interact with snapshot element refs\n"
+            "  fill @eN \"text\" | type @eN \"text\" | press KEY — form input\n"
+            "  select | check | uncheck — dropdowns and checkboxes\n"
+            "  wait 3 — wait N seconds\n"
+            "  wait --load domcontentloaded|load|networkidle — wait for page load state (value required)\n"
+            "  wait --url GLOB | wait --text TEXT | wait --fn \"JS\" | wait TARGET [--state visible|hidden|detached]\n"
+            "  extract [TARGET] | eval \"JS\" | get attr|value|count — inspection\n"
+            "  scroll up|down|left|right|top|bottom|TARGET [AMOUNT]\n"
+            "  screenshot [PATH] [--target TARGET] [--full] [--annotate] [--jpeg]\n"
+            "  pdf [PATH] | record start|stop | tabs | tab PAGE_ID | close | reload | back | forward\n"
+            "  drag SOURCE TARGET | upload TARGET PATH\n"
+            "  batch [--continue] followed by one command per line (max 32)\n"
+            "TARGET: @eN (from snapshot), css=..., text=..., label=..., placeholder=..., testid=..., role=button[name=Submit].\n"
+            "Use `help` for full syntax reference."
         ),
     )
 
@@ -36,11 +47,12 @@ class BrowserTool:
     name = "browser"
     label = "browser"
     description = (
-        "Control a real persistent Chromium browser through direct CDP and accessibility-tree refs. "
-        "One compact command covers navigation, rendered-page snapshot, @ref/CSS interaction, forms, waits, "
-        "tabs, scrolling, drag/drop, uploads, downloads, screenshots, PDF, recording, state/debugging, and batch. "
-        "Typical flow: `open URL`, `snapshot`, then `click @e1` or `fill @e2 \"text\"`. "
-        "Batch multiple known steps with `batch` followed by one command per line."
+        "Control a headless automated Chromium browser via CDP and accessibility-tree refs. "
+        "Covers navigation, snapshot, forms, drag/drop, screenshots, recording, and batch. "
+        "Because it runs headless without human indicators, sites with bot detection (search engines, CAPTCHAs, "
+        "login walls) will often block access — navigate directly to content pages instead. "
+        "Typical flow: `open URL` → `snapshot` (returns @eN element refs) → interact (`click @e1`, `fill @e2 \"text\"`) → `screenshot`. "
+        "Batch multiple steps with `batch` + one command per line."
     )
     parameters = BrowserToolInput
 

@@ -127,7 +127,7 @@ def build_system_prompt(
     prompt = (
         f"{persona}\n\n"
         f"当前时间(UTC+8): {current_time} | 工作目录: {effective_prompt_cwd}\n"
-        f"当前的时间请始终以此为准，不要依赖训练数据推测日期。\n\n"
+        f"当前的时间请始终以此为准，不要依赖训练数据推测日期。用户所在时区为 UTC+8（北京时间），涉及时间时统一换算到该时区。\n\n"
         "## 环境\n"
         f"{env_section}\n\n"
         "## 群聊\n"
