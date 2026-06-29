@@ -39,6 +39,7 @@ services:
       - "${BAMPI_SERVICE_PORT_RANGE:-46000-46031}:${BAMPI_SERVICE_PORT_RANGE:-46000-46031}/tcp"
     volumes:
       - ./data/bampi/workspace:/workspace
+      - ./data/bampi/agently-cli:/tmp/bampi-home/.agently-cli
     tmpfs:
       - /tmp
     healthcheck:

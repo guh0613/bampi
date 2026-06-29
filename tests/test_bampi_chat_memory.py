@@ -705,10 +705,10 @@ async def test_profile_generation_scan_uses_llm_and_consolidates_pending_edits(
         nickname="张三",
     )
 
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, object]] = []
 
     async def fake_complete_simple(_model, ctx, _options):
-        calls.append((ctx.system_prompt, ctx.messages[0].content[0].text))
+        calls.append((ctx.system_prompt, ctx.messages[0].content[0].text, _options))
         return AssistantMessage(
             api="test",
             provider="test",
@@ -742,6 +742,7 @@ async def test_profile_generation_scan_uses_llm_and_consolidates_pending_edits(
     assert "群聊长期记忆画像生成器" in calls[0][0]
     assert "<pending_edits>" in calls[0][1]
     assert "偏好简洁的命令行界面" in calls[0][1]
+    assert getattr(calls[0][2], "temperature", None) is None
 
     context = manager.get_memory_context_for_turn(
         group_id="1001",

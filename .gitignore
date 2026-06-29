@@ -60,5 +60,6 @@ tmp/
 scripts/
 
 builtin_skills/
+.agents/
 
 .env

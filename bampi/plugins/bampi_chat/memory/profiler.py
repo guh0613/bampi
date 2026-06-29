@@ -176,10 +176,7 @@ async def generate_profile_with_llm(
         system_prompt=_LLM_PROFILE_SYSTEM_PROMPT,
         messages=[UserMessage(content=[TextContent(text=prompt)])],
     )
-    options = SimpleStreamOptions(
-        api_key=api_key,
-        temperature=0.2,
-    )
+    options = SimpleStreamOptions(api_key=api_key)
     try:
         result = await complete_simple(model, context, options)
     except Exception:

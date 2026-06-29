@@ -45,6 +45,7 @@ RUN apt-get update \
         "reportlab" \
     && fc-cache -f \
     && mkdir -p "${MPLCONFIGDIR}" \
+    && npm install -g @tencent-qqmail/agently-cli \
     && rm -rf /var/lib/apt/lists/*
 
 COPY docker/bampi-sandbox/matplotlibrc /usr/local/etc/matplotlib/matplotlibrc
