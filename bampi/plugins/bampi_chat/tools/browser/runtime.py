@@ -14,6 +14,7 @@ from .errors import BrowserError, CommandError
 from .launcher import LaunchedChromium, launch_chromium
 from .models import PageState, RecordingState
 from .policy import NavigationPolicy
+from .stealth import BrowserIdentity, apply_stealth_to_session, build_stealth_identity
 
 
 class BrowserRuntime:
@@ -45,6 +46,7 @@ class BrowserRuntime:
         self.execution_contexts: dict[str, tuple[str, int]] = {}
         self.downloads: dict[str, str] = {}
         self.download_dir = self.workspace_dir / "outbox" / "browser" / "downloads"
+        self.identity: BrowserIdentity | None = None
         self._page_number = 1
         self._listener_remove = None
         self.recording: RecordingState | None = None
@@ -66,6 +68,15 @@ class BrowserRuntime:
             return
         await self.close()
         self.launched = await launch_chromium(self.workspace_dir, self.config)
+        version_info: dict[str, Any] = {}
+        with suppress(Exception):
+            version_info = await self.client.call("Browser.getVersion")
+        self.identity = build_stealth_identity(
+            self.workspace_dir,
+            version_info,
+            viewport_width=self.config.viewport_width,
+            viewport_height=self.config.viewport_height,
+        )
         self._listener_remove = self.client.add_listener(self._on_event)
         await self.client.call("Target.setDiscoverTargets", {"discover": True})
         await self.client.call(
@@ -78,6 +89,9 @@ class BrowserRuntime:
                 await self._attach_page(info)
         if not self.pages:
             await self.create_page()
+        for page in list(self.pages.values()):
+            if page.session_id:
+                await self._enable_session(page.session_id)
         self.download_dir.mkdir(parents=True, exist_ok=True)
         with suppress(Exception):
             await self.client.call(
@@ -89,7 +103,10 @@ class BrowserRuntime:
         target_id = str(info.get("targetId") or "")
         existing_id = self.target_to_page.get(target_id)
         if existing_id and existing_id in self.pages:
-            return self.pages[existing_id]
+            page = self.pages[existing_id]
+            if page.session_id:
+                await self._enable_session(page.session_id)
+            return page
         attached = await self.client.call("Target.attachToTarget", {"targetId": target_id, "flatten": True})
         session_id = str(attached.get("sessionId") or "")
         return await self._register_page(info, session_id)
@@ -121,27 +138,28 @@ class BrowserRuntime:
         return page
 
     async def _enable_session(self, session_id: str) -> None:
+        try:
+            client = self.client
+        except BrowserError:
+            return
         for method in ("Page.enable", "Runtime.enable", "DOM.enable", "Accessibility.enable", "Network.enable", "Log.enable"):
             with suppress(Exception):
-                await self.client.call(method, session_id=session_id)
+                await client.call(method, session_id=session_id)
+        identity = self.identity or build_stealth_identity(
+            self.workspace_dir,
+            viewport_width=self.config.viewport_width,
+            viewport_height=self.config.viewport_height,
+        )
         with suppress(Exception):
-            await self.client.call(
-                "Emulation.setDeviceMetricsOverride",
-                {
-                    "width": self.config.viewport_width,
-                    "height": self.config.viewport_height,
-                    "deviceScaleFactor": 1,
-                    "mobile": False,
-                },
-                session_id=session_id,
-            )
-        if self.config.block_images:
-            with suppress(Exception):
-                await self.client.call(
-                    "Network.setBlockedURLs",
-                    {"urls": ["*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.svg", "*.avif"]},
-                    session_id=session_id,
-                )
+            params = identity.device_metrics_params if self.config.stealth else {
+                "width": self.config.viewport_width,
+                "height": self.config.viewport_height,
+                "deviceScaleFactor": 1,
+                "mobile": False,
+            }
+            await client.call("Emulation.setDeviceMetricsOverride", params, session_id=session_id)
+        with suppress(Exception):
+            await apply_stealth_to_session(client, session_id, identity, self.config)
 
     async def _on_event(self, method: str, params: dict[str, Any], session_id: str | None) -> None:
         if method == "Target.attachedToTarget":
@@ -273,7 +291,10 @@ class BrowserRuntime:
         for _ in range(100):
             page_id = self.target_to_page.get(target_id)
             if page_id and page_id in self.pages:
-                return self.pages[page_id]
+                page = self.pages[page_id]
+                if page.session_id:
+                    await self._enable_session(page.session_id)
+                return page
             await asyncio.sleep(0.02)
         info = (await self.client.call("Target.getTargetInfo", {"targetId": target_id})).get("targetInfo", {})
         return await self._attach_page(info)
@@ -316,6 +337,7 @@ class BrowserRuntime:
         self.frame_sessions.clear()
         self.execution_contexts.clear()
         self.downloads.clear()
+        self.identity = None
         await self.bridge.close()
         if launched:
             await launched.close()

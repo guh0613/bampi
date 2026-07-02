@@ -14,6 +14,7 @@ from .cdp import CdpClient
 from .config import BrowserConfig
 from .errors import BrowserLaunchError
 from .installer import default_cache_dir, ensure_chrome_for_testing, find_cached_chrome
+from .stealth import build_stealth_identity, stealth_launch_args
 
 
 @dataclass(slots=True)
@@ -113,14 +114,7 @@ async def resolve_chromium(config: BrowserConfig) -> str:
     )
 
 
-async def launch_chromium(workspace_dir: Path, config: BrowserConfig) -> LaunchedChromium:
-    executable = await resolve_chromium(config)
-    profile_dir = workspace_dir / ".browser" / "chromium-profile"
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    port_file = profile_dir / "DevToolsActivePort"
-    with suppress(OSError):
-        port_file.unlink()
-
+def chromium_launch_args(executable: str, profile_dir: Path, workspace_dir: Path, config: BrowserConfig) -> list[str]:
     args = [
         executable,
         f"--user-data-dir={profile_dir}",
@@ -141,8 +135,27 @@ async def launch_chromium(workspace_dir: Path, config: BrowserConfig) -> Launche
         f"--window-size={config.viewport_width},{config.viewport_height}",
         "about:blank",
     ]
+    if config.stealth:
+        identity = build_stealth_identity(
+            workspace_dir,
+            viewport_width=config.viewport_width,
+            viewport_height=config.viewport_height,
+        )
+        args[1:1] = stealth_launch_args(identity)
     if config.headless:
         args.insert(1, "--headless=new")
+    return args
+
+
+async def launch_chromium(workspace_dir: Path, config: BrowserConfig) -> LaunchedChromium:
+    executable = await resolve_chromium(config)
+    profile_dir = workspace_dir / ".browser" / "chromium-profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    port_file = profile_dir / "DevToolsActivePort"
+    with suppress(OSError):
+        port_file.unlink()
+
+    args = chromium_launch_args(executable, profile_dir, workspace_dir, config)
 
     try:
         process = await asyncio.create_subprocess_exec(

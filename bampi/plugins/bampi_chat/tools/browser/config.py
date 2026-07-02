@@ -10,6 +10,7 @@ class BrowserConfig:
     cache_dir: str | None = None
     install_timeout: float = 300.0
     headless: bool = True
+    stealth: bool = True
     block_images: bool = False
     launch_timeout: float = 45.0
     action_timeout: float = 20.0

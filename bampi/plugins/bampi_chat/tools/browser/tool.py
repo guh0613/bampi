@@ -49,8 +49,6 @@ class BrowserTool:
     description = (
         "Control a headless automated Chromium browser via CDP and accessibility-tree refs. "
         "Covers navigation, snapshot, forms, drag/drop, screenshots, recording, and batch. "
-        "Because it runs headless without human indicators, sites with bot detection (search engines, CAPTCHAs, "
-        "login walls) will often block access — navigate directly to content pages instead. "
         "Typical flow: `open URL` → `snapshot` (returns @eN element refs) → interact (`click @e1`, `fill @e2 \"text\"`) → `screenshot`. "
         "Batch multiple steps with `batch` + one command per line."
     )

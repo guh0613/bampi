@@ -17,7 +17,14 @@ from bampi.plugins.bampi_chat.tools.browser.installer import (
     find_cached_chrome,
     platform_key,
 )
+from bampi.plugins.bampi_chat.tools.browser.launcher import chromium_launch_args
 from bampi.plugins.bampi_chat.tools.browser.policy import NavigationPolicy
+from bampi.plugins.bampi_chat.tools.browser.stealth import (
+    apply_stealth_to_session,
+    blocked_url_patterns,
+    build_stealth_identity,
+    preload_script,
+)
 
 
 def test_browser_tool_schema_is_one_lightweight_command_field() -> None:
@@ -91,6 +98,86 @@ def test_chrome_for_testing_default_cache_is_project_local(
     monkeypatch.delenv("BAMPI_BROWSER_CACHE_DIR", raising=False)
 
     assert default_cache_dir() == tmp_path / ".bampi" / "browser" / "chrome-for-testing"
+
+
+def test_stealth_identity_uses_real_chrome_version_without_headless_marker(tmp_path: Path) -> None:
+    identity = build_stealth_identity(
+        tmp_path,
+        {"product": "HeadlessChrome/150.0.1.2"},
+        platform_name="linux",
+        env={"TZ": "Asia/Shanghai", "LANG": "zh_CN.UTF-8"},
+        viewport_width=1440,
+        viewport_height=1000,
+    )
+
+    assert "HeadlessChrome" not in identity.user_agent
+    assert "Chrome/150.0.1.2" in identity.user_agent
+    assert identity.user_agent_metadata["platform"] == "Linux"
+    assert identity.locale == "zh_CN"
+    assert identity.languages == ("zh-CN", "zh")
+    assert identity.timezone_id == "Asia/Shanghai"
+    assert identity.geolocation is not None
+    assert identity.screen_width >= 1440
+    assert identity.screen_height >= 1000
+    assert {"brand": "Google Chrome", "version": "150.0.1.2"} in identity.full_version_list
+
+
+def test_stealth_preload_patches_high_signal_browser_surfaces(tmp_path: Path) -> None:
+    identity = build_stealth_identity(tmp_path, {"product": "Chrome/150.0.1.2"})
+    script = preload_script(identity)
+
+    assert "webdriver" in script
+    assert "userAgentData" in script
+    assert "WebGLRenderingContext" in script
+    assert "hardwareConcurrency" in script
+    assert "Function.prototype" in script
+
+
+def test_chromium_launch_args_enable_default_stealth(tmp_path: Path) -> None:
+    args = chromium_launch_args("/opt/chrome", tmp_path / "profile", tmp_path, BrowserConfig(headless=True))
+
+    assert args[0] == "/opt/chrome"
+    assert "--headless=new" in args
+    assert "--disable-blink-features=AutomationControlled" in args
+    assert any(arg.startswith("--lang=") for arg in args)
+    assert args[-1] == "about:blank"
+
+
+def test_blocked_url_patterns_combine_stealth_and_image_blocks() -> None:
+    patterns = blocked_url_patterns(BrowserConfig(block_images=True))
+
+    assert "*.png" in patterns
+    assert "*://*.fingerprint.com/*" in patterns
+    assert len(patterns) == len(set(patterns))
+
+
+@pytest.mark.asyncio
+async def test_apply_stealth_to_session_installs_cdp_overrides(tmp_path: Path) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object], str | None]] = []
+
+        async def call(self, method: str, params=None, *, session_id: str | None = None, timeout: float = 20.0):
+            del timeout
+            self.calls.append((method, params or {}, session_id))
+            return {"identifier": "script-1"} if method == "Page.addScriptToEvaluateOnNewDocument" else {}
+
+    client = FakeClient()
+    identity = build_stealth_identity(tmp_path, {"product": "HeadlessChrome/150.0.1.2"})
+
+    await apply_stealth_to_session(client, "session-1", identity, BrowserConfig(block_images=True))
+
+    methods = [method for method, _, _ in client.calls]
+    assert "Emulation.setAutomationOverride" in methods
+    assert "Emulation.setUserAgentOverride" in methods
+    assert "Emulation.setTimezoneOverride" in methods
+    assert "Page.addScriptToEvaluateOnNewDocument" in methods
+    assert "Network.setBlockedURLs" in methods
+    ua_call = next(params for method, params, _ in client.calls if method == "Emulation.setUserAgentOverride")
+    assert "HeadlessChrome" not in str(ua_call["userAgent"])
+    blocked = next(params for method, params, _ in client.calls if method == "Network.setBlockedURLs")
+    assert "*.png" in blocked["urls"]
+    assert all(session_id == "session-1" for _, _, session_id in client.calls)
 
 
 @pytest.mark.asyncio
