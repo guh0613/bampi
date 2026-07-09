@@ -178,8 +178,11 @@ class GroupSessionManager:
     async def start_memory_tasks(self) -> None:
         if self._memory_manager is None:
             return
-        model = self._build_model()
-        api_key = await self._resolve_api_key(model.provider)
+        model = self._build_memory_model()
+        api_key = await self._resolve_memory_api_key(
+            model.provider,
+            configured_api=model.api,
+        )
         self._memory_manager.start_background_tasks(model=model, api_key=api_key)
 
     def close_memory_tasks(self) -> None:
@@ -959,14 +962,21 @@ class GroupSessionManager:
         if not messages:
             return
         user_turns = list(managed.memory_user_turns)
-        model = managed.session.model
+        try:
+            model = self._build_memory_model()
+        except Exception:
+            logger.exception(
+                f"bampi_chat failed to build memory model for archive "
+                f"group_id={managed.group_id}"
+            )
+            return
         self._schedule_archive_snapshot(
             manager=manager,
             group_id=managed.group_id,
             messages=messages,
             user_turns=user_turns,
             model=model,
-            api_key=self._config.bampi_api_key or None,
+            api_key=self._config.bampi_memory_api_key or None,
             reason=reason,
         )
 
@@ -997,10 +1007,10 @@ class GroupSessionManager:
         if not messages:
             return
         try:
-            model = self._build_model()
+            model = self._build_memory_model()
         except Exception:
             logger.exception(
-                f"bampi_chat failed to build model for persisted memory archive "
+                f"bampi_chat failed to build memory model for persisted archive "
                 f"group_id={group_id} session_file={session_file}"
             )
             return
@@ -1010,7 +1020,7 @@ class GroupSessionManager:
             messages=messages,
             user_turns=[],
             model=model,
-            api_key=self._config.bampi_api_key or None,
+            api_key=self._config.bampi_memory_api_key or None,
             reason=reason,
         )
 
@@ -1055,7 +1065,11 @@ class GroupSessionManager:
             if api_key is None and model is not None:
                 provider = str(getattr(model, "provider", "")).strip()
                 if provider:
-                    api_key = await self._resolve_api_key(provider)
+                    model_api = str(getattr(model, "api", "")).strip() or None
+                    api_key = await self._resolve_memory_api_key(
+                        provider,
+                        configured_api=model_api,
+                    )
             archive_id = await manager.archive_session_async(
                 group_id=group_id,
                 messages=messages,
@@ -1183,31 +1197,83 @@ class GroupSessionManager:
         return stopped
 
     def _build_model(self) -> Model:
-        model = get_model(
-            self._config.bampi_model_id,
+        return self._build_model_from_spec(
             provider=self._config.bampi_model_provider,
+            model_id=self._config.bampi_model_id,
+            model_api=self._config.bampi_model_api,
+            base_url=self._config.bampi_base_url,
         )
-        if model is None:
-            model = self._build_custom_model()
-        return self._apply_model_overrides(model)
 
-    def _build_custom_model(self) -> Model:
-        provider = self._config.bampi_model_provider
-        model_id = self._config.bampi_model_id
-        if not provider or not model_id:
+    def _build_memory_model(self) -> Model:
+        cfg = self._config
+        provider = cfg.bampi_memory_model_provider or cfg.bampi_model_provider
+        model_id = cfg.bampi_memory_model_id or cfg.bampi_model_id
+        base_url = cfg.bampi_memory_base_url or cfg.bampi_base_url
+        memory_identity_overridden = bool(
+            cfg.bampi_memory_model_provider or cfg.bampi_memory_model_id
+        )
+        if cfg.bampi_memory_model_api != "auto":
+            model_api = cfg.bampi_memory_model_api
+        elif memory_identity_overridden:
+            # Independent memory model: infer API from its own provider/registry.
+            model_api = "auto"
+        else:
+            model_api = cfg.bampi_model_api
+        return self._build_model_from_spec(
+            provider=provider,
+            model_id=model_id,
+            model_api=model_api,
+            base_url=base_url,
+        )
+
+    def _build_model_from_spec(
+        self,
+        *,
+        provider: str,
+        model_id: str,
+        model_api: str,
+        base_url: str,
+    ) -> Model:
+        model = get_model(model_id, provider=provider)
+        if model is None:
+            model = self._build_custom_model(
+                provider=provider,
+                model_id=model_id,
+                model_api=model_api,
+                base_url=base_url,
+            )
+        return self._apply_model_overrides(
+            model,
+            model_api=model_api,
+            base_url=base_url,
+        )
+
+    def _build_custom_model(
+        self,
+        *,
+        provider: str | None = None,
+        model_id: str | None = None,
+        model_api: str | None = None,
+        base_url: str | None = None,
+    ) -> Model:
+        resolved_provider = provider if provider is not None else self._config.bampi_model_provider
+        resolved_model_id = model_id if model_id is not None else self._config.bampi_model_id
+        resolved_model_api = model_api if model_api is not None else self._config.bampi_model_api
+        resolved_base_url = base_url if base_url is not None else self._config.bampi_base_url
+        if not resolved_provider or not resolved_model_id:
             raise RuntimeError("Custom model requires non-empty provider and model_id")
 
-        api = self._resolve_model_api(provider)
+        api = self._resolve_model_api(resolved_provider, configured_api=resolved_model_api)
         logger.warning(
             f"bampi_chat using custom model "
-            f"provider={provider} model={model_id} api={api}"
+            f"provider={resolved_provider} model={resolved_model_id} api={api}"
         )
         return Model(
-            id=model_id,
-            name=model_id,
+            id=resolved_model_id,
+            name=resolved_model_id,
             api=api,
-            provider=provider,
-            base_url=self._config.bampi_base_url,
+            provider=resolved_provider,
+            base_url=resolved_base_url,
             reasoning=False,
             input_types=list(self._config.bampi_model_input_types or ["text"]),
             context_window=128_000,
@@ -1215,17 +1281,24 @@ class GroupSessionManager:
             cost=ModelCost(),
         )
 
-    def _apply_model_overrides(self, model: Model) -> Model:
+    def _apply_model_overrides(
+        self,
+        model: Model,
+        *,
+        model_api: str | None = None,
+        base_url: str | None = None,
+    ) -> Model:
         updates: dict[str, Any] = {}
-        api = self._config.bampi_model_api
+        api = self._config.bampi_model_api if model_api is None else model_api
+        resolved_base_url = self._config.bampi_base_url if base_url is None else base_url
         if api != "auto" and api != model.api:
             logger.warning(
                 f"bampi_chat overriding model api "
                 f"provider={model.provider} model={model.id} from={model.api} to={api}"
             )
             updates["api"] = api
-        if self._config.bampi_base_url:
-            updates["base_url"] = self._config.bampi_base_url
+        if resolved_base_url:
+            updates["base_url"] = resolved_base_url
         configured_input_types = self._config.bampi_model_input_types
         if configured_input_types is not None and configured_input_types != model.input_types:
             logger.warning(
@@ -1238,10 +1311,15 @@ class GroupSessionManager:
             return model
         return model.model_copy(update=updates)
 
-    def _resolve_model_api(self, provider: str) -> str:
-        configured_api = self._config.bampi_model_api
-        if configured_api != "auto":
-            return configured_api
+    def _resolve_model_api(
+        self,
+        provider: str,
+        *,
+        configured_api: str | None = None,
+    ) -> str:
+        api = self._config.bampi_model_api if configured_api is None else configured_api
+        if api != "auto":
+            return api
 
         provider_key = provider.strip().lower().replace("_", "-")
         if provider_key in _API_KEY_ENV_BY_API:
@@ -1260,12 +1338,33 @@ class GroupSessionManager:
             return "ollama-responses"
         return "openai-completions"
 
-    async def _resolve_api_key(self, provider: str) -> str | None:
+    async def _resolve_memory_api_key(
+        self,
+        provider: str,
+        *,
+        configured_api: str | None = None,
+    ) -> str | None:
+        if self._config.bampi_memory_api_key:
+            logger.info(
+                f"bampi_chat resolved memory api key provider={provider} source=memory_config"
+            )
+            return self._config.bampi_memory_api_key
+        return await self._resolve_api_key(provider, configured_api=configured_api)
+
+    async def _resolve_api_key(
+        self,
+        provider: str,
+        *,
+        configured_api: str | None = None,
+    ) -> str | None:
         if self._config.bampi_api_key:
             logger.info(f"bampi_chat resolved api key provider={provider} source=config")
             return self._config.bampi_api_key
 
-        env_keys = self._candidate_api_key_env_keys(provider)
+        env_keys = self._candidate_api_key_env_keys(
+            provider,
+            configured_api=configured_api,
+        )
         for env_key in env_keys:
             config_value = self._resolve_nonebot_config_value(env_key.lower())
             if config_value is not None:
@@ -1288,7 +1387,12 @@ class GroupSessionManager:
         )
         return None
 
-    def _candidate_api_key_env_keys(self, provider: str) -> list[str]:
+    def _candidate_api_key_env_keys(
+        self,
+        provider: str,
+        *,
+        configured_api: str | None = None,
+    ) -> list[str]:
         candidates: list[str] = []
 
         normalized_provider = re.sub(
@@ -1299,7 +1403,7 @@ class GroupSessionManager:
         if normalized_provider:
             candidates.append(f"{normalized_provider}_API_KEY")
 
-        api = self._resolve_model_api(provider)
+        api = self._resolve_model_api(provider, configured_api=configured_api)
         api_env_key = _API_KEY_ENV_BY_API.get(api)
         if api_env_key:
             candidates.append(api_env_key)

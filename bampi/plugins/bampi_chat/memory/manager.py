@@ -89,8 +89,8 @@ class MemoryManager:
             embedding_provider = build_embedding_provider(
                 provider=provider_name,
                 model=config.bampi_memory_embedding_model,
-                api_key=config.bampi_api_key,
-                base_url=config.bampi_base_url,
+                api_key=config.bampi_memory_embedding_api_key or config.bampi_api_key,
+                base_url=config.bampi_memory_embedding_base_url or config.bampi_base_url,
             )
         return cls(
             config.bampi_memory_db_path,

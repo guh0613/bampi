@@ -227,3 +227,185 @@ async def test_group_session_manager_resolves_custom_openai_compatible_api_key_f
     api_key = await manager._resolve_api_key("moonshot")
 
     assert api_key == "openai-compatible-secret"
+
+
+def test_group_session_manager_memory_model_falls_back_to_main_model(tmp_path: Path):
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+        bampi_model_provider="moonshot",
+        bampi_model_id="kimi-k2.6",
+        bampi_model_api="chat-completions",
+        bampi_base_url="https://api.moonshot.cn/v1",
+    )
+
+    manager = GroupSessionManager(config)
+
+    main_model = manager._build_model()
+    memory_model = manager._build_memory_model()
+
+    assert memory_model.provider == main_model.provider
+    assert memory_model.id == main_model.id
+    assert memory_model.api == main_model.api
+    assert memory_model.base_url == main_model.base_url
+
+
+def test_group_session_manager_memory_model_overrides_fields_independently(tmp_path: Path):
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+        bampi_model_provider="moonshot",
+        bampi_model_id="kimi-k2.6",
+        bampi_model_api="chat-completions",
+        bampi_base_url="https://api.moonshot.cn/v1",
+        bampi_memory_model_provider="ollama",
+        bampi_memory_model_id="qwen3",
+        bampi_memory_base_url="https://ollama.example.com",
+    )
+
+    manager = GroupSessionManager(config)
+
+    memory_model = manager._build_memory_model()
+
+    assert memory_model.provider == "ollama"
+    assert memory_model.id == "qwen3"
+    assert memory_model.api == "ollama-responses"
+    assert memory_model.base_url == "https://ollama.example.com"
+
+
+def test_group_session_manager_memory_model_auto_api_does_not_inherit_main_api(
+    tmp_path: Path,
+):
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+        bampi_model_provider="anthropic",
+        bampi_model_id="claude-sonnet-4",
+        bampi_model_api="anthropic-messages",
+        bampi_memory_model_provider="moonshot",
+        bampi_memory_model_id="kimi-k2.6",
+        bampi_memory_base_url="https://api.moonshot.cn/v1",
+    )
+
+    manager = GroupSessionManager(config)
+
+    memory_model = manager._build_memory_model()
+
+    assert memory_model.provider == "moonshot"
+    assert memory_model.id == "kimi-k2.6"
+    assert memory_model.api == "openai-completions"
+    assert memory_model.api != "anthropic-messages"
+
+
+def test_group_session_manager_memory_base_url_only_keeps_main_api(tmp_path: Path):
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+        bampi_model_provider="openai",
+        bampi_model_id="gpt-5-mini",
+        bampi_model_api="chat-completions",
+        bampi_base_url="https://api.openai.com/v1",
+        bampi_memory_base_url="https://gateway.example.com/v1",
+    )
+
+    manager = GroupSessionManager(config)
+
+    memory_model = manager._build_memory_model()
+
+    assert memory_model.provider == "openai"
+    assert memory_model.id == "gpt-5-mini"
+    assert memory_model.api == "openai-completions"
+    assert memory_model.base_url == "https://gateway.example.com/v1"
+
+
+def test_group_session_manager_memory_model_api_override(tmp_path: Path):
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+        bampi_model_provider="moonshot",
+        bampi_model_id="kimi-k2.6",
+        bampi_model_api="chat-completions",
+        bampi_base_url="https://api.moonshot.cn/v1",
+        bampi_memory_model_api="openai-responses",
+    )
+
+    manager = GroupSessionManager(config)
+
+    memory_model = manager._build_memory_model()
+
+    assert memory_model.provider == "moonshot"
+    assert memory_model.id == "kimi-k2.6"
+    assert memory_model.api == "openai-responses"
+    assert memory_model.base_url == "https://api.moonshot.cn/v1"
+
+
+@pytest.mark.asyncio
+async def test_group_session_manager_memory_api_key_prefers_memory_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("MOONSHOT_API_KEY", "moonshot-secret")
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+        bampi_model_provider="moonshot",
+        bampi_model_id="kimi-k2.6",
+        bampi_api_key="main-secret",
+        bampi_memory_api_key="memory-secret",
+    )
+
+    manager = GroupSessionManager(config)
+
+    api_key = await manager._resolve_memory_api_key("moonshot")
+
+    assert api_key == "memory-secret"
+
+
+@pytest.mark.asyncio
+async def test_group_session_manager_memory_api_key_falls_back_to_main(
+    tmp_path: Path,
+):
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+        bampi_model_provider="moonshot",
+        bampi_model_id="kimi-k2.6",
+        bampi_api_key="main-secret",
+    )
+
+    manager = GroupSessionManager(config)
+
+    api_key = await manager._resolve_memory_api_key("moonshot")
+
+    assert api_key == "main-secret"
+
+
+@pytest.mark.asyncio
+async def test_group_session_manager_memory_api_key_uses_memory_model_api_for_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+        bampi_model_provider="anthropic",
+        bampi_model_id="claude-sonnet-4",
+        bampi_model_api="anthropic-messages",
+        bampi_memory_model_provider="moonshot",
+        bampi_memory_model_id="kimi-k2.6",
+        bampi_memory_base_url="https://api.moonshot.cn/v1",
+    )
+
+    manager = GroupSessionManager(config)
+    memory_model = manager._build_memory_model()
+
+    api_key = await manager._resolve_memory_api_key(
+        memory_model.provider,
+        configured_api=memory_model.api,
+    )
+
+    assert memory_model.api == "openai-completions"
+    assert api_key == "openai-secret"

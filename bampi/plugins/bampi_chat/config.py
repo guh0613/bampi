@@ -150,6 +150,13 @@ class BampiChatConfig(BaseModel):
     bampi_memory_embedding_enabled: bool = False
     bampi_memory_embedding_provider: str = ""
     bampi_memory_embedding_model: str = ""
+    bampi_memory_embedding_api_key: str = ""
+    bampi_memory_embedding_base_url: str = ""
+    bampi_memory_model_provider: str = ""
+    bampi_memory_model_id: str = ""
+    bampi_memory_model_api: str = "auto"
+    bampi_memory_api_key: str = ""
+    bampi_memory_base_url: str = ""
     bampi_memory_profile_session_threshold: int = 5
     bampi_memory_profile_max_staleness_days: int = 7
     bampi_memory_profile_cron: str = "0 4 * * *"
@@ -237,6 +244,11 @@ class BampiChatConfig(BaseModel):
         "bampi_memory_db_path",
         "bampi_memory_embedding_provider",
         "bampi_memory_embedding_model",
+        "bampi_memory_embedding_base_url",
+        "bampi_memory_model_provider",
+        "bampi_memory_model_id",
+        "bampi_memory_model_api",
+        "bampi_memory_base_url",
         "bampi_memory_profile_cron",
         "bampi_bash_container_name",
         "bampi_bash_container_workdir",
@@ -251,7 +263,7 @@ class BampiChatConfig(BaseModel):
     def _strip_text(cls, value: str) -> str:
         return value.strip()
 
-    @field_validator("bampi_model_api", mode="before")
+    @field_validator("bampi_model_api", "bampi_memory_model_api", mode="before")
     @classmethod
     def _normalize_model_api(cls, value: object) -> str:
         if value is None:
@@ -262,7 +274,7 @@ class BampiChatConfig(BaseModel):
         normalized = MODEL_API_ALIASES.get(text, text)
         if normalized not in SUPPORTED_MODEL_APIS:
             raise ValueError(
-                "bampi_model_api must be one of: "
+                "model api must be one of: "
                 + ", ".join(sorted(SUPPORTED_MODEL_APIS))
             )
         return normalized

@@ -486,7 +486,28 @@ def test_memory_manager_uses_openai_compatible_when_embedding_model_is_configure
     manager = MemoryManager.from_config(config)
 
     assert isinstance(manager._embedding_provider, OpenAICompatibleEmbeddingProvider)
+    assert manager._embedding_provider.api_key == "sk-test"
     assert manager._embedding_provider.base_url == "https://example.test/v1"
+
+
+def test_memory_manager_prefers_embedding_api_key_and_base_url_overrides(
+    tmp_path: Path,
+):
+    config = BampiChatConfig(
+        bampi_memory_db_path=str(tmp_path / "memory.db"),
+        bampi_memory_embedding_enabled=True,
+        bampi_memory_embedding_model="fake-embedding-model",
+        bampi_api_key="sk-main",
+        bampi_base_url="https://main.example.test",
+        bampi_memory_embedding_api_key="sk-embedding",
+        bampi_memory_embedding_base_url="https://embedding.example.test",
+    )
+
+    manager = MemoryManager.from_config(config)
+
+    assert isinstance(manager._embedding_provider, OpenAICompatibleEmbeddingProvider)
+    assert manager._embedding_provider.api_key == "sk-embedding"
+    assert manager._embedding_provider.base_url == "https://embedding.example.test/v1"
 
 
 def test_openai_compatible_embedding_requires_model():
