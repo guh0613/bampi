@@ -11,7 +11,7 @@ import uuid
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
@@ -649,6 +649,11 @@ def describe_tool_progress(tool_name: str, args: Any) -> str:
         query = render_tool_progress_value(payload.get("query") or payload.get("q"), "查询内容")
         return f"正在搜索网页：{query}"
     if tool_name == "browser":
+        raw_command = str(payload.get("command") or "").strip()
+        lines = [line.strip() for line in raw_command.splitlines() if line.strip()]
+        if lines and lines[0].split()[0].lower() == "batch":
+            step_count = len(lines) - 1
+            return f"正在操作浏览器（批量 {step_count} 步）"
         command = render_tool_progress_value(payload.get("command"), "操作网页")
         first_line = command.splitlines()[0] if command else "操作网页"
         return f"正在操作浏览器：{first_line}"

@@ -195,6 +195,29 @@ def test_format_tool_progress_message_uses_emoji_style():
     assert "`" not in message
 
 
+def test_describe_tool_progress_browser_single_command():
+    description = describe_tool_progress(
+        "browser",
+        {"command": "open https://example.com"},
+    )
+
+    assert description == "正在操作浏览器：open https://example.com"
+
+
+def test_describe_tool_progress_browser_batch_shows_step_count():
+    command = (
+        "batch\n"
+        "open file://outbox/render.html\n"
+        'wait css=body[data-ready="true"]\n'
+        "screenshot outbox/md-render.png --target css=body --full\n"
+        "close"
+    )
+
+    description = describe_tool_progress("browser", {"command": command})
+
+    assert description == "正在操作浏览器（批量 4 步）"
+
+
 def test_format_tool_progress_message_marks_skill_loads():
     message = format_tool_progress_message(
         "read",
