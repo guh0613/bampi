@@ -28,22 +28,22 @@ services:
     tty: true
     working_dir: /workspace
     environment:
-      HOME: /tmp/bampi-home
+      HOME: /home/bampi
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
     command:
       - bash
       - -lc
-      - mkdir -p /tmp/bampi-home /tmp/bampi-home/.npm-global /workspace/inbox /workspace/outbox && exec sleep infinity
+      - mkdir -p /home/bampi /workspace/inbox /workspace/outbox && exec sleep infinity
     ports:
       - "${BAMPI_SERVICE_PORT_RANGE:-46000-46031}:${BAMPI_SERVICE_PORT_RANGE:-46000-46031}/tcp"
     volumes:
       - ./data/bampi/workspace:/workspace
-      - ./data/bampi/agently-cli:/tmp/bampi-home/.agently-cli
+      - ./data/bampi/agently-cli:/home/bampi/.agently-cli
     tmpfs:
-      - /tmp
+      - /tmp:exec,mode=1777
     healthcheck:
-      test: ["CMD", "bash", "-lc", "test -d /workspace/inbox && test -d /workspace/outbox"]
+      test: ["CMD", "bampi-sandbox-healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3

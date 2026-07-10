@@ -5,7 +5,7 @@ ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 ENV MPLBACKEND=Agg
 ENV MPLCONFIGDIR=/usr/local/etc/matplotlib
-ENV NPM_CONFIG_PREFIX=/tmp/bampi-home/.npm-global
+ENV NPM_CONFIG_PREFIX=/usr/local
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV PATH=${NPM_CONFIG_PREFIX}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -49,5 +49,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY docker/bampi-sandbox/matplotlibrc /usr/local/etc/matplotlib/matplotlibrc
+COPY --chmod=0755 docker/bampi-sandbox/healthcheck.sh /usr/local/bin/bampi-sandbox-healthcheck
 
 WORKDIR /workspace
