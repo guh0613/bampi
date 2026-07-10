@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,9 +8,11 @@ import pytest
 from pydantic import ValidationError
 
 from bampi.plugins.bampi_chat.tools.browser import BrowserTool, BrowserToolInput
+from bampi.plugins.bampi_chat.tools.browser.artifacts import ArtifactManager
 from bampi.plugins.bampi_chat.tools.browser.commands import BrowserCommandDispatcher, HELP_TEXT, _split
 from bampi.plugins.bampi_chat.tools.browser.config import BrowserConfig
 from bampi.plugins.bampi_chat.tools.browser.errors import BrowserLaunchError, CommandError
+from bampi.plugins.bampi_chat.tools.browser.interaction import InteractionEngine, ResolvedElement
 from bampi.plugins.bampi_chat.tools.browser.installer import (
     _select_download,
     chrome_binary_in,
@@ -18,6 +21,7 @@ from bampi.plugins.bampi_chat.tools.browser.installer import (
     platform_key,
 )
 from bampi.plugins.bampi_chat.tools.browser.launcher import chromium_launch_args
+from bampi.plugins.bampi_chat.tools.browser.models import PageState
 from bampi.plugins.bampi_chat.tools.browser.policy import NavigationPolicy
 from bampi.plugins.bampi_chat.tools.browser.stealth import (
     apply_stealth_to_session,
@@ -43,6 +47,85 @@ def test_browser_tool_description_exposes_common_capabilities_without_help() -> 
 
     for capability in ("navigation", "snapshot", "forms", "drag/drop", "screenshots", "recording", "batch"):
         assert capability in description
+
+
+@pytest.mark.asyncio
+async def test_interaction_box_supports_border_box_for_element_screenshots() -> None:
+    class FakeClient:
+        async def call(self, method, params=None, *, session_id=None, timeout=20.0):
+            del params, session_id, timeout
+            if method == "DOM.getBoxModel":
+                return {
+                    "model": {
+                        "content": [24, 20, 776, 20, 776, 180, 24, 180],
+                        "border": [0, 0, 800, 0, 800, 200, 0, 200],
+                    }
+                }
+            return {}
+
+    interaction = InteractionEngine(SimpleNamespace(client=FakeClient()))
+    element = ResolvedElement("session", 1, "object", "css=body")
+
+    assert await interaction.box(element) == (24, 20, 752, 160)
+    assert await interaction.box(element, box_type="border") == (0, 0, 800, 200)
+
+
+@pytest.mark.asyncio
+async def test_target_screenshot_captures_element_border_box(tmp_path: Path) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.capture_params = None
+
+        async def call(self, method, params=None, *, session_id=None, timeout=20.0):
+            del session_id, timeout
+            if method == "Page.captureScreenshot":
+                self.capture_params = params
+                return {"data": base64.b64encode(b"png").decode("ascii")}
+            return {}
+
+    class FakeInteraction:
+        def __init__(self) -> None:
+            self.box_type = None
+
+        async def resolve(self, page, target):
+            del page, target
+            return object()
+
+        async def box(self, element, *, box_type="content"):
+            del element
+            self.box_type = box_type
+            return 0, 0, 800, 200
+
+    client = FakeClient()
+    interaction = FakeInteraction()
+    runtime = SimpleNamespace(
+        client=client,
+        config=SimpleNamespace(action_timeout=20.0, inline_image_max_bytes=1_000_000),
+        workspace_dir=tmp_path,
+        container_root=None,
+    )
+    artifacts = ArtifactManager(runtime, interaction)
+    page = PageState(page_id="p1", target_id="target", session_id="session")
+
+    await artifacts.screenshot(
+        page,
+        path="body.png",
+        target="css=body",
+        full_page=True,
+        jpeg=False,
+        quality=85,
+        inline=False,
+        annotate=False,
+    )
+
+    assert interaction.box_type == "border"
+    assert client.capture_params["clip"] == {
+        "x": 0,
+        "y": 0,
+        "width": 800,
+        "height": 200,
+        "scale": 1,
+    }
 
 
 def test_browser_command_uses_shell_quoting_without_shell_execution() -> None:

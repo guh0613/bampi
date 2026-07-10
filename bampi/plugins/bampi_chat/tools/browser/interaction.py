@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import Any
+from typing import Any, Literal
 
 from .errors import CommandError, StaleRefError
 from .models import PageState, RefEntry
@@ -273,7 +273,12 @@ class InteractionEngine:
             return f"[...document.querySelectorAll('button,a,input,label,[role],summary,option,h1,h2,h3,h4,h5,h6,p,li,td,th')].filter(e=>(e.innerText||e.textContent||e.value||'').trim()==={query}).length"
         return f"document.querySelectorAll({json.dumps(target)}).length"
 
-    async def box(self, element: ResolvedElement) -> tuple[float, float, float, float]:
+    async def box(
+        self,
+        element: ResolvedElement,
+        *,
+        box_type: Literal["content", "border"] = "content",
+    ) -> tuple[float, float, float, float]:
         await self.runtime.client.call(
             "DOM.scrollIntoViewIfNeeded",
             {"backendNodeId": element.backend_node_id},
@@ -282,7 +287,9 @@ class InteractionEngine:
         model = await self.runtime.client.call(
             "DOM.getBoxModel", {"backendNodeId": element.backend_node_id}, session_id=element.session_id
         )
-        quad = model.get("model", {}).get("content") or model.get("model", {}).get("border")
+        box_model = model.get("model", {})
+        fallback_type = "border" if box_type == "content" else "content"
+        quad = box_model.get(box_type) or box_model.get(fallback_type)
         if not isinstance(quad, list) or len(quad) < 8:
             raise CommandError(f"Element {element.label} has no visible box.")
         xs, ys = quad[0::2], quad[1::2]

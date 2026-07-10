@@ -72,7 +72,9 @@ class ArtifactManager:
             params["quality"] = quality
         if target:
             element = await self.interaction.resolve(page, target)
-            x, y, width, height = await self.interaction.box(element)
+            # Match browser automation libraries' element-screenshot semantics:
+            # include the target's padding and border in the captured image.
+            x, y, width, height = await self.interaction.box(element, box_type="border")
             params["clip"] = {"x": x, "y": y, "width": width, "height": height, "scale": 1}
         elif full_page:
             metrics = await self.runtime.client.call("Page.getLayoutMetrics", session_id=page.session_id)
