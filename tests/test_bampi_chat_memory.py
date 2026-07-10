@@ -670,6 +670,15 @@ async def test_memory_manage_defaults_to_current_speaker_and_context_injects(tmp
     )
     manage_tool = next(tool for tool in tools if tool.name == "memory_manage")
 
+    schema = manage_tool.parameters.model_json_schema()
+    assert "delete profile lines" in schema["properties"]["action"]["description"]
+    assert (
+        "exact substring from the target fact"
+        in schema["properties"]["content"]["description"]
+    )
+    assert "removes every rendered profile line" in manage_tool.description
+    assert "Conversation archives are not modified" in manage_tool.description
+
     result = await manage_tool.execute(
         "call-1",
         {"action": "add", "content": "喜欢用 Rust 写命令行工具"},
@@ -683,6 +692,12 @@ async def test_memory_manage_defaults_to_current_speaker_and_context_injects(tmp
     )
     assert "喜欢用 Rust 写命令行工具" in context
     assert "近期补充" in context
+
+    delete_result = await manage_tool.execute(
+        "call-2",
+        {"action": "delete", "content": "喜欢用 Rust 写命令行工具"},
+    )
+    assert "已记录画像删除条件" in delete_result.content[0].text
 
 
 @pytest.mark.asyncio

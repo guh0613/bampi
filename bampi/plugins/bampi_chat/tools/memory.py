@@ -129,7 +129,10 @@ class MemoryManageInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action: Literal["add", "update", "delete"] = Field(
-        description="Profile edit action. Use delete when the user asks to forget or invalidate a memory."
+        description=(
+            "Profile edit action: add a durable fact, update a durable fact, or delete profile lines "
+            "containing the exact substring supplied in content."
+        )
     )
     user_id: str | None = Field(
         default=None,
@@ -137,7 +140,10 @@ class MemoryManageInput(BaseModel):
     )
     content: str = Field(
         min_length=1,
-        description="Memory content to add/update, or the memory description to delete/forget.",
+        description=(
+            "The durable fact to add or update. For delete, an exact substring from the target fact "
+            "in the rendered memory context that uniquely identifies the profile line to remove."
+        ),
     )
 
 
@@ -275,9 +281,9 @@ class MemoryManageTool:
     name = "memory_manage"
     label = "memory_manage"
     description = (
-        "Add, update, or delete pending profile memories for group members. Use it only when "
-        "the user explicitly asks you to remember/forget something, or shares durable preference "
-        "or background information. Omit user_id to target the current speaker."
+        "Manage individual durable facts in group-member profiles. Add stores a new fact; update records "
+        "a revised fact; delete removes every rendered profile line containing the exact substring in "
+        "content. Omit user_id to target the current speaker. Conversation archives are not modified."
     )
     parameters = MemoryManageInput
 
@@ -332,7 +338,7 @@ class MemoryManageTool:
         action_label = {
             "add": "已记录",
             "update": "已更新",
-            "delete": "已标记忘记",
+            "delete": "已记录画像删除条件",
         }[arguments.action]
         return AgentToolResult(
             content=[
