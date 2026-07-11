@@ -354,9 +354,7 @@ async def test_handle_skill_command_installs_from_message_attachment(
     assert manager.released_group_ids == ["1001"]
     assert matcher.sent == [
         "已安装 2 个 skill：docx, skill-creator\n"
-        f"安装目录：{(Path(manager.workspace_dir_for_group('1001')) / '.agents' / 'skills').resolve().as_posix()}\n"
-        "显式调用：在普通消息最开头写 `/skill-name`。\n"
-        "当前群会话已刷新；其他现有会话会在下次重建后看到新 skill。"
+        "使用方法：在消息开头写 `/skill-name` 即可调用。"
     ]
 
 
@@ -380,9 +378,9 @@ async def test_handle_skill_command_rejects_local_path_argument(tmp_path: Path):
 
     assert handled is True
     assert matcher.sent == [
-        "你发送的url有误。\n"
-        "请直接发送或引用 skill 压缩包/Markdown 文件后执行 `/skill install`，"
-        "或使用 `/skill install https://...`。"
+        "URL 无效。\n"
+        "请发送或引用 skill 文件后执行 `/skill install`，"
+        "或使用 `/skill install <url>`。"
     ]
 
 
@@ -671,18 +669,21 @@ def test_strip_streamed_prefix_keeps_full_text_when_prefix_mismatches():
 
 
 def test_memory_tool_progress_hides_internal_arguments():
-    payloads = {
-        "memory_search": {"query": "nginx 证书"},
-        "memory_time_search": {
-            "start_time": "2026-05-05T00:00:00+08:00",
-            "end_time": "2026-05-05T23:59:59+08:00",
-        },
-        "memory_open": {"archive_id": 123},
-        "memory_manage": {"action": "add", "content": "喜欢 Rust"},
+    cases = {
+        "memory_search": ({"query": "nginx 证书"}, "正在搜索记忆"),
+        "memory_time_search": (
+            {
+                "start_time": "2026-05-05T00:00:00+08:00",
+                "end_time": "2026-05-05T23:59:59+08:00",
+            },
+            "正在搜索记忆",
+        ),
+        "memory_open": ({"archive_id": 123}, "正在查看记忆"),
+        "memory_manage": ({"action": "add", "content": "喜欢 Rust"}, "正在记录记忆"),
     }
 
-    for tool_name, payload in payloads.items():
-        assert describe_tool_progress(tool_name, payload) == "正在检索记忆"
+    for tool_name, (payload, expected) in cases.items():
+        assert describe_tool_progress(tool_name, payload) == expected
 
 
 def test_build_user_message_marks_media_only_message():

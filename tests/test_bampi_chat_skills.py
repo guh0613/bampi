@@ -9,6 +9,7 @@ import pytest
 from bampi.plugins.bampi_chat.config import BampiChatConfig
 from bampi.plugins.bampi_chat.handler import IncomingMedia, build_user_message, should_respond
 from bampi.plugins.bampi_chat.skills import (
+    builtin_skill_source_root,
     install_skills_from_source,
     load_chat_skills,
     resolve_explicit_skills,
@@ -106,13 +107,16 @@ def test_load_chat_skills_respects_openai_manual_only_policy(tmp_path: Path):
     assert by_name["manual-only"].disable_model_invocation is True
 
 
-def test_load_chat_skills_includes_builtin_skills(tmp_path: Path):
+def test_load_chat_skills_mirrors_available_builtin_skills(tmp_path: Path):
+    builtin_names = {
+        skill_file.parent.name for skill_file in builtin_skill_source_root().glob("*/SKILL.md")
+    }
     loaded = load_chat_skills(str(tmp_path))
     names = {skill.name for skill in loaded.skills}
 
-    assert {"docx", "skill-creator"} <= names
-    assert (tmp_path / ".agents" / "builtin-skills" / "docx" / "SKILL.md").exists()
-    assert (tmp_path / ".agents" / "builtin-skills" / "skill-creator" / "SKILL.md").exists()
+    assert names == builtin_names
+    for name in builtin_names:
+        assert (tmp_path / ".agents" / "builtin-skills" / name / "SKILL.md").exists()
 
 
 def test_install_skills_from_markdown_file(tmp_path: Path):
@@ -231,11 +235,17 @@ async def test_group_session_manager_session_prompt_lists_installed_skills(tmp_p
 
     managed = await manager.get_or_create("1001")
     try:
+        builtin_names = {
+            skill_file.parent.name for skill_file in builtin_skill_source_root().glob("*/SKILL.md")
+        }
         assert "<available_skills>" in managed.session.system_prompt
         assert "docs-search" in managed.session.system_prompt
         assert f"工作目录: /workspace/{group_workspace.name}" in managed.session.system_prompt
         assert str(group_workspace.resolve()) not in managed.session.system_prompt
-        assert ".agents/builtin-skills/docx/SKILL.md" in managed.session.system_prompt
-        assert str((group_workspace / ".agents" / "builtin-skills" / "docx" / "SKILL.md").resolve()) not in managed.session.system_prompt
+        for name in builtin_names:
+            relative_path = f".agents/builtin-skills/{name}/SKILL.md"
+            absolute_path = (group_workspace / relative_path).resolve()
+            assert relative_path in managed.session.system_prompt
+            assert str(absolute_path) not in managed.session.system_prompt
     finally:
         await manager.close_all()
