@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
-from nonebot import get_driver, logger
+from nonebot import get_bot, get_driver, logger
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageSegment
 from nonebot.matcher import Matcher
 from nonebot.plugin import on_message
@@ -38,7 +38,7 @@ from .skills import (
     resolve_explicit_skills,
     strip_explicit_skill_mentions,
 )
-from .session_manager import BackgroundWaitReminderEvent, GroupSessionManager
+from .session_manager import GroupSessionManager, ManagedGroupSession
 from .tools.safe_bash import BackgroundSessionExitEvent
 from .tools.workspace import ensure_workspace_dirs, is_image_file
 
@@ -120,13 +120,13 @@ CLEAR_COMMANDS = {"/clear", "/new"}
 COMPACT_COMMAND = "/compact"
 ACTIVE_SESSION_BUSY_MESSAGE = "当前群有进行中的会话。如需中止，请让发起者发送 /stop。"
 ACTIVE_SESSION_WINDING_DOWN_MESSAGE = "当前会话正在收尾，请稍候。"
-ACTIVE_SESSION_BACKGROUND_WAIT_MESSAGE = "当前会话正在等待后台任务完成，请稍候。"
-STOP_NO_ACTIVE_MESSAGE = "当前没有进行中的会话。"
+STOP_NO_ACTIVE_MESSAGE = "当前没有进行中的会话或后台任务。"
 STOP_NOT_OWNER_MESSAGE = "当前会话非你发起，无法停止。如需中止，请让发起者发送 /stop。"
 STOPPED_SESSION_MESSAGE = "已停止当前会话。"
-STOPPED_WAITING_SESSION_MESSAGE = "已停止当前会话并取消后台任务。"
-FORCE_STOPPED_SESSION_MESSAGE = "已强制停止当前会话。"
-FORCE_STOPPED_WAITING_SESSION_MESSAGE = "已强制停止当前会话并取消后台任务。"
+STOPPED_BACKGROUND_SESSION_MESSAGE = "已终止后台任务。"
+STOPPED_SESSION_AND_BACKGROUND_MESSAGE = "已停止当前会话并终止后台任务。"
+FORCE_STOP_PREFIX = "已强制"
+BACKGROUND_TASKS_RUNNING_MESSAGE = "仍有后台任务在运行，发送 /stop 终止后再试。"
 CLEARED_SESSION_MESSAGE = "已清空对话上下文。"
 CLEAR_NO_CONTEXT_MESSAGE = "当前没有可清空的上下文。"
 COMPACT_NO_CONTEXT_MESSAGE = "当前没有可压缩的上下文。"
@@ -742,8 +742,6 @@ def is_nonebot_superuser(user_id: str | int) -> bool:
 
 
 def interaction_busy_message(status: Any, *, requester_user_id: str | None = None) -> str:
-    if bool(getattr(status, "is_waiting_background", False)):
-        return ACTIVE_SESSION_BACKGROUND_WAIT_MESSAGE
     active_user_id = getattr(status, "active_user_id", None)
     if requester_user_id is not None and active_user_id == requester_user_id:
         return ACTIVE_SESSION_WINDING_DOWN_MESSAGE
@@ -752,18 +750,21 @@ def interaction_busy_message(status: Any, *, requester_user_id: str | None = Non
     return ACTIVE_SESSION_BUSY_MESSAGE
 
 
-def build_stop_success_message(*, force: bool, stopped_background_waits: bool) -> str:
+def build_stop_success_message(
+    *,
+    force: bool,
+    aborted_streaming: bool,
+    stopped_background_sessions: bool,
+) -> str:
+    if aborted_streaming and stopped_background_sessions:
+        message = STOPPED_SESSION_AND_BACKGROUND_MESSAGE
+    elif stopped_background_sessions:
+        message = STOPPED_BACKGROUND_SESSION_MESSAGE
+    else:
+        message = STOPPED_SESSION_MESSAGE
     if force:
-        return (
-            FORCE_STOPPED_WAITING_SESSION_MESSAGE
-            if stopped_background_waits
-            else FORCE_STOPPED_SESSION_MESSAGE
-        )
-    return (
-        STOPPED_WAITING_SESSION_MESSAGE
-        if stopped_background_waits
-        else STOPPED_SESSION_MESSAGE
-    )
+        message = FORCE_STOP_PREFIX + message.removeprefix("已")
+    return message
 
 
 def _format_skill_diagnostics(diagnostics: list[Any]) -> str:
@@ -922,6 +923,9 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
         config.bampi_rate_limit,
         config.bampi_rate_limit_window_seconds,
     )
+    set_background_notify_handler = getattr(session_manager, "set_background_notify_handler", None)
+    if callable(set_background_notify_handler):
+        set_background_notify_handler(create_background_exit_handler(config, session_manager))
     matcher = on_message(priority=10, block=False)
 
     @matcher.handle()
@@ -967,6 +971,9 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
             if status.is_active:
                 await matcher.send(interaction_busy_message(status, requester_user_id=user_id))
                 return
+            if status.has_running_background:
+                await matcher.send(BACKGROUND_TASKS_RUNNING_MESSAGE)
+                return
             cleared = await session_manager.clear_context(group_id)
             await matcher.send(CLEARED_SESSION_MESSAGE if cleared else CLEAR_NO_CONTEXT_MESSAGE)
             return
@@ -1005,14 +1012,18 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
 
         if is_stop_command(raw_text):
             status = await session_manager.inspect_interaction(group_id)
-            if not status.is_active:
+            if not status.is_active and not status.has_running_background:
                 await matcher.send(STOP_NO_ACTIVE_MESSAGE)
                 return
             requester_is_superuser = is_nonebot_superuser(user_id)
-            force_stop = requester_is_superuser and status.active_user_id != user_id
-            if status.active_user_id != user_id and not requester_is_superuser:
+            requester_is_owner = (
+                status.active_user_id == user_id
+                or user_id in status.background_owner_user_ids
+            )
+            if not requester_is_owner and not requester_is_superuser:
                 await matcher.send(STOP_NOT_OWNER_MESSAGE)
                 return
+            force_stop = requester_is_superuser and not requester_is_owner
             if status.managed is None:
                 await matcher.send(ACTIVE_SESSION_WINDING_DOWN_MESSAGE)
                 return
@@ -1022,7 +1033,7 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 group_id,
                 reason=stop_reason,
             )
-            if not stop_result.aborted_streaming and not stop_result.stopped_background_waits:
+            if not stop_result.aborted_streaming and not stop_result.stopped_background_sessions:
                 await matcher.send(ACTIVE_SESSION_WINDING_DOWN_MESSAGE)
                 return
             logger.info(
@@ -1031,13 +1042,14 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 f"message_id={event.message_id} "
                 f"force_stop={force_stop} "
                 f"aborted_streaming={stop_result.aborted_streaming} "
-                f"stopped_background_waits={stop_result.stopped_background_waits} "
+                f"stopped_background_sessions={stop_result.stopped_background_sessions} "
                 f"stopped_background_session_ids={stop_result.stopped_background_session_ids}"
             )
             await matcher.send(
                 build_stop_success_message(
                     force=force_stop,
-                    stopped_background_waits=stop_result.stopped_background_waits,
+                    aborted_streaming=stop_result.aborted_streaming,
+                    stopped_background_sessions=stop_result.stopped_background_sessions,
                 )
             )
             return
@@ -1199,26 +1211,15 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
             async with managed.lock:
                 managed.last_used_at = time.monotonic()
                 started_at = time.monotonic()
-                background_resume_waits: dict[str, str | None] = {}
 
-                def _capture_background_wait(event: Any) -> None:
-                    if getattr(event, "type", None) != "tool_execution_end":
-                        return
-                    if getattr(event, "tool_name", "") != "bash":
-                        return
-                    if bool(getattr(event, "is_error", False)):
-                        return
-                    result = getattr(event, "result", None)
-                    details = getattr(result, "details", None)
-                    if not isinstance(details, dict):
-                        return
-                    session_id = str(details.get("session_id", "")).strip()
-                    if not session_id or not bool(details.get("notify_on_exit")):
-                        return
-                    command = details.get("command")
-                    background_resume_waits[session_id] = str(command).strip() if command is not None else None
-
-                unsubscribe_background_wait = managed.session.subscribe(_capture_background_wait)
+                unsubscribe_background_origin = subscribe_background_task_origins(
+                    managed,
+                    origin=BackgroundTaskOrigin(
+                        bot_self_id=str(bot.self_id),
+                        user_id=int(event.user_id),
+                        reply_message_id=int(event.message_id),
+                    ),
+                )
                 reporter = LiveProgressReporter(bot=bot, event=event, config=config)
                 reporter.start(managed.session)
                 if explicit_skills.skills:
@@ -1256,32 +1257,8 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                         streamed_text=reporter.streamed_text,
                         streamed_any_text=reporter.streamed_any_text,
                     )
-                    for session_id, command in sorted(background_resume_waits.items()):
-                        await session_manager.register_background_wait(
-                            group_id,
-                            session_id,
-                            owner_user_id=user_id,
-                            callback=_create_background_resume_callback(
-                                bot=bot,
-                                config=config,
-                                managed=managed,
-                                group_id=group_id,
-                                user_id=int(event.user_id),
-                                reply_message_id=event.message_id,
-                                workspace_dir=workspace_dir,
-                            ),
-                            command=command,
-                            reminder_after_seconds=config.bampi_background_wait_reminder_seconds,
-                            reminder_callback=_create_background_wait_reminder_callback(
-                                bot=bot,
-                                config=config,
-                                group_id=group_id,
-                                user_id=int(event.user_id),
-                                reply_message_id=event.message_id,
-                            ),
-                        )
                 finally:
-                    unsubscribe_background_wait()
+                    unsubscribe_background_origin()
                     await reporter.close()
         except Exception:
             logger.exception("bampi_chat failed while preparing or delivering interaction")
@@ -1933,47 +1910,51 @@ async def _send_group_message_via_bot(
     )
 
 
-def _create_background_wait_reminder_callback(
+@dataclass(slots=True)
+class BackgroundTaskOrigin:
+    """Reply metadata for a notify_on_exit session: who asked, and where."""
+
+    bot_self_id: str
+    user_id: int
+    reply_message_id: int
+
+
+def subscribe_background_task_origins(
+    managed: ManagedGroupSession,
     *,
-    bot: Bot,
-    config: BampiChatConfig,
-    group_id: str,
-    user_id: int,
-    reply_message_id: int,
-) -> Callable[[BackgroundWaitReminderEvent], Awaitable[None]]:
-    target = GroupReplyTarget(
-        group_id=int(group_id),
-        user_id=user_id,
-        reply_message_id=reply_message_id,
-    )
+    origin: BackgroundTaskOrigin,
+) -> Callable[[], None]:
+    """Record the current turn's origin for notify_on_exit sessions it starts.
 
-    async def _remind(event: BackgroundWaitReminderEvent) -> None:
-        minutes = max(1, int(round(event.waited_seconds / 60)))
-        command_hint = ""
-        if event.command:
-            command_hint = f"\n命令：{log_preview(event.command, limit=120)}"
-        await _send_group_message_via_bot(
-            bot=bot,
-            target=target,
-            message=build_group_reply_message(
-                config=config,
-                target=target,
-                text=(
-                    f"后台任务已运行超过 {minutes} 分钟。"
-                    "如需终止，请发送 /stop。"
-                    f"{command_hint}"
-                ),
-            ),
-        )
+    This metadata only improves the eventual notification (reply/at target);
+    exit delivery itself is driven by the tool-level exit event and works
+    without it.
+    """
 
-    return _remind
+    def _listener(session_event: Any) -> None:
+        if getattr(session_event, "type", None) != "tool_execution_end":
+            return
+        if getattr(session_event, "tool_name", "") != "bash":
+            return
+        if bool(getattr(session_event, "is_error", False)):
+            return
+        result = getattr(session_event, "result", None)
+        details = getattr(result, "details", None)
+        if not isinstance(details, dict):
+            return
+        session_id = str(details.get("session_id", "")).strip()
+        if not session_id or not bool(details.get("notify_on_exit")):
+            return
+        managed.background_task_context[session_id] = origin
+
+    return managed.session.subscribe(_listener)
 
 
 def build_background_resume_follow_up_message(
     exit_event: BackgroundSessionExitEvent,
 ) -> UserMessage:
     lines = [
-        "系统通知：你此前要求等待的后台终端命令已经结束，请继续基于结果完成任务。",
+        "系统通知：你之前启动的后台终端命令已经结束，请继续基于结果完成任务。",
         f"background_session_id: {exit_event.session_id}",
         f"command: {exit_event.command}",
         f"exit_code: {exit_event.returncode}",
@@ -1992,24 +1973,65 @@ def build_background_resume_follow_up_message(
     return UserMessage(content=[TextContent(text="\n".join(lines))])
 
 
-def _create_background_resume_callback(
-    *,
-    bot: Bot,
-    config: BampiChatConfig,
-    managed: Any,
-    group_id: str,
-    user_id: int,
-    reply_message_id: int,
-    workspace_dir: str,
-) -> Callable[[BackgroundSessionExitEvent], Awaitable[None]]:
-    target = GroupReplyTarget(
-        group_id=int(group_id),
-        user_id=user_id,
-        reply_message_id=reply_message_id,
-    )
+def _resolve_background_bot(origin: BackgroundTaskOrigin | None) -> Bot | None:
+    if origin is not None and origin.bot_self_id:
+        try:
+            return get_bot(origin.bot_self_id)
+        except (KeyError, ValueError):
+            pass
+    try:
+        return get_bot()
+    except (KeyError, ValueError):
+        return None
 
-    async def _resume(exit_event: BackgroundSessionExitEvent) -> None:
+
+def create_background_exit_handler(
+    config: BampiChatConfig,
+    session_manager: GroupSessionManager,
+) -> Callable[[ManagedGroupSession, BackgroundSessionExitEvent], Awaitable[None]]:
+    """Deliver a notify_on_exit session result back into the conversation.
+
+    The group session stays interactive while background tasks run. On exit,
+    the result is steered into the turn currently in flight, or — when the
+    session is idle — a resume turn runs and its reply is sent to the group.
+    """
+
+    async def _handle(managed: ManagedGroupSession, exit_event: BackgroundSessionExitEvent) -> None:
+        group_id = str(managed.group_id)
+        session = managed.session
+        origin = managed.background_task_context.get(exit_event.session_id)
+        if not isinstance(origin, BackgroundTaskOrigin):
+            origin = None
+        follow_up_message = build_background_resume_follow_up_message(exit_event)
+
+        queued_as_steer = False
+        if session.is_processing:
+            session.steer(follow_up_message)
+            queued_as_steer = True
+            if session.is_processing:
+                # The in-flight turn will pick this up and its handler
+                # delivers the combined reply.
+                logger.info(
+                    f"bampi_chat steered background result into active turn "
+                    f"group_id={group_id} session_id={exit_event.session_id} "
+                    f"exit_code={exit_event.returncode}"
+                )
+                return
+            # The turn ended while we queued; drive the leftover message below.
+
+        target = GroupReplyTarget(
+            group_id=int(group_id),
+            user_id=origin.user_id if origin else None,
+            reply_message_id=origin.reply_message_id if origin else None,
+        )
+        workspace_dir = session_manager.workspace_dir_for_group(group_id)
         async with managed.lock:
+            if not queued_as_steer:
+                session.follow_up(follow_up_message)
+            if not session.has_queued_messages():
+                # An interleaving turn consumed (and delivered) the result
+                # while we waited for the lock.
+                return
             managed.last_used_at = time.monotonic()
             outbox_before = snapshot_outbox(workspace_dir)
             logger.info(
@@ -2017,34 +2039,34 @@ def _create_background_resume_callback(
                 f"session_id={exit_event.session_id} "
                 f"exit_code={exit_event.returncode}"
             )
+            bot = _resolve_background_bot(origin)
             try:
-                managed.session.follow_up(
-                    build_background_resume_follow_up_message(exit_event)
-                )
-                await managed.session.continue_()
+                await session.continue_()
             except Exception:
                 logger.exception(
                     f"bampi_chat auto-resume failed group_id={group_id} "
                     f"session_id={exit_event.session_id}"
                 )
-                failure_message = build_group_reply_message(
-                    config=config,
-                    target=target,
-                    text=(
-                        "后台任务已结束，但后续处理失败。"
-                        "可以发送新消息继续。"
-                    ),
-                )
-                await _send_group_message_via_bot(
-                    bot=bot,
-                    target=target,
-                    message=failure_message,
-                )
+                if bot is not None:
+                    await _send_group_message_via_bot(
+                        bot=bot,
+                        target=target,
+                        message=build_group_reply_message(
+                            config=config,
+                            target=target,
+                            text="后台任务已结束，但后续处理失败。可以发送新消息继续。",
+                        ),
+                    )
                 return
 
-            resume_message = build_background_resume_follow_up_message(exit_event)
-            assistant_message = find_last_assistant_message(managed.session.messages)
-            result = await send_background_agent_response(
+            if bot is None:
+                logger.error(
+                    f"bampi_chat auto-resume finished but no bot is connected "
+                    f"group_id={group_id} session_id={exit_event.session_id}"
+                )
+                return
+            assistant_message = find_last_assistant_message(session.messages)
+            await send_background_agent_response(
                 bot=bot,
                 target=target,
                 config=config,
@@ -2053,7 +2075,7 @@ def _create_background_resume_callback(
                 outbox_before=outbox_before,
             )
 
-    return _resume
+    return _handle
 
 
 async def send_background_agent_response(

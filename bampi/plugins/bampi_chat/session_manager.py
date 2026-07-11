@@ -29,9 +29,11 @@ from .tools.workspace import (
     resolve_group_workspace_dir,
 )
 
-BackgroundWaitCallback = Callable[[BackgroundSessionExitEvent], Awaitable[None] | None]
-BackgroundWaitReminderCallback = Callable[
-    ["BackgroundWaitReminderEvent"],
+# Invoked with (managed, exit_event) whenever a notify_on_exit background
+# session finishes. The handler owns delivery: steering the result into a live
+# turn or driving a resume turn and replying to the group.
+BackgroundNotifyHandler = Callable[
+    ["ManagedGroupSession", BackgroundSessionExitEvent],
     Awaitable[None] | None,
 ]
 
@@ -52,7 +54,11 @@ class ManagedGroupSession:
     last_used_at: float = field(default_factory=time.monotonic)
     idle_reset_task: asyncio.Task[None] | None = None
     active_user_id: str | None = None
-    pending_background_waits: dict[str, "PendingBackgroundWait"] = field(default_factory=dict)
+    # Handler-owned reply metadata (who started a notify_on_exit session),
+    # keyed by bash session id. Purely cosmetic: exit delivery works without it.
+    background_task_context: dict[str, Any] = field(default_factory=dict)
+    # Session ids whose exit notification must be swallowed (e.g. /stop).
+    suppressed_background_session_ids: set[str] = field(default_factory=set)
     background_listener_unsubscribes: list[Callable[[], None]] = field(default_factory=list)
     memory_user_turns: list[MemoryUserTurn] = field(default_factory=list)
     memory_participants: dict[str, str] = field(default_factory=dict)
@@ -66,31 +72,10 @@ class MemoryTurnState:
 
 
 @dataclass(slots=True)
-class PendingBackgroundWait:
-    session_id: str
-    owner_user_id: str | None
-    callback: BackgroundWaitCallback
-    command: str | None = None
-    registered_at: float = field(default_factory=time.monotonic)
-    reminder_callback: BackgroundWaitReminderCallback | None = None
-    reminder_task: asyncio.Task[None] | None = None
-    cancelled: bool = False
-
-
-@dataclass(slots=True)
-class BackgroundWaitReminderEvent:
-    group_id: str
-    session_id: str
-    owner_user_id: str | None
-    command: str | None
-    waited_seconds: float
-
-
-@dataclass(slots=True)
 class StopInteractionResult:
     managed: ManagedGroupSession | None = None
     aborted_streaming: bool = False
-    stopped_background_waits: bool = False
+    stopped_background_sessions: bool = False
     stopped_background_session_ids: list[str] = field(default_factory=list)
 
 
@@ -99,15 +84,16 @@ class GroupInteractionStatus:
     managed: ManagedGroupSession | None = None
     active_user_id: str | None = None
     is_streaming: bool = False
-    pending_background_wait_count: int = 0
+    running_background_session_ids: list[str] = field(default_factory=list)
+    background_owner_user_ids: frozenset[str] = frozenset()
 
     @property
-    def is_waiting_background(self) -> bool:
-        return self.pending_background_wait_count > 0
+    def has_running_background(self) -> bool:
+        return bool(self.running_background_session_ids)
 
     @property
     def is_active(self) -> bool:
-        return self.active_user_id is not None or self.is_waiting_background
+        return self.active_user_id is not None
 
 
 @dataclass(slots=True)
@@ -131,6 +117,8 @@ class GroupSessionManager:
         self._schedule_manager = None
         self._memory_manager = MemoryManager.from_config(config) if config.bampi_memory_enabled else None
         self._background_archive_tasks: set[asyncio.Task[None]] = set()
+        self._background_notify_handler: BackgroundNotifyHandler | None = None
+        self._background_notify_tasks: set[asyncio.Task[None]] = set()
         self._workspace_cleanup_task: asyncio.Task[None] | None = None
         self._workspace_cleanup_lock = asyncio.Lock()
         self._memory_turn_states: dict[str, MemoryTurnState] = {}
@@ -304,12 +292,20 @@ class GroupSessionManager:
             managed = self._sessions.get(group_id)
             if managed is None:
                 return GroupInteractionStatus()
-            owner_user_id = managed.active_user_id or self._background_wait_owner(managed)
+            owner_user_ids = {
+                str(owner)
+                for owner in (
+                    getattr(context, "user_id", None)
+                    for context in managed.background_task_context.values()
+                )
+                if owner is not None
+            }
             return GroupInteractionStatus(
                 managed=managed,
-                active_user_id=owner_user_id,
+                active_user_id=managed.active_user_id,
                 is_streaming=managed.session.is_processing,
-                pending_background_wait_count=len(managed.pending_background_waits),
+                running_background_session_ids=self._running_notify_session_ids(managed),
+                background_owner_user_ids=frozenset(owner_user_ids),
             )
 
     async def reserve_interaction(self, group_id: str, user_id: str) -> InteractionReservation:
@@ -317,18 +313,6 @@ class GroupSessionManager:
         async with self._guard:
             managed = await self._get_or_create_locked(group_id)
             self._touch_session(managed)
-            if managed.pending_background_waits:
-                owner_user_id = managed.active_user_id or self._background_wait_owner(managed)
-                logger.info(
-                    f"bampi_chat rejected interaction while waiting for background sessions "
-                    f"group_id={group_id} user_id={user_id} "
-                    f"pending={list(managed.pending_background_waits)}"
-                )
-                return InteractionReservation(
-                    managed=managed,
-                    action="busy",
-                    active_user_id=owner_user_id,
-                )
             if managed.active_user_id is None and not managed.lock.locked():
                 managed.active_user_id = user_id
                 logger.info(
@@ -364,70 +348,27 @@ class GroupSessionManager:
                 return
             managed.active_user_id = None
             managed.last_used_at = time.monotonic()
-            if not managed.pending_background_waits:
+            if not self._has_running_notify_sessions(managed):
                 self._schedule_idle_reset_locked(managed)
 
-    async def register_background_wait(
-        self,
-        group_id: str,
-        session_id: str,
-        *,
-        owner_user_id: str | None,
-        callback: BackgroundWaitCallback,
-        command: str | None = None,
-        reminder_after_seconds: float | None = None,
-        reminder_callback: BackgroundWaitReminderCallback | None = None,
-    ) -> bool:
-        async with self._guard:
-            managed = self._sessions.get(group_id)
-            if managed is None:
-                return False
-            existing = managed.pending_background_waits.get(session_id)
-            if existing is not None:
-                self._cancel_background_wait(existing)
-            pending = PendingBackgroundWait(
-                session_id=session_id,
-                owner_user_id=owner_user_id,
-                callback=callback,
-                command=command,
-                reminder_callback=reminder_callback,
-            )
-            managed.pending_background_waits[session_id] = pending
-            if reminder_callback is not None and (reminder_after_seconds or 0) > 0:
-                pending.reminder_task = asyncio.create_task(
-                    self._run_background_wait_reminder(
-                        group_id=group_id,
-                        pending=pending,
-                        after_seconds=float(reminder_after_seconds or 0),
-                    ),
-                    name=f"bampi-chat-background-reminder-{group_id}-{session_id}",
-                )
-            self._cancel_idle_reset_task(managed)
-            logger.info(
-                f"bampi_chat registered background wait group_id={group_id} "
-                f"session_id={session_id} owner_user_id={owner_user_id} "
-                f"reminder_after_seconds={reminder_after_seconds}"
-            )
-            return True
+    def set_background_notify_handler(self, handler: BackgroundNotifyHandler) -> None:
+        self._background_notify_handler = handler
 
     async def stop_interaction(self, group_id: str, *, reason: str) -> StopInteractionResult:
         async with self._guard:
             managed = self._sessions.get(group_id)
             if managed is None:
                 return StopInteractionResult()
-            pending_waits = list(managed.pending_background_waits.values())
-            for pending in pending_waits:
-                self._cancel_background_wait(pending)
-            managed.pending_background_waits.clear()
-            should_schedule_idle = bool(pending_waits) and not managed.session.is_processing
-            if should_schedule_idle:
-                managed.active_user_id = None
-                managed.last_used_at = time.monotonic()
-                self._schedule_idle_reset_locked(managed)
+            running_session_ids = self._running_notify_session_ids(managed)
+            # Suppress exit notifications for sessions we are about to kill:
+            # the user asked for silence, not an auto-resume of the task.
+            managed.suppressed_background_session_ids.update(running_session_ids)
+            for session_id in running_session_ids:
+                managed.background_task_context.pop(session_id, None)
 
         stopped_background_session_ids = await self._stop_background_sessions(
             managed.session,
-            [pending.session_id for pending in pending_waits],
+            running_session_ids,
         )
         aborted_streaming = False
         if managed.session.is_processing:
@@ -435,10 +376,20 @@ class GroupSessionManager:
             managed.session.abort(reason)
             aborted_streaming = True
 
+        async with self._guard:
+            if (
+                self._sessions.get(group_id) is managed
+                and managed.active_user_id is None
+                and not managed.lock.locked()
+                and not self._has_running_notify_sessions(managed)
+            ):
+                managed.last_used_at = time.monotonic()
+                self._schedule_idle_reset_locked(managed)
+
         return StopInteractionResult(
             managed=managed,
             aborted_streaming=aborted_streaming,
-            stopped_background_waits=bool(pending_waits),
+            stopped_background_sessions=bool(stopped_background_session_ids),
             stopped_background_session_ids=stopped_background_session_ids,
         )
 
@@ -495,7 +446,7 @@ class GroupSessionManager:
             for group_id, managed in self._sessions.items():
                 if managed.lock.locked():
                     continue
-                if managed.pending_background_waits:
+                if self._has_running_notify_sessions(managed):
                     continue
                 if now - managed.last_used_at >= ttl:
                     stale_ids.append(group_id)
@@ -524,6 +475,7 @@ class GroupSessionManager:
         logger.info(f"bampi_chat closing all sessions count={len(sessions)}")
         for managed in sessions:
             await self._dispose_session(managed, reason="shutdown", clear_history=False)
+        await self._cancel_background_notify_tasks()
         await self._cancel_background_archive_tasks()
 
     async def wait_for_background_archives(self) -> None:
@@ -700,7 +652,7 @@ class GroupSessionManager:
         self._attach_session_debug_logging(session, group_id)
         await session.start()
         managed = ManagedGroupSession(group_id=group_id, session=session)
-        self._attach_background_wait_listeners(managed)
+        self._attach_background_exit_listeners(managed)
         self._touch_session(managed)
         self._sessions[group_id] = managed
         logger.info(
@@ -765,61 +717,17 @@ class GroupSessionManager:
         managed.last_used_at = now
         self._cancel_idle_reset_task(managed)
 
-    def _cancel_background_wait(self, pending: PendingBackgroundWait) -> None:
-        pending.cancelled = True
-        task = pending.reminder_task
-        pending.reminder_task = None
-        if task is None:
-            return
-        if task is asyncio.current_task():
-            return
-        task.cancel()
-
     @staticmethod
-    def _background_wait_owner(managed: ManagedGroupSession) -> str | None:
-        for pending in managed.pending_background_waits.values():
-            if pending.owner_user_id is not None:
-                return pending.owner_user_id
-        return None
+    def _running_notify_session_ids(managed: ManagedGroupSession) -> list[str]:
+        session_ids: list[str] = []
+        for tool in managed.session.get_all_tools():
+            if isinstance(tool, SafeBashTool):
+                session_ids.extend(tool.running_notify_session_ids())
+        return session_ids
 
-    async def _run_background_wait_reminder(
-        self,
-        *,
-        group_id: str,
-        pending: PendingBackgroundWait,
-        after_seconds: float,
-    ) -> None:
-        try:
-            await asyncio.sleep(after_seconds)
-            if pending.cancelled or pending.reminder_callback is None:
-                return
-            async with self._guard:
-                managed = self._sessions.get(group_id)
-                if managed is None:
-                    return
-                current = managed.pending_background_waits.get(pending.session_id)
-                if current is not pending or pending.cancelled:
-                    return
-            reminder = BackgroundWaitReminderEvent(
-                group_id=group_id,
-                session_id=pending.session_id,
-                owner_user_id=pending.owner_user_id,
-                command=pending.command,
-                waited_seconds=after_seconds,
-            )
-            maybe = pending.reminder_callback(reminder)
-            if inspect.isawaitable(maybe):
-                await maybe
-        except asyncio.CancelledError:
-            logger.debug(
-                f"bampi_chat background wait reminder cancelled "
-                f"group_id={group_id} session_id={pending.session_id}"
-            )
-        except Exception:
-            logger.exception(
-                f"bampi_chat background wait reminder failed "
-                f"group_id={group_id} session_id={pending.session_id}"
-            )
+    @classmethod
+    def _has_running_notify_sessions(cls, managed: ManagedGroupSession) -> bool:
+        return bool(cls._running_notify_session_ids(managed))
 
     def _schedule_idle_reset_locked(self, managed: ManagedGroupSession) -> None:
         idle_ttl = self._config.bampi_session_idle_ttl_seconds
@@ -855,7 +763,7 @@ class GroupSessionManager:
                 managed = self._sessions.get(group_id)
                 if managed is None or managed.last_used_at != scheduled_at:
                     return
-                if managed.pending_background_waits:
+                if self._has_running_notify_sessions(managed):
                     return
                 self._sessions.pop(group_id, None)
 
@@ -887,10 +795,8 @@ class GroupSessionManager:
     ) -> None:
         self._cancel_idle_reset_task(managed)
         managed.active_user_id = None
-        pending_wait_ids = list(managed.pending_background_waits)
-        for pending in managed.pending_background_waits.values():
-            self._cancel_background_wait(pending)
-        managed.pending_background_waits.clear()
+        running_notify_ids = self._running_notify_session_ids(managed)
+        managed.background_task_context.clear()
         for unsubscribe in managed.background_listener_unsubscribes:
             try:
                 unsubscribe()
@@ -906,7 +812,7 @@ class GroupSessionManager:
             f"reason={reason} "
             f"clear_history={clear_history} "
             f"clear_workspace={clear_workspace} "
-            f"pending_background_waits={pending_wait_ids}"
+            f"running_notify_sessions={running_notify_ids}"
         )
         self._schedule_archive_session_if_needed(
             managed,
@@ -1107,7 +1013,7 @@ class GroupSessionManager:
     def session_file_for_group(self, group_id: str) -> Path:
         return (self._session_dir / f"group-{group_id}.jsonl").resolve()
 
-    def _attach_background_wait_listeners(self, managed: ManagedGroupSession) -> None:
+    def _attach_background_exit_listeners(self, managed: ManagedGroupSession) -> None:
         for tool in managed.session.get_all_tools():
             if not isinstance(tool, SafeBashTool):
                 continue
@@ -1121,40 +1027,70 @@ class GroupSessionManager:
         group_id: str,
         event: BackgroundSessionExitEvent,
     ) -> None:
+        if not event.notify_on_exit:
+            return
         async with self._guard:
             managed = self._sessions.get(group_id)
             if managed is None:
                 return
-            pending = managed.pending_background_waits.get(event.session_id)
-        if pending is None:
-            return
-
-        async def _run_callback() -> None:
-            try:
-                if pending.cancelled:
-                    return
-                maybe = pending.callback(event)
-                if inspect.isawaitable(maybe):
-                    await maybe
-            except Exception:
-                logger.exception(
-                    f"bampi_chat background wait callback failed group_id={group_id} "
-                    f"session_id={event.session_id}"
+            if event.session_id in managed.suppressed_background_session_ids:
+                managed.suppressed_background_session_ids.discard(event.session_id)
+                managed.background_task_context.pop(event.session_id, None)
+                logger.info(
+                    f"bampi_chat suppressed background exit notification "
+                    f"group_id={group_id} session_id={event.session_id}"
                 )
-            finally:
-                async with self._guard:
-                    managed = self._sessions.get(group_id)
-                    if managed is not None:
-                        self._cancel_background_wait(pending)
-                        managed.pending_background_waits.pop(event.session_id, None)
-                        if managed.active_user_id is None and not managed.lock.locked():
-                            managed.last_used_at = time.monotonic()
-                            self._schedule_idle_reset_locked(managed)
-
-        asyncio.create_task(
-            _run_callback(),
-            name=f"bampi-chat-background-wait-{group_id}-{event.session_id}",
+                return
+        handler = self._background_notify_handler
+        if handler is None:
+            logger.warning(
+                f"bampi_chat background session exited but no notify handler is registered "
+                f"group_id={group_id} session_id={event.session_id}"
+            )
+            return
+        task = asyncio.create_task(
+            self._run_background_notify(managed, event, handler),
+            name=f"bampi-chat-background-notify-{group_id}-{event.session_id}",
         )
+        self._background_notify_tasks.add(task)
+        task.add_done_callback(self._background_notify_tasks.discard)
+
+    async def _run_background_notify(
+        self,
+        managed: ManagedGroupSession,
+        event: BackgroundSessionExitEvent,
+        handler: BackgroundNotifyHandler,
+    ) -> None:
+        try:
+            maybe = handler(managed, event)
+            if inspect.isawaitable(maybe):
+                await maybe
+        except Exception:
+            logger.exception(
+                f"bampi_chat background notify handler failed "
+                f"group_id={managed.group_id} session_id={event.session_id}"
+            )
+        finally:
+            managed.background_task_context.pop(event.session_id, None)
+            async with self._guard:
+                if (
+                    self._sessions.get(managed.group_id) is managed
+                    and managed.active_user_id is None
+                    and not managed.lock.locked()
+                    and not self._has_running_notify_sessions(managed)
+                ):
+                    managed.last_used_at = time.monotonic()
+                    self._schedule_idle_reset_locked(managed)
+
+    async def _cancel_background_notify_tasks(self) -> None:
+        tasks = [task for task in self._background_notify_tasks if not task.done()]
+        if not tasks:
+            return
+        logger.info(f"bampi_chat cancelling background notify tasks count={len(tasks)}")
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._background_notify_tasks.clear()
 
     async def _close_session_tools(self, session: AgentSession) -> None:
         for tool in session.get_all_tools():

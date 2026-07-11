@@ -19,11 +19,11 @@ from bampi.plugins.bampi_chat.handler import (
     CLEAR_NO_CONTEXT_MESSAGE,
     CLEARED_SESSION_MESSAGE,
     COMPACT_FORBIDDEN_MESSAGE,
-    FORCE_STOPPED_SESSION_MESSAGE,
     IncomingMedia,
     LiveProgressReporter,
     ResponseDispatchResult,
-    STOPPED_WAITING_SESSION_MESSAGE,
+    STOPPED_BACKGROUND_SESSION_MESSAGE,
+    STOPPED_SESSION_MESSAGE,
     TriggerDecision,
     build_user_message,
     collect_incoming_media,
@@ -1101,7 +1101,7 @@ async def test_register_handlers_clears_context_with_clear_command(monkeypatch: 
             return SimpleNamespace(
                 is_active=False,
                 is_streaming=False,
-                is_waiting_background=False,
+                has_running_background=False,
                 managed=None,
                 active_user_id=None,
             )
@@ -1149,7 +1149,7 @@ async def test_register_handlers_reports_no_context_for_new_command(monkeypatch:
             return SimpleNamespace(
                 is_active=False,
                 is_streaming=False,
-                is_waiting_background=False,
+                has_running_background=False,
                 managed=None,
                 active_user_id=None,
             )
@@ -1246,7 +1246,7 @@ async def test_register_handlers_runs_manual_compact_for_superuser(monkeypatch: 
             return SimpleNamespace(
                 is_active=False,
                 is_streaming=False,
-                is_waiting_background=False,
+                has_running_background=False,
                 managed=None,
                 active_user_id=None,
             )
@@ -1305,7 +1305,8 @@ async def test_register_handlers_stop_cancels_waiting_background_session(monkeyp
                 is_active=True,
                 active_user_id="42",
                 is_streaming=False,
-                is_waiting_background=True,
+                has_running_background=True,
+                background_owner_user_ids=frozenset({"42"}),
                 managed=SimpleNamespace(),
             )
 
@@ -1313,7 +1314,7 @@ async def test_register_handlers_stop_cancels_waiting_background_session(monkeyp
             self.stop_calls.append((group_id, reason))
             return SimpleNamespace(
                 aborted_streaming=False,
-                stopped_background_waits=True,
+                stopped_background_sessions=True,
                 stopped_background_session_ids=["term-1"],
             )
 
@@ -1330,7 +1331,7 @@ async def test_register_handlers_stop_cancels_waiting_background_session(monkeyp
     await handler(bot, event, matcher)
 
     assert session_manager.stop_calls == [("1001", "stopped by session owner")]
-    assert matcher.sent == [STOPPED_WAITING_SESSION_MESSAGE]
+    assert matcher.sent == [STOPPED_BACKGROUND_SESSION_MESSAGE]
 
 
 @pytest.mark.asyncio
@@ -1361,7 +1362,8 @@ async def test_register_handlers_superuser_can_force_stop_other_users_session(mo
                 is_active=True,
                 active_user_id="7",
                 is_streaming=True,
-                is_waiting_background=False,
+                has_running_background=False,
+                background_owner_user_ids=frozenset(),
                 managed=SimpleNamespace(),
             )
 
@@ -1369,7 +1371,7 @@ async def test_register_handlers_superuser_can_force_stop_other_users_session(mo
             self.stop_calls.append((group_id, reason))
             return SimpleNamespace(
                 aborted_streaming=True,
-                stopped_background_waits=False,
+                stopped_background_sessions=False,
                 stopped_background_session_ids=[],
             )
 
@@ -1386,7 +1388,7 @@ async def test_register_handlers_superuser_can_force_stop_other_users_session(mo
     await handler(bot, event, matcher)
 
     assert session_manager.stop_calls == [("1001", "stopped by superuser")]
-    assert matcher.sent == [FORCE_STOPPED_SESSION_MESSAGE]
+    assert matcher.sent == ["已强制" + STOPPED_SESSION_MESSAGE.removeprefix("已")]
 
 
 @pytest.mark.asyncio
@@ -1769,3 +1771,110 @@ async def test_register_handlers_accepts_group_inside_whitelist(monkeypatch: pyt
     assert session_manager.workspace_dir_calls == ["1001"]
     assert session_manager.complete_calls == 1
     assert matcher.sent == []
+
+
+class FakeAgentSessionForBackgroundExit:
+    def __init__(self, *, processing: bool) -> None:
+        self._processing = processing
+        self.steered: list[object] = []
+        self.followed_up: list[object] = []
+        self.continued = 0
+        self.messages: list[object] = []
+
+    @property
+    def is_processing(self) -> bool:
+        return self._processing
+
+    def steer(self, message) -> None:  # noqa: ANN001
+        self.steered.append(message)
+
+    def follow_up(self, message) -> None:  # noqa: ANN001
+        self.followed_up.append(message)
+
+    def has_queued_messages(self) -> bool:
+        return bool(self.steered or self.followed_up) and self.continued == 0
+
+    async def continue_(self) -> None:
+        self.continued += 1
+        self.messages.append(AssistantMessage(content=[TextContent(text="后台任务已处理完成")]))
+
+
+def _make_background_exit_event(session_id: str = "term-1"):
+    from bampi.plugins.bampi_chat.tools.safe_bash import BackgroundSessionExitEvent
+
+    return BackgroundSessionExitEvent(
+        session_id=session_id,
+        command="uv run pytest",
+        cwd_display="/workspace",
+        returncode=0,
+        log_path="/workspace/.bampi/logs/term-1.log",
+        output_text="all tests passed",
+        notify_on_exit=True,
+        total_output_bytes=16,
+    )
+
+
+@pytest.mark.asyncio
+async def test_background_exit_handler_steers_into_active_turn(tmp_path: Path):
+    session = FakeAgentSessionForBackgroundExit(processing=True)
+    managed = SimpleNamespace(
+        group_id="1001",
+        session=session,
+        background_task_context={},
+        lock=asyncio.Lock(),
+        last_used_at=time.monotonic(),
+    )
+    session_manager = SimpleNamespace(workspace_dir_for_group=lambda group_id: str(tmp_path))
+
+    handler = handler_module.create_background_exit_handler(BampiChatConfig(), session_manager)
+    await handler(managed, _make_background_exit_event())
+
+    assert len(session.steered) == 1
+    steered_text = session.steered[0].content[0].text
+    assert "term-1" in steered_text
+    assert "all tests passed" in steered_text
+    assert session.continued == 0
+
+
+@pytest.mark.asyncio
+async def test_background_exit_handler_runs_resume_turn_when_idle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = FakeAgentSessionForBackgroundExit(processing=False)
+    origin = handler_module.BackgroundTaskOrigin(bot_self_id="42", user_id=7, reply_message_id=99)
+    managed = SimpleNamespace(
+        group_id="1001",
+        session=session,
+        background_task_context={"term-1": origin},
+        lock=asyncio.Lock(),
+        last_used_at=time.monotonic(),
+    )
+    session_manager = SimpleNamespace(workspace_dir_for_group=lambda group_id: str(tmp_path))
+    fake_bot = SimpleNamespace(self_id=42)
+    monkeypatch.setattr(handler_module, "get_bot", lambda *args, **kwargs: fake_bot)
+    sent: list[dict[str, object]] = []
+
+    async def fake_send_background_agent_response(**kwargs):  # noqa: ANN003
+        sent.append(kwargs)
+        return ResponseDispatchResult(delivered=True)
+
+    monkeypatch.setattr(
+        handler_module,
+        "send_background_agent_response",
+        fake_send_background_agent_response,
+    )
+
+    handler = handler_module.create_background_exit_handler(BampiChatConfig(), session_manager)
+    await handler(managed, _make_background_exit_event())
+
+    assert len(session.followed_up) == 1
+    assert session.continued == 1
+    assert len(sent) == 1
+    assert sent[0]["bot"] is fake_bot
+    target = sent[0]["target"]
+    assert target.group_id == 1001
+    assert target.user_id == 7
+    assert target.reply_message_id == 99
+    assistant_message = sent[0]["assistant_message"]
+    assert "后台任务已处理完成" in assistant_message.content[0].text

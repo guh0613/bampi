@@ -4,9 +4,10 @@ import asyncio
 import inspect
 import os
 import re
+import shlex
 import signal
-import tempfile
 import time
+import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -25,12 +26,44 @@ from ..config import BashMode
 
 
 BashAction = Literal["run", "start", "status", "logs", "input", "stop", "list"]
+SessionRuntime = Literal["docker", "local"]
 BackgroundSessionExitListener = Callable[
     ["BackgroundSessionExitEvent"],
     Awaitable[None] | None,
 ]
 
 _SESSION_BUFFER_BYTES = DEFAULT_MAX_BYTES * 2
+_INTERNAL_DIRNAME = ".bampi"
+_LOG_SUBDIR = "logs"
+_RUN_SUBDIR = "run"
+
+
+def build_background_wrapper_script(command: str, pid_file: str) -> str:
+    """Wrap a background command so the process tree can be stopped from outside.
+
+    The wrapper runs the command in its own process group (`set -m`) and records
+    `<wrapper_pid> <child_pid>` in `pid_file`, so a controller that cannot signal
+    across the container boundary (e.g. the host talking to `docker exec`) can
+    still terminate the whole tree with `kill -- -<child_pid>` inside the
+    container. Stdin stays attached to the child for the `input` action.
+    """
+    quoted_pid_file = shlex.quote(pid_file)
+    return "\n".join(
+        [
+            "set -m",
+            f"trap 'rm -f {quoted_pid_file}' EXIT",
+            'trap \'[ -n "$BAMPI_CHILD" ] && kill -TERM -- "-$BAMPI_CHILD" 2>/dev/null\' TERM INT',
+            "(",
+            command,
+            ") &",
+            'BAMPI_CHILD="$!"',
+            f'printf \'%s %s\' "$$" "$BAMPI_CHILD" > {quoted_pid_file} 2>/dev/null || true',
+            'wait "$BAMPI_CHILD"',
+            'BAMPI_STATUS="$?"',
+            'wait "$BAMPI_CHILD" 2>/dev/null',
+            'exit "$BAMPI_STATUS"',
+        ]
+    )
 
 
 class SafeBashToolInput(BaseModel):
@@ -44,8 +77,8 @@ class SafeBashToolInput(BaseModel):
     notify_on_exit: bool = Field(
         default=False,
         description=(
-            "Only for `action=start`. If true, callers may register to be notified "
-            "when the background session exits so the workflow can resume automatically."
+            "Only for `action=start`. If true, the session's exit result is delivered "
+            "back to the conversation automatically so the task can continue."
         ),
     )
     max_chars: int = Field(default=4_000, ge=200, le=40_000, description="Maximum characters returned for logs/status.")
@@ -85,6 +118,8 @@ class _BackgroundShellSession:
     process: asyncio.subprocess.Process
     cwd_display: str
     started_at: float
+    runtime: SessionRuntime = "local"
+    pid_file: str | None = None
     notify_on_exit: bool = False
     rolling_chunks: deque[bytes] = field(default_factory=deque)
     rolling_bytes: int = 0
@@ -232,6 +267,13 @@ class SafeBashTool:
     async def stop_session(self, session_id: str) -> AgentToolResult:
         return await self._stop_background_session(session_id)
 
+    def running_notify_session_ids(self) -> list[str]:
+        return [
+            session.session_id
+            for session in self._sessions.values()
+            if session.notify_on_exit and session.process.returncode is None
+        ]
+
     async def _execute_run(
         self,
         arguments: SafeBashToolInput,
@@ -302,19 +344,19 @@ class SafeBashTool:
             f"Started background bash session `{session.session_id}`.",
             f"Command: {session.command}",
             f"Working directory: {session.cwd_display}",
-            f"Log path: {session.log_path}",
+            f"Log path: {self._display_path(session.log_path)}",
             f"Notify on exit: {'enabled' if session.notify_on_exit else 'disabled'}",
             "",
             "Use `bash` with `action=status`, `logs`, `input`, `stop`, or `list` to manage it.",
         ]
         if session.notify_on_exit:
-            lines.append("When this session exits, the caller can resume automatically with the final result.")
+            lines.append("The exit result will be delivered back to the conversation automatically.")
         return AgentToolResult(
             content=[TextContent(text="\n".join(lines))],
             details={
                 "session_id": session.session_id,
                 "command": session.command,
-                "full_output_path": session.log_path,
+                "full_output_path": self._display_path(session.log_path),
                 "notify_on_exit": session.notify_on_exit,
             },
         )
@@ -325,7 +367,7 @@ class SafeBashTool:
             content=[TextContent(text=self._format_session_summary(session, include_output=True, max_chars=max_chars))],
             details={
                 "session_id": session.session_id,
-                "full_output_path": session.log_path,
+                "full_output_path": self._display_path(session.log_path),
                 "returncode": session.process.returncode,
             },
         )
@@ -336,7 +378,7 @@ class SafeBashTool:
             content=[TextContent(text=self._format_session_logs(session, max_chars=max_chars))],
             details={
                 "session_id": session.session_id,
-                "full_output_path": session.log_path,
+                "full_output_path": self._display_path(session.log_path),
                 "returncode": session.process.returncode,
             },
         )
@@ -359,26 +401,28 @@ class SafeBashTool:
 
     async def _stop_background_session(self, session_id: str | None) -> AgentToolResult:
         session = await self._require_session(session_id)
-        if session.process.returncode is None:
-            _kill_process_group(session.process)
+        await self._signal_session_termination(session, force=False)
         try:
             await self._await_session_exit(session)
         except asyncio.TimeoutError:
-            if session.process.returncode is None:
+            await self._signal_session_termination(session, force=True)
+            try:
+                await asyncio.wait_for(session.process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
                 session.process.kill()
-            await session.process.wait()
+                await session.process.wait()
         lines = [
             f"Background session `{session.session_id}` stopped.",
             f"Command: {session.command}",
             f"Exit code: {session.process.returncode}",
         ]
         if session.log_path:
-            lines.append(f"Log path: {session.log_path}")
+            lines.append(f"Log path: {self._display_path(session.log_path)}")
         return AgentToolResult(
             content=[TextContent(text="\n".join(lines))],
             details={
                 "session_id": session.session_id,
-                "full_output_path": session.log_path,
+                "full_output_path": self._display_path(session.log_path),
                 "returncode": session.process.returncode,
             },
         )
@@ -403,26 +447,27 @@ class SafeBashTool:
         *,
         notify_on_exit: bool,
     ) -> _BackgroundShellSession:
+        session_id = await self._reserve_session_id()
         if self._mode == "docker":
-            return await self._create_background_session_with_command(
+            return await self._create_background_session_with_runtime(
                 command,
-                self._docker_command(command),
-                self._visible_workspace_root,
+                session_id=session_id,
+                runtime="docker",
                 notify_on_exit=notify_on_exit,
             )
         if self._mode == "local":
-            return await self._create_background_session_with_command(
+            return await self._create_background_session_with_runtime(
                 command,
-                self._local_command(command),
-                self._visible_workspace_root,
+                session_id=session_id,
+                runtime="local",
                 notify_on_exit=notify_on_exit,
             )
 
         try:
-            return await self._create_background_session_with_command(
+            return await self._create_background_session_with_runtime(
                 command,
-                self._docker_command(command),
-                self._visible_workspace_root,
+                session_id=session_id,
+                runtime="docker",
                 notify_on_exit=notify_on_exit,
             )
         except RuntimeError as exc:
@@ -431,25 +476,59 @@ class SafeBashTool:
         except FileNotFoundError:
             pass
 
-        return await self._create_background_session_with_command(
+        return await self._create_background_session_with_runtime(
             command,
-            self._local_command(command),
-            self._visible_workspace_root,
+            session_id=session_id,
+            runtime="local",
             notify_on_exit=notify_on_exit,
         )
 
-    async def _create_background_session_with_command(
+    async def _reserve_session_id(self) -> str:
+        async with self._session_lock:
+            session_id = f"term-{self._session_sequence}"
+            self._session_sequence += 1
+            return session_id
+
+    async def _create_background_session_with_runtime(
         self,
         original_command: str,
-        command: Sequence[str],
-        cwd_display: str,
         *,
+        session_id: str,
+        runtime: SessionRuntime,
         notify_on_exit: bool,
     ) -> _BackgroundShellSession:
+        # Unique per tool instance *and* per workspace: several sessions
+        # (e.g. ephemeral ones) may share the same workspace directory.
+        unique_name = f"{session_id}-{uuid.uuid4().hex[:8]}"
+        pid_file: str | None = None
+        if runtime == "docker":
+            self._prepare_internal_dir(_RUN_SUBDIR)
+            pid_file = str(Path(self._workspace_dir) / _INTERNAL_DIRNAME / _RUN_SUBDIR / f"{unique_name}.pid")
+            container_pid_file = (
+                f"{self._container_workdir.rstrip('/')}/{_INTERNAL_DIRNAME}/{_RUN_SUBDIR}/{unique_name}.pid"
+            )
+            rewritten = self._rewrite_visible_workspace_root(
+                original_command,
+                actual_root=self._container_workdir,
+            )
+            command: Sequence[str] = [
+                "docker",
+                "exec",
+                "-i",
+                "-w",
+                self._container_workdir,
+                self._container_name,
+                self._container_shell,
+                "-lc",
+                build_background_wrapper_script(rewritten, container_pid_file),
+            ]
+        else:
+            command = self._local_command(original_command)
+
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
-                cwd=None if command[:2] == ["docker", "exec"] else self._workspace_dir,
+                cwd=None if runtime == "docker" else self._workspace_dir,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -457,34 +536,36 @@ class SafeBashTool:
                 start_new_session=True,
             )
         except FileNotFoundError as exc:
-            if command[:1] == ["docker"]:
+            if runtime == "docker":
                 raise RuntimeError(self._docker_start_hint("Docker CLI not found on the host")) from exc
             raise
 
+        log_dir = self._prepare_internal_dir(_LOG_SUBDIR)
+        log_path = log_dir / f"{unique_name}.log"
+        log_handle = log_path.open("wb")
         async with self._session_lock:
-            session_id = f"term-{self._session_sequence}"
-            self._session_sequence += 1
-            log_handle = tempfile.NamedTemporaryFile(
-                mode="wb",
-                prefix="bampi-bash-session-",
-                suffix=".log",
-                delete=False,
-            )
             session = _BackgroundShellSession(
                 session_id=session_id,
                 command=original_command,
                 process=process,
-                cwd_display=cwd_display,
+                cwd_display=self._visible_workspace_root,
                 started_at=time.monotonic(),
+                runtime=runtime,
+                pid_file=pid_file,
                 notify_on_exit=notify_on_exit,
                 log_handle=log_handle,
-                log_path=log_handle.name,
+                log_path=str(log_path),
             )
             session.stdout_task = asyncio.create_task(self._read_background_stream(session, process.stdout))
             session.stderr_task = asyncio.create_task(self._read_background_stream(session, process.stderr))
             session.watch_task = asyncio.create_task(self._watch_background_session(session))
             self._sessions[session_id] = session
         return session
+
+    def _prepare_internal_dir(self, subdir: str) -> Path:
+        path = Path(self._workspace_dir) / _INTERNAL_DIRNAME / subdir
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     async def _watch_background_session(self, session: _BackgroundShellSession) -> None:
         try:
@@ -537,11 +618,11 @@ class SafeBashTool:
         await asyncio.wait_for(session.watch_task, timeout=10.0)
 
     async def _terminate_session(self, session: _BackgroundShellSession) -> None:
-        if session.process.returncode is None:
-            _kill_process_group(session.process)
+        await self._signal_session_termination(session, force=False)
         try:
             await self._await_session_exit(session)
         except Exception:
+            await self._signal_session_termination(session, force=True)
             if session.process.returncode is None:
                 session.process.kill()
                 await session.process.wait()
@@ -549,6 +630,66 @@ class SafeBashTool:
                 session.log_handle.flush()
                 session.log_handle.close()
                 session.log_handle = None
+
+    async def _signal_session_termination(self, session: _BackgroundShellSession, *, force: bool) -> None:
+        if session.process.returncode is not None:
+            return
+        if session.runtime == "docker":
+            # `docker exec` does not forward signals into the container, so the
+            # in-container process tree must be killed explicitly. Killing the
+            # host-side client alone would leak the real process.
+            await self._signal_container_termination(session, force=force)
+        if force:
+            try:
+                os.killpg(session.process.pid, signal.SIGKILL)
+            except Exception:
+                session.process.kill()
+        else:
+            _kill_process_group(session.process)
+
+    async def _signal_container_termination(self, session: _BackgroundShellSession, *, force: bool) -> bool:
+        pids = self._read_session_pids(session)
+        if pids is None:
+            return False
+        wrapper_pid, child_pid = pids
+        sig = "KILL" if force else "TERM"
+        # Prefer killing the child's process group (covers grandchildren), then
+        # fall back to the direct PIDs. `kill` is run through the container
+        # shell so the builtin is used even in minimal images.
+        for kill_command in (
+            f"kill -{sig} -- -{child_pid}",
+            f"kill -{sig} {child_pid}",
+            f"kill -{sig} {wrapper_pid}",
+        ):
+            if await self._run_container_command(kill_command) == 0:
+                return True
+        return False
+
+    def _read_session_pids(self, session: _BackgroundShellSession) -> tuple[int, int] | None:
+        if not session.pid_file:
+            return None
+        try:
+            raw = Path(session.pid_file).read_text(encoding="utf-8").strip()
+            wrapper_pid, child_pid = raw.split()
+            return int(wrapper_pid), int(child_pid)
+        except (OSError, ValueError):
+            return None
+
+    async def _run_container_command(self, command: str) -> int | None:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "docker",
+                "exec",
+                self._container_name,
+                self._container_shell,
+                "-c",
+                command,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            return await process.wait()
+        except Exception:
+            return None
 
     def _format_session_summary(
         self,
@@ -564,7 +705,7 @@ class SafeBashTool:
             f"Working directory: {session.cwd_display}",
         ]
         if session.log_path:
-            lines.append(f"Log path: {session.log_path}")
+            lines.append(f"Log path: {self._display_path(session.log_path)}")
         if include_output:
             lines.append("")
             lines.append(self._render_session_output(session, max_chars=max_chars))
@@ -578,7 +719,7 @@ class SafeBashTool:
         state = "running" if session.process.returncode is None else f"exited ({session.process.returncode})"
         lines.append(f"State: {state}")
         if session.log_path:
-            lines.append(f"Log path: {session.log_path}")
+            lines.append(f"Log path: {self._display_path(session.log_path)}")
         lines.append("")
         lines.append(self._render_session_output(session, max_chars=max_chars))
         return "\n".join(lines)
@@ -592,7 +733,7 @@ class SafeBashTool:
             command=session.command,
             cwd_display=session.cwd_display,
             returncode=session.process.returncode,
-            log_path=session.log_path,
+            log_path=self._display_path(session.log_path),
             output_text=self._render_session_output(session, max_chars=8_000),
             notify_on_exit=session.notify_on_exit,
             total_output_bytes=session.total_output_bytes,
@@ -616,7 +757,7 @@ class SafeBashTool:
 
         notes: list[str] = []
         if truncation.truncated and session.log_path:
-            notes.append(f"Tail only. Full log: {session.log_path}")
+            notes.append(f"Tail only. Full log: {self._display_path(session.log_path)}")
         if trimmed:
             notes.append(f"Displayed text trimmed to {max_chars} characters.")
         if notes:
@@ -678,6 +819,11 @@ class SafeBashTool:
             sanitized = sanitized.replace(root, visible_root)
         return sanitized
 
+    def _display_path(self, path: str | None) -> str | None:
+        if not path:
+            return path
+        return self._sanitize_workspace_paths(path)
+
     async def _run_bash(
         self,
         arguments: SafeBashToolInput,
@@ -707,13 +853,12 @@ class SafeBashTool:
             nonlocal rolling_bytes, temp_handle, temp_path, total_bytes
             total_bytes += len(data)
             if temp_handle is None and total_bytes > DEFAULT_MAX_BYTES:
-                temp_handle = tempfile.NamedTemporaryFile(
-                    mode="wb",
-                    prefix="bampi-bash-",
-                    suffix=".log",
-                    delete=False,
-                )
-                temp_path = temp_handle.name
+                # Spill into the workspace (not a host tempdir) so the model's
+                # file tools and in-container commands can read the full log.
+                log_dir = self._prepare_internal_dir(_LOG_SUBDIR)
+                overflow_path = log_dir / f"run-{uuid.uuid4().hex[:8]}.log"
+                temp_handle = overflow_path.open("wb")
+                temp_path = str(overflow_path)
                 for chunk in initial_chunks:
                     temp_handle.write(chunk)
 
@@ -744,7 +889,7 @@ class SafeBashTool:
                         content=[TextContent(text=truncated_text)],
                         details={
                             "truncation": serialize_truncation(truncation) if truncation.truncated else None,
-                            "full_output_path": temp_path,
+                            "full_output_path": self._display_path(temp_path),
                         },
                     ),
                 )
@@ -790,26 +935,27 @@ class SafeBashTool:
         details: dict[str, object] | None = None
 
         if truncation.truncated:
+            display_output_path = self._display_path(temp_path)
             details = {
                 "truncation": serialize_truncation(truncation),
-                "full_output_path": temp_path,
+                "full_output_path": display_output_path,
             }
             start_line = truncation.total_lines - truncation.output_lines + 1
             end_line = truncation.total_lines
             if truncation.last_line_partial:
                 output += (
                     f"\n\n[Showing last {format_size(truncation.output_bytes)} of line {end_line}. "
-                    f"Full output: {temp_path}]"
+                    f"Full output: {display_output_path}]"
                 )
             elif truncation.truncated_by == "lines":
                 output += (
                     f"\n\n[Showing lines {start_line}-{end_line} of {truncation.total_lines}. "
-                    f"Full output: {temp_path}]"
+                    f"Full output: {display_output_path}]"
                 )
             else:
                 output += (
                     f"\n\n[Showing lines {start_line}-{end_line} of {truncation.total_lines} "
-                    f"({format_size(DEFAULT_MAX_BYTES)} limit). Full output: {temp_path}]"
+                    f"({format_size(DEFAULT_MAX_BYTES)} limit). Full output: {display_output_path}]"
                 )
 
         if process.returncode not in (0, None):

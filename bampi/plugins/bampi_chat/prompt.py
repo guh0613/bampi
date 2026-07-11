@@ -71,7 +71,11 @@ def build_system_prompt(
             "- 长驻命令（dev server、watcher 等）用 `bash` 的后台会话动作（`start`/`status`/`logs`/`input`/`stop`/`list`），不要用 `&` 或 `nohup`。"
         )
         tool_lines.append(
-            "- 可用 `bash` 的 `action=start` 并传 `notify_on_exit=true` 让长时间命令在结束后自动回调，你不用一直等待。"
+            "- 长时间命令用 `bash` 的 `action=start` 并传 `notify_on_exit=true`：结束后结果会自动回到对话中"
+            "（正在对话时立即插入，空闲时自动继续任务），你不用轮询等待；期间群聊不受影响。"
+        )
+        tool_lines.append(
+            "- 后台会话与超长输出的完整日志保存在 workspace 的 `.bampi/logs/` 下，可用文件工具或 `bash` 直接读取。"
         )
     if "web_search" in tool_names or "web_ask" in tool_names:
         tool_lines.append(

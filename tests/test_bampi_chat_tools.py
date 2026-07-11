@@ -13,7 +13,7 @@ from bampi.plugins.bampi_chat import prompt as prompt_module
 from bampi.plugins.bampi_chat.prompt import build_system_prompt
 from bampi.plugins.bampi_chat.tools import create_agent_tools
 from bampi.plugins.bampi_chat.tools.files import WorkspaceEditTool, WorkspacePatchTool, WorkspaceReadTool, WorkspaceWriteTool
-from bampi.plugins.bampi_chat.tools.safe_bash import SafeBashTool
+from bampi.plugins.bampi_chat.tools.safe_bash import SafeBashTool, build_background_wrapper_script
 from bampi.plugins.bampi_chat.tools.workspace import cleanup_stale_workspace_files
 from bampi.plugins.bampi_chat.tools import web_search as web_search_module
 
@@ -662,3 +662,75 @@ async def test_web_search_tool_reports_configuration_errors():
         "Web ask failed for: 最新模型信息\n"
         "Error: web_search is not configured: bampi_web_search_base_url is empty"
     )
+
+
+def test_background_wrapper_script_records_pids_and_kills_process_group():
+    script = build_background_wrapper_script("sleep 999", "/workspace/.bampi/run/term-1.pid")
+
+    assert "set -m" in script
+    assert "printf '%s %s' \"$$\" \"$BAMPI_CHILD\" > /workspace/.bampi/run/term-1.pid" in script
+    assert 'kill -TERM -- "-$BAMPI_CHILD"' in script
+    assert "sleep 999" in script
+    assert "rm -f /workspace/.bampi/run/term-1.pid" in script
+
+
+@pytest.mark.asyncio
+async def test_safe_bash_background_session_logs_into_workspace(tmp_path: Path):
+    tool = SafeBashTool(
+        workspace_dir=str(tmp_path),
+        mode="local",
+        container_name="bampi-sandbox",
+        container_workdir="/workspace",
+        visible_workspace_root="/workspace",
+        container_shell="/bin/bash",
+        default_timeout=30.0,
+    )
+
+    start_result = await tool.execute(
+        "call-1",
+        {"action": "start", "command": "python3 -u -c 'print(\"ready\", flush=True)'"},
+    )
+
+    try:
+        display_path = start_result.details["full_output_path"]
+        assert display_path.startswith("/workspace/.bampi/logs/")
+        host_path = tmp_path / ".bampi" / "logs" / Path(display_path).name
+        assert host_path.exists()
+        assert "Log path: /workspace/.bampi/logs/" in start_result.content[0].text
+    finally:
+        await tool.close()
+
+
+@pytest.mark.asyncio
+async def test_safe_bash_running_notify_session_ids(tmp_path: Path):
+    tool = SafeBashTool(
+        workspace_dir=str(tmp_path),
+        mode="local",
+        container_name="bampi-sandbox",
+        container_workdir="/workspace",
+        visible_workspace_root="/workspace",
+        container_shell="/bin/bash",
+        default_timeout=30.0,
+    )
+
+    notify_result = await tool.execute(
+        "call-1",
+        {
+            "action": "start",
+            "command": "python3 -u -c 'import time; time.sleep(60)'",
+            "notify_on_exit": True,
+        },
+    )
+    await tool.execute(
+        "call-2",
+        {"action": "start", "command": "python3 -u -c 'import time; time.sleep(60)'"},
+    )
+    notify_session_id = notify_result.details["session_id"]
+
+    try:
+        assert tool.running_notify_session_ids() == [notify_session_id]
+
+        await tool.execute("call-3", {"action": "stop", "session_id": notify_session_id})
+        assert tool.running_notify_session_ids() == []
+    finally:
+        await tool.close()

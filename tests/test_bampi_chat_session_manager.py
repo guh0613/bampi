@@ -9,6 +9,7 @@ import pytest
 
 from bampi.plugins.bampi_chat.config import BampiChatConfig
 from bampi.plugins.bampi_chat.session_manager import GroupSessionManager
+from bampi.plugins.bampi_chat.tools.safe_bash import BackgroundSessionExitEvent, SafeBashTool
 
 
 class BlockingArchiveMemoryManager:
@@ -420,8 +421,24 @@ async def test_group_session_manager_close_idle_archives_in_background(tmp_path:
         await manager.close_all()
 
 
+def _make_exit_event(session_id: str = "term-1", *, notify_on_exit: bool = True) -> BackgroundSessionExitEvent:
+    return BackgroundSessionExitEvent(
+        session_id=session_id,
+        command="sleep 999",
+        cwd_display="/workspace",
+        returncode=0,
+        log_path=None,
+        output_text="done",
+        notify_on_exit=notify_on_exit,
+        total_output_bytes=4,
+    )
+
+
 @pytest.mark.asyncio
-async def test_group_session_manager_background_wait_prevents_idle_cleanup(tmp_path: Path):
+async def test_group_session_manager_running_notify_session_prevents_idle_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     config = BampiChatConfig(
         bampi_workspace_dir=str(tmp_path / "workspace"),
         bampi_session_dir=str(tmp_path / "sessions"),
@@ -429,16 +446,9 @@ async def test_group_session_manager_background_wait_prevents_idle_cleanup(tmp_p
     )
     manager = GroupSessionManager(config)
     managed = await manager.get_or_create("1001")
+    monkeypatch.setattr(SafeBashTool, "running_notify_session_ids", lambda self: ["term-1"])
 
     try:
-        registered = await manager.register_background_wait(
-            "1001",
-            "term-1",
-            owner_user_id="42",
-            callback=lambda event: None,
-        )
-        assert registered is True
-
         await manager.complete_interaction("1001")
         managed.last_used_at -= 120
         await manager.close_idle()
@@ -446,45 +456,67 @@ async def test_group_session_manager_background_wait_prevents_idle_cleanup(tmp_p
         recreated = await manager.get_or_create("1001")
         assert recreated.session is managed.session
         status = await manager.inspect_interaction("1001")
-        assert status.is_waiting_background is True
+        assert status.has_running_background is True
+        assert status.is_active is False
+    finally:
+        monkeypatch.setattr(SafeBashTool, "running_notify_session_ids", lambda self: [])
+        await manager.close_all()
+
+
+@pytest.mark.asyncio
+async def test_group_session_manager_background_exit_invokes_notify_handler(tmp_path: Path):
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+    )
+    manager = GroupSessionManager(config)
+    managed = await manager.get_or_create("1001")
+    handled: list[tuple[object, object]] = []
+
+    async def notify_handler(managed_session, event):  # noqa: ANN001
+        handled.append((managed_session, event))
+
+    manager.set_background_notify_handler(notify_handler)
+    managed.background_task_context["term-1"] = object()
+
+    try:
+        exit_event = _make_exit_event("term-1")
+        await manager._handle_background_session_exit("1001", exit_event)
+        await asyncio.sleep(0.05)
+
+        assert len(handled) == 1
+        assert handled[0][0] is managed
+        assert handled[0][1] is exit_event
+        assert "term-1" not in managed.background_task_context
     finally:
         await manager.close_all()
 
 
 @pytest.mark.asyncio
-async def test_group_session_manager_background_wait_emits_reminder(tmp_path: Path):
+async def test_group_session_manager_background_exit_ignores_non_notify_sessions(tmp_path: Path):
     config = BampiChatConfig(
         bampi_workspace_dir=str(tmp_path / "workspace"),
         bampi_session_dir=str(tmp_path / "sessions"),
     )
     manager = GroupSessionManager(config)
     await manager.get_or_create("1001")
-    reminders = []
+    handled: list[object] = []
+
+    manager.set_background_notify_handler(lambda managed, event: handled.append(event))
 
     try:
-        registered = await manager.register_background_wait(
+        await manager._handle_background_session_exit(
             "1001",
-            "term-1",
-            owner_user_id="42",
-            callback=lambda event: None,
-            command="sleep 999",
-            reminder_after_seconds=0.05,
-            reminder_callback=lambda event: reminders.append(event),
+            _make_exit_event("term-1", notify_on_exit=False),
         )
-        assert registered is True
-
-        await asyncio.sleep(0.08)
-
-        assert len(reminders) == 1
-        assert reminders[0].session_id == "term-1"
-        assert reminders[0].owner_user_id == "42"
-        assert reminders[0].command == "sleep 999"
+        await asyncio.sleep(0.05)
+        assert handled == []
     finally:
         await manager.close_all()
 
 
 @pytest.mark.asyncio
-async def test_group_session_manager_stop_interaction_clears_background_wait_and_cancels_reminder(
+async def test_group_session_manager_stop_interaction_stops_and_suppresses_notify_sessions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -493,33 +525,32 @@ async def test_group_session_manager_stop_interaction_clears_background_wait_and
         bampi_session_dir=str(tmp_path / "sessions"),
     )
     manager = GroupSessionManager(config)
-    await manager.get_or_create("1001")
-    reminders = []
+    managed = await manager.get_or_create("1001")
+    handled: list[object] = []
+    manager.set_background_notify_handler(lambda managed_session, event: handled.append(event))
+    managed.background_task_context["term-1"] = object()
 
     async def fake_stop_background_sessions(session, session_ids):  # noqa: ANN001
         del session
         return list(session_ids)
 
     monkeypatch.setattr(manager, "_stop_background_sessions", fake_stop_background_sessions)
+    monkeypatch.setattr(SafeBashTool, "running_notify_session_ids", lambda self: ["term-1"])
 
     try:
-        registered = await manager.register_background_wait(
-            "1001",
-            "term-1",
-            owner_user_id="42",
-            callback=lambda event: None,
-            reminder_after_seconds=0.2,
-            reminder_callback=lambda event: reminders.append(event),
-        )
-        assert registered is True
-
         result = await manager.stop_interaction("1001", reason="manual stop")
-        await asyncio.sleep(0.25)
 
-        assert result.stopped_background_waits is True
+        assert result.stopped_background_sessions is True
         assert result.stopped_background_session_ids == ["term-1"]
+        assert "term-1" not in managed.background_task_context
+
+        monkeypatch.setattr(SafeBashTool, "running_notify_session_ids", lambda self: [])
+        # The stopped session's exit event must be swallowed, not auto-resumed.
+        await manager._handle_background_session_exit("1001", _make_exit_event("term-1"))
+        await asyncio.sleep(0.05)
+        assert handled == []
+
         status = await manager.inspect_interaction("1001")
-        assert status.is_waiting_background is False
-        assert reminders == []
+        assert status.has_running_background is False
     finally:
         await manager.close_all()
