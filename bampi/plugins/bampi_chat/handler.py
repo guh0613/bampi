@@ -25,6 +25,12 @@ from bampy.ai.types import AssistantMessage, StopReason
 from bampy.app import AgentSession
 
 from .config import BampiChatConfig
+from .feedback import (
+    THRESHOLD_COMPACTION_NOTICE,
+    assess_failure,
+    build_background_failure_message,
+    build_reply_failure_message,
+)
 from .skills import (
     ExplicitSkillResolution,
     build_explicit_skill_payload_text,
@@ -330,7 +336,7 @@ class LiveProgressReporter:
         if self._compaction_notice_sent:
             return
         self._compaction_notice_sent = True
-        self._enqueue("上下文有点长，我先整理一下前面的聊天记录，再继续。")
+        self._enqueue(THRESHOLD_COMPACTION_NOTICE)
 
     def _handle_message_start(self) -> None:
         self._last_seen_text = ""
@@ -1081,7 +1087,7 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 media = await collect_incoming_media(bot, event, config, workspace_dir)
             except Exception:
                 logger.exception("bampi_chat failed to collect follow-up media")
-                await matcher.send("消息处理失败，请重试。")
+                await matcher.send("⚠️ 获取消息里的图片或文件失败，请重发一次。")
                 return
             explicit_skills = resolve_explicit_skills(
                 decision.cleaned_text,
@@ -1232,9 +1238,9 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                     )
                     try:
                         await managed.session.prompt(user_message, source="qq_group")
-                    except Exception:
+                    except Exception as exc:
                         logger.exception("bampi_chat session prompt failed")
-                        await matcher.send("本次回复失败，请重试。")
+                        await matcher.send(build_reply_failure_message(assess_failure(str(exc))))
                         return
 
                     managed.last_used_at = time.monotonic()
@@ -2042,7 +2048,7 @@ def create_background_exit_handler(
             bot = _resolve_background_bot(origin)
             try:
                 await session.continue_()
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     f"bampi_chat auto-resume failed group_id={group_id} "
                     f"session_id={exit_event.session_id}"
@@ -2054,7 +2060,7 @@ def create_background_exit_handler(
                         message=build_group_reply_message(
                             config=config,
                             target=target,
-                            text="后台任务已结束，但后续处理失败。可以发送新消息继续。",
+                            text=build_background_failure_message(assess_failure(str(exc))),
                         ),
                     )
                 return
@@ -2129,7 +2135,7 @@ async def send_background_agent_response(
                 message=build_group_reply_message(
                     config=config,
                     target=target,
-                    text="后续处理失败，可以发送新消息继续。",
+                    text=build_background_failure_message(assess_failure(error_message)),
                 ),
             )
             return ResponseDispatchResult(delivered=False, rollback_context=True)
@@ -2280,7 +2286,7 @@ async def send_agent_response(
                 f"stop_reason={stop_reason} "
                 f"error={log_preview(error_message)!r}"
             )
-            await matcher.send("本次回复失败，请重试。")
+            await matcher.send(build_reply_failure_message(assess_failure(error_message)))
             return ResponseDispatchResult(delivered=False, rollback_context=True)
         if streamed_any_text:
             logger.info(
@@ -2295,7 +2301,7 @@ async def send_agent_response(
             f"group_id={event.group_id} "
             f"message_id={event.message_id}"
         )
-        await matcher.send("本次未生成回复内容，请换个说法重试。")
+        await matcher.send("⚠️ 这次没有生成可发送的内容，请换个说法再试一次。")
         return ResponseDispatchResult(delivered=False, rollback_context=True)
 
     message = Message()

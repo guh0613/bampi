@@ -273,7 +273,7 @@ async def test_live_progress_reporter_sends_threshold_compaction_notice_even_wit
     action, params = bot.calls[0]
     assert action == "send_group_msg"
     assert params["group_id"] == 1001
-    assert str(params["message"]) == "[CQ:reply,id=99]上下文有点长，我先整理一下前面的聊天记录，再继续。"
+    assert str(params["message"]) == "[CQ:reply,id=99]🧹 上下文长度接近上限，正在自动压缩前文，完成后继续。"
 
 
 @pytest.mark.asyncio
