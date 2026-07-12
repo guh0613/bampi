@@ -206,6 +206,13 @@ dependencies = [
     { name = "sqlite-vec" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "bampy", extra = ["all-providers"] },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.5" },
@@ -221,6 +228,13 @@ requires-dist = [
     { name = "openai", specifier = ">=1.0" },
     { name = "pymdown-extensions", specifier = ">=10.21.2" },
     { name = "sqlite-vec", specifier = ">=0.1.9" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "bampy", extras = ["all-providers"], editable = "bampy" },
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
 ]
 
 [[package]]
