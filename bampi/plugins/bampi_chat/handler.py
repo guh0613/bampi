@@ -133,6 +133,9 @@ TOOL_PROGRESS_EMOJIS: dict[str, str] = {
     "memory_manage": "🧠",
 }
 
+# 本身就是即时轻量互动的工具，群里不播报"正在调用"
+SILENT_PROGRESS_TOOLS = frozenset({"qq_react"})
+
 STOP_COMMAND = "/stop"
 CLEAR_COMMANDS = {"/clear", "/new"}
 COMPACT_COMMAND = "/compact"
@@ -426,6 +429,8 @@ class LiveProgressReporter:
         self._enqueue(format_skill_load_message(skill_names))
 
     def _handle_tool_start(self, event: Any) -> None:
+        if getattr(event, "tool_name", "") in SILENT_PROGRESS_TOOLS:
+            return
         limit = self._config.bampi_live_progress_max_tool_updates
         if limit > 0 and self._tool_updates_sent >= limit:
             return

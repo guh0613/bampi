@@ -2336,3 +2336,35 @@ async def test_reaction_notice_ignores_removed_reactions(tmp_path: Path, monkeyp
     await reaction_handler(bot, event)
 
     assert buffer.added == []
+
+
+@pytest.mark.asyncio
+async def test_live_progress_reporter_stays_silent_for_qq_react_tool():
+    bot = FakeBot()
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
+    config = BampiChatConfig(bampi_live_progress_enabled=True)
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
+    session = FakeSession()
+
+    reporter.start(session)
+    assert session.listener is not None
+    session.listener(
+        SimpleNamespace(
+            type="tool_execution_start",
+            tool_name="qq_react",
+            tool_call_id="call-1",
+            args={"action": "emoji", "emoji": "赞"},
+        )
+    )
+    session.listener(
+        SimpleNamespace(
+            type="tool_execution_end",
+            tool_name="qq_react",
+            tool_call_id="call-1",
+            is_error=False,
+        )
+    )
+    await reporter.prepare_final_reply()
+    await reporter.close()
+
+    assert bot.calls == []
