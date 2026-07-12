@@ -21,6 +21,7 @@ from .prompt import build_system_prompt
 from .service_manager import ServiceManager
 from .skills import build_prompt_skills, load_chat_skills
 from .tools import create_agent_tools
+from .tools.qq_react import QQTurnContext
 from .tools.safe_bash import BackgroundSessionExitEvent, SafeBashTool
 from .tools.workspace import (
     cleanup_stale_group_workspaces,
@@ -122,6 +123,7 @@ class GroupSessionManager:
         self._workspace_cleanup_task: asyncio.Task[None] | None = None
         self._workspace_cleanup_lock = asyncio.Lock()
         self._memory_turn_states: dict[str, MemoryTurnState] = {}
+        self._qq_turn_contexts: dict[str, QQTurnContext] = {}
         if config.bampi_service_enabled and config.bampi_bash_mode == "docker":
             self._service_manager = ServiceManager.from_config(config)
         logger.info(
@@ -280,6 +282,29 @@ class GroupSessionManager:
             current_nickname=normalized_nickname,
             participants=dict(managed.memory_participants),
         )
+
+    def set_qq_turn_context(
+        self,
+        group_id: str,
+        *,
+        bot_self_id: str,
+        user_id: str,
+        message_id: int | None,
+    ) -> None:
+        """记录当前轮次的触发消息，供 qq_react 工具定位互动目标。"""
+        self._qq_turn_contexts[group_id] = QQTurnContext(
+            bot_self_id=str(bot_self_id),
+            group_id=str(group_id),
+            user_id=str(user_id),
+            message_id=message_id,
+        )
+
+    def clear_qq_turn_context(self, group_id: str) -> None:
+        """清除轮次上下文；定时/后台恢复轮次没有可互动的触发消息。"""
+        self._qq_turn_contexts.pop(group_id, None)
+
+    def qq_turn_context(self, group_id: str) -> QQTurnContext | None:
+        return self._qq_turn_contexts.get(group_id)
 
     async def get_or_create(self, group_id: str) -> ManagedGroupSession:
         await self.close_idle()
@@ -552,6 +577,7 @@ class GroupSessionManager:
             service_manager=self._service_manager,
             schedule_manager=self._schedule_manager,
             include_schedule=include_schedule,
+            qq_turn_context_provider=lambda group_id=group_id: self.qq_turn_context(group_id),
         )
         tool_names = [tool.name for tool in tools]
         loaded_skills = load_chat_skills(workspace_dir)

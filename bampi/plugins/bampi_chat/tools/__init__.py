@@ -10,6 +10,7 @@ from .files import (
     WorkspaceWriteTool,
 )
 from .memory import MemoryManageTool, MemoryOpenTool, MemorySearchTool, MemoryTimeSearchTool
+from .qq_react import QQReactTool, QQTurnContext, QQTurnContextProvider
 from .schedule import ScheduleTool
 from .service import ServiceTool
 from .safe_bash import SafeBashTool
@@ -29,6 +30,7 @@ def create_agent_tools(
     service_manager=None,
     schedule_manager=None,
     include_schedule: bool = True,
+    qq_turn_context_provider: QQTurnContextProvider | None = None,
 ) -> list[object]:
     effective_container_root = container_root or config.bampi_bash_container_workdir
     effective_bash_workdir = bash_workdir or effective_container_root
@@ -126,4 +128,6 @@ def create_agent_tools(
                 group_id=group_id,
             )
         )
+    if config.bampi_qq_react_tool_enabled and qq_turn_context_provider is not None:
+        tools.append(QQReactTool(context_provider=qq_turn_context_provider))
     return tools

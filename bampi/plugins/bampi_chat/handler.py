@@ -8,7 +8,7 @@ import re
 import shutil
 import time
 import uuid
-from collections import Counter, deque
+from collections import Counter, OrderedDict, deque
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable, Protocol
@@ -16,9 +16,9 @@ from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
 from nonebot import get_bot, get_driver, logger
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageSegment
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageSegment, NoticeEvent, PokeNotifyEvent
 from nonebot.matcher import Matcher
-from nonebot.plugin import on_message
+from nonebot.plugin import on_message, on_notice
 
 from bampy.ai import ImageContent, TextContent, UserMessage
 from bampy.ai.types import AssistantMessage, StopReason
@@ -27,6 +27,7 @@ from bampy.app import AgentSession
 from .config import BampiChatConfig
 from .feedback import (
     THRESHOLD_COMPACTION_NOTICE,
+    FailureAssessment,
     assess_failure,
     build_background_failure_message,
     build_reply_failure_message,
@@ -43,6 +44,17 @@ from .skills import (
     parse_skill_command,
     resolve_explicit_skills,
     strip_explicit_skill_mentions,
+)
+from .message_render import (
+    MentionNameCache,
+    NameResolver,
+    collect_mention_names,
+    describe_reaction_emojis,
+    extract_poke_action_texts,
+    message_mentions_user,
+    render_event_text,
+    render_message_text,
+    resolve_member_display_name,
 )
 from .session_manager import GroupSessionManager, ManagedGroupSession
 from .tools.safe_bash import BackgroundSessionExitEvent
@@ -146,6 +158,35 @@ class GroupReplyTarget:
     reply_message_id: int | None = None
 
 
+def reply_target_for_event(event: GroupMessageEvent) -> GroupReplyTarget:
+    return GroupReplyTarget(
+        group_id=int(event.group_id),
+        user_id=int(event.user_id),
+        reply_message_id=int(event.message_id),
+    )
+
+
+def update_qq_turn_context(
+    session_manager: GroupSessionManager,
+    group_id: str,
+    *,
+    bot_self_id: str,
+    user_id: str,
+    message_id: int | None,
+) -> None:
+    """记录本轮触发消息，供 qq_react 工具定位贴表情/戳一戳目标。"""
+    setter = getattr(session_manager, "set_qq_turn_context", None)
+    if callable(setter):
+        setter(group_id, bot_self_id=bot_self_id, user_id=user_id, message_id=message_id)
+
+
+def clear_qq_turn_context(session_manager: GroupSessionManager, group_id: str) -> None:
+    """清除轮次上下文；定时/后台恢复轮次没有可互动的触发消息。"""
+    clearer = getattr(session_manager, "clear_qq_turn_context", None)
+    if callable(clearer):
+        clearer(group_id)
+
+
 class PlaintextEvent(Protocol):
     to_me: bool
     reply: Any
@@ -170,6 +211,35 @@ class GroupRateLimiter:
             return False
         bucket.append(now)
         return True
+
+
+class GroupReactionBuffer:
+    """暂存贴表情（表情回应）事件，随下一轮交互作为上下文交给模型。"""
+
+    def __init__(self, *, ttl_seconds: float = 30 * 60, max_per_group: int = 10) -> None:
+        self._ttl = ttl_seconds
+        self._max_per_group = max_per_group
+        self._buckets: dict[str, OrderedDict[str, tuple[float, str]]] = {}
+
+    def add(self, group_id: str, *, dedupe_key: str, note: str) -> None:
+        bucket = self._buckets.setdefault(group_id, OrderedDict())
+        bucket.pop(dedupe_key, None)
+        bucket[dedupe_key] = (time.monotonic(), note)
+        self._prune(bucket)
+
+    def drain(self, group_id: str) -> list[str]:
+        bucket = self._buckets.pop(group_id, None)
+        if not bucket:
+            return []
+        now = time.monotonic()
+        return [note for created_at, note in bucket.values() if now - created_at < self._ttl]
+
+    def _prune(self, bucket: "OrderedDict[str, tuple[float, str]]") -> None:
+        now = time.monotonic()
+        for key in [key for key, (created_at, _) in bucket.items() if now - created_at >= self._ttl]:
+            del bucket[key]
+        while len(bucket) > self._max_per_group:
+            bucket.popitem(last=False)
 
 
 def is_group_allowed(group_id: str, config: BampiChatConfig) -> bool:
@@ -216,11 +286,11 @@ class LiveProgressReporter:
         self,
         *,
         bot: Bot,
-        event: GroupMessageEvent,
+        target: GroupReplyTarget,
         config: BampiChatConfig,
     ) -> None:
         self._bot = bot
-        self._event = event
+        self._target = target
         self._config = config
         self._live_progress_enabled = config.bampi_live_progress_enabled
         self._compaction_notice_enabled = config.bampi_threshold_compaction_notice_enabled
@@ -280,12 +350,12 @@ class LiveProgressReporter:
                 if item is None:
                     return
                 message = Message()
-                if item.quote:
-                    message += MessageSegment.reply(self._event.message_id)
+                if item.quote and self._target.reply_message_id is not None:
+                    message += MessageSegment.reply(self._target.reply_message_id)
                 message += MessageSegment.text(item.text)
                 response = await self._bot.call_api(
                     "send_group_msg",
-                    group_id=self._event.group_id,
+                    group_id=self._target.group_id,
                     message=message,
                 )
                 if item.tool_call_id:
@@ -298,8 +368,8 @@ class LiveProgressReporter:
                     self._mark_tool_notice_send_failed(item.tool_call_id)
                 logger.exception(
                     f"bampi_chat failed to send live progress "
-                    f"group_id={self._event.group_id} "
-                    f"message_id={self._event.message_id}"
+                    f"group_id={self._target.group_id} "
+                    f"message_id={self._target.reply_message_id}"
                 )
             finally:
                 self._queue.task_done()
@@ -437,8 +507,8 @@ class LiveProgressReporter:
         prefix_len = longest_common_prefix_len(self._last_seen_text, current_text)
         logger.warning(
             f"bampi_chat live text stream desynced "
-            f"group_id={self._event.group_id} "
-            f"message_id={self._event.message_id} "
+            f"group_id={self._target.group_id} "
+            f"message_id={self._target.reply_message_id} "
             f"last_seen={log_preview(self._last_seen_text)!r} "
             f"current={log_preview(current_text)!r} "
             f"common_prefix={prefix_len}"
@@ -500,8 +570,8 @@ class LiveProgressReporter:
         elif notice.should_recall and notice.sent_at > 0 and not notice.send_failed:
             logger.warning(
                 f"bampi_chat cannot recall tool progress without message_id "
-                f"group_id={self._event.group_id} "
-                f"message_id={self._event.message_id} "
+                f"group_id={self._target.group_id} "
+                f"message_id={self._target.reply_message_id} "
                 f"tool_call_id={tool_call_id}"
             )
         self._tool_notices.pop(tool_call_id, None)
@@ -530,8 +600,8 @@ class LiveProgressReporter:
             if exc is not None:
                 logger.error(
                     f"bampi_chat tool progress recall task failed "
-                    f"group_id={self._event.group_id} "
-                    f"message_id={self._event.message_id} "
+                    f"group_id={self._target.group_id} "
+                    f"message_id={self._target.reply_message_id} "
                     f"tool_call_id={tool_call_id} "
                     f"error={exc!r}"
                 )
@@ -555,8 +625,8 @@ class LiveProgressReporter:
         await self._bot.call_api("delete_msg", message_id=message_id)
         logger.info(
             f"bampi_chat recalled failed tool progress "
-            f"group_id={self._event.group_id} "
-            f"message_id={self._event.message_id} "
+            f"group_id={self._target.group_id} "
+            f"message_id={self._target.reply_message_id} "
             f"tool_call_id={tool_call_id} "
             f"recalled_message_id={message_id}"
         )
@@ -929,6 +999,8 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
         config.bampi_rate_limit,
         config.bampi_rate_limit_window_seconds,
     )
+    mention_cache = MentionNameCache()
+    reaction_buffer = GroupReactionBuffer()
     set_background_notify_handler = getattr(session_manager, "set_background_notify_handler", None)
     if callable(set_background_notify_handler):
         set_background_notify_handler(create_background_exit_handler(config, session_manager))
@@ -1061,11 +1133,22 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
             return
 
         active_status = await session_manager.inspect_interaction(group_id)
+        try:
+            mention_names = await collect_mention_names(
+                bot,
+                group_id=group_id,
+                messages=(event.message, getattr(event.reply, "message", None)),
+                cache=mention_cache,
+            )
+        except Exception:
+            logger.exception("bampi_chat failed to collect mention names")
+            mention_names = {}
         decision = should_respond(
             event,
             bot_self_id=str(bot.self_id),
             config=config,
             random_value=random.random(),
+            resolve_name=mention_names.get,
         )
         if not decision.should_respond:
             logger.info(
@@ -1102,6 +1185,8 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 media,
                 workspace_dir=workspace_dir,
                 explicit_skills=explicit_skills,
+                resolve_name=mention_names.get,
+                reaction_notes=reaction_buffer.drain(group_id) or None,
             )
             prepare_memory_turn = getattr(session_manager, "prepare_memory_for_user_turn", None)
             if active_status.managed is not None and callable(prepare_memory_turn):
@@ -1111,6 +1196,13 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                     nickname=display_name(event.sender),
                     message=user_message,
                 )
+            update_qq_turn_context(
+                session_manager,
+                group_id,
+                bot_self_id=str(bot.self_id),
+                user_id=user_id,
+                message_id=int(event.message_id),
+            )
             active_status.managed.session.steer(user_message)
             return
 
@@ -1187,6 +1279,8 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 media,
                 workspace_dir=workspace_dir,
                 explicit_skills=explicit_skills,
+                resolve_name=mention_names.get,
+                reaction_notes=reaction_buffer.drain(group_id) or None,
             )
             prepare_memory_turn = getattr(session_manager, "prepare_memory_for_user_turn", None)
             if callable(prepare_memory_turn):
@@ -1196,6 +1290,13 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                     nickname=display_name(event.sender),
                     message=user_message,
                 )
+            update_qq_turn_context(
+                session_manager,
+                group_id,
+                bot_self_id=str(bot.self_id),
+                user_id=user_id,
+                message_id=int(event.message_id),
+            )
 
             if reservation.action == "steer":
                 managed.session.steer(user_message)
@@ -1226,7 +1327,7 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                         reply_message_id=int(event.message_id),
                     ),
                 )
-                reporter = LiveProgressReporter(bot=bot, event=event, config=config)
+                reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
                 reporter.start(managed.session)
                 if explicit_skills.skills:
                     reporter.announce_skill_loading([skill.name for skill in explicit_skills.skills])
@@ -1274,6 +1375,88 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
             if reservation.action == "start":
                 await session_manager.complete_interaction(group_id)
 
+    poke_matcher = on_notice(priority=10, block=False)
+
+    @poke_matcher.handle()
+    async def _handle_group_poke(bot: Bot, event: PokeNotifyEvent) -> None:
+        if not config.bampi_enabled or not config.bampi_poke_reply_enabled:
+            return
+        if event.group_id is None:
+            return
+        if str(event.target_id) != str(bot.self_id) or str(event.user_id) == str(bot.self_id):
+            return
+        group_id = str(event.group_id)
+        if not is_group_allowed(group_id, config):
+            return
+        user_id = str(event.user_id)
+        status = await session_manager.inspect_interaction(group_id)
+        if status.is_active:
+            logger.info(
+                f"bampi_chat ignored poke during active interaction group_id={group_id} "
+                f"user_id={user_id}"
+            )
+            return
+        if not limiter.allow(group_id):
+            logger.info(f"bampi_chat poke rate limited group_id={group_id} user_id={user_id}")
+            return
+        action, suffix = extract_poke_action_texts(getattr(event, "raw_info", None))
+        sender_name = (
+            await resolve_member_display_name(bot, group_id=group_id, user_id=user_id, cache=mention_cache)
+            or "unknown-user"
+        )
+        logger.info(
+            f"bampi_chat poke triggered group_id={group_id} user_id={user_id} "
+            f"action={action!r} suffix={suffix!r}"
+        )
+        await run_poke_reply_turn(
+            bot=bot,
+            config=config,
+            session_manager=session_manager,
+            group_id=group_id,
+            user_id=user_id,
+            sender_name=sender_name,
+            action=action,
+            suffix=suffix,
+            reaction_notes=reaction_buffer.drain(group_id) or None,
+        )
+
+    reaction_matcher = on_notice(priority=10, block=False)
+
+    @reaction_matcher.handle()
+    async def _handle_group_emoji_reaction(bot: Bot, event: NoticeEvent) -> None:
+        if not config.bampi_enabled or not config.bampi_reaction_context_enabled:
+            return
+        if getattr(event, "notice_type", "") != "group_msg_emoji_like":
+            return
+        if getattr(event, "is_add", True) is False:
+            return
+        group_id = str(getattr(event, "group_id", "") or "")
+        user_id = str(getattr(event, "user_id", "") or "")
+        message_id = getattr(event, "message_id", None)
+        if not group_id or not user_id or message_id is None:
+            return
+        if user_id == str(bot.self_id) or not is_group_allowed(group_id, config):
+            return
+        try:
+            note = await build_reaction_note(
+                bot=bot,
+                group_id=group_id,
+                user_id=user_id,
+                message_id=message_id,
+                likes=getattr(event, "likes", None),
+                cache=mention_cache,
+            )
+        except Exception:
+            logger.exception("bampi_chat failed to build reaction note")
+            return
+        if note is None:
+            return
+        reaction_buffer.add(group_id, dedupe_key=f"{message_id}:{user_id}", note=note)
+        logger.info(
+            f"bampi_chat buffered reaction group_id={group_id} user_id={user_id} "
+            f"message_id={message_id} note={log_preview(note)!r}"
+        )
+
 
 def should_respond(
     event: PlaintextEvent,
@@ -1281,15 +1464,19 @@ def should_respond(
     bot_self_id: str,
     config: BampiChatConfig,
     random_value: float,
+    resolve_name: NameResolver | None = None,
 ) -> TriggerDecision:
     if not config.bampi_enabled:
         return TriggerDecision(False)
 
-    text = normalize_text(event.get_plaintext())
+    text = normalize_text(render_event_text(event, resolve_name=resolve_name))
     reply_to_bot = is_reply_to_bot(event.reply, bot_self_id)
 
     if bool(getattr(event, "to_me", False)) or reply_to_bot:
         return TriggerDecision(True, reason="to_me", direct=True, cleaned_text=text)
+
+    if message_mentions_user(getattr(event, "message", None), bot_self_id):
+        return TriggerDecision(True, reason="mention", direct=True, cleaned_text=text)
 
     prefix = matched_prefix(text, config.bampi_trigger_prefix)
     if prefix is not None:
@@ -1316,16 +1503,14 @@ def normalize_text(text: str | None) -> str:
     return " ".join((text or "").split())
 
 
-def extract_message_plaintext(message: Any) -> str:
+def extract_message_text(message: Any, *, resolve_name: NameResolver | None = None) -> str:
     if message is None:
         return ""
-    extractor = getattr(message, "extract_plain_text", None)
-    if callable(extractor):
-        try:
-            return normalize_text(extractor())
-        except Exception:
-            logger.warning("bampi_chat failed to extract plain text from message object")
-    return normalize_text(str(message))
+    try:
+        return normalize_text(render_message_text(message, resolve_name=resolve_name))
+    except Exception:
+        logger.warning("bampi_chat failed to render message text")
+        return normalize_text(str(message))
 
 
 def extract_segment_filename(segment: MessageSegment) -> str | None:
@@ -1424,6 +1609,8 @@ def build_user_message(
     *,
     workspace_dir: str | None = None,
     explicit_skills: ExplicitSkillResolution | None = None,
+    resolve_name: NameResolver | None = None,
+    reaction_notes: list[str] | None = None,
 ) -> UserMessage:
     effective_text = explicit_skills.cleaned_text if explicit_skills is not None else cleaned_text
     sender_name = display_name(event.sender)
@@ -1443,7 +1630,7 @@ def build_user_message(
 
     if event.reply is not None and getattr(event.reply, "sender", None) is not None:
         reply_name = display_name(event.reply.sender)
-        reply_text = extract_message_plaintext(getattr(event.reply, "message", None))
+        reply_text = extract_message_text(getattr(event.reply, "message", None), resolve_name=resolve_name)
         lines.append(f"reply_to_name: {reply_name}")
         if reply_text:
             lines.append(f"reply_message: {reply_text}")
@@ -1468,6 +1655,9 @@ def build_user_message(
     if media.reply_notes:
         lines.append("reply_media_notes:")
         lines.extend(f"- {note}" for note in media.reply_notes)
+    if reaction_notes:
+        lines.append("recent_reactions:")
+        lines.extend(f"- {note}" for note in reaction_notes)
 
     content: list[TextContent | ImageContent] = [TextContent(text="\n".join(lines))]
     if explicit_skills is not None and explicit_skills.skills:
@@ -1916,13 +2106,161 @@ async def _send_group_message_via_bot(
     )
 
 
+def build_poke_user_message(
+    *,
+    sender_name: str,
+    user_id: str,
+    action: str,
+    suffix: str,
+    reaction_notes: list[str] | None = None,
+) -> UserMessage:
+    lines = [
+        f"sender_name: {sender_name}({user_id})",
+        f"message_text: ({action}你{suffix})",
+    ]
+    if reaction_notes:
+        lines.append("recent_reactions:")
+        lines.extend(f"- {note}" for note in reaction_notes)
+    return UserMessage(content=[TextContent(text="\n".join(lines))])
+
+
+async def build_reaction_note(
+    *,
+    bot: Bot,
+    group_id: str,
+    user_id: str,
+    message_id: Any,
+    likes: Any,
+    cache: MentionNameCache,
+) -> str | None:
+    """为贴在 bot 消息上的表情回应生成上下文说明；非 bot 消息返回 None。"""
+    emoji_text = describe_reaction_emojis(likes)
+    if not emoji_text:
+        return None
+    try:
+        info = await bot.call_api("get_msg", message_id=int(message_id))
+    except Exception as exc:
+        logger.debug(
+            f"bampi_chat reaction get_msg failed group_id={group_id} "
+            f"message_id={message_id} error={exc}"
+        )
+        return None
+    if not isinstance(info, dict):
+        return None
+    sender = info.get("sender")
+    sender_id = sender.get("user_id") if isinstance(sender, dict) else None
+    if sender_id is None or str(sender_id) != str(bot.self_id):
+        return None
+    preview = normalize_text(render_message_text(info.get("message")))
+    if len(preview) > 40:
+        preview = preview[:39] + "…"
+    reactor = await resolve_member_display_name(bot, group_id=group_id, user_id=user_id, cache=cache)
+    reactor_label = f"{reactor}({user_id})" if reactor else user_id
+    quoted = f"「{preview}」" if preview else ""
+    return f"{reactor_label} 给你的消息{quoted}贴了表情 {emoji_text}"
+
+
+async def run_poke_reply_turn(
+    *,
+    bot: Bot,
+    config: BampiChatConfig,
+    session_manager: GroupSessionManager,
+    group_id: str,
+    user_id: str,
+    sender_name: str,
+    action: str,
+    suffix: str,
+    reaction_notes: list[str] | None = None,
+) -> None:
+    """戳一戳 bot 时以完整 agent 交互回应（无引用目标，仅按配置 @ 发起者）。"""
+    try:
+        reservation = await session_manager.reserve_interaction(group_id, user_id)
+    except Exception:
+        logger.exception("bampi_chat failed to reserve session for poke")
+        return
+    if reservation.action != "start":
+        logger.info(
+            f"bampi_chat skipped poke reservation group_id={group_id} "
+            f"user_id={user_id} action={reservation.action}"
+        )
+        return
+    managed = reservation.managed
+    workspace_dir = session_manager.workspace_dir_for_group(group_id)
+    target = GroupReplyTarget(group_id=int(group_id), user_id=int(user_id))
+    try:
+        user_message = build_poke_user_message(
+            sender_name=sender_name,
+            user_id=user_id,
+            action=action,
+            suffix=suffix,
+            reaction_notes=reaction_notes,
+        )
+        prepare_memory_turn = getattr(session_manager, "prepare_memory_for_user_turn", None)
+        if callable(prepare_memory_turn):
+            prepare_memory_turn(managed, user_id=user_id, nickname=sender_name, message=user_message)
+        update_qq_turn_context(
+            session_manager,
+            group_id,
+            bot_self_id=str(bot.self_id),
+            user_id=user_id,
+            message_id=None,
+        )
+        outbox_before = snapshot_outbox(workspace_dir)
+        async with managed.lock:
+            managed.last_used_at = time.monotonic()
+            unsubscribe_background_origin = subscribe_background_task_origins(
+                managed,
+                origin=BackgroundTaskOrigin(bot_self_id=str(bot.self_id), user_id=int(user_id)),
+            )
+            reporter = LiveProgressReporter(bot=bot, target=target, config=config)
+            reporter.start(managed.session)
+            try:
+                try:
+                    await managed.session.prompt(user_message, source="qq_group")
+                except Exception as exc:
+                    logger.exception("bampi_chat poke prompt failed")
+                    await _send_group_message_via_bot(
+                        bot=bot,
+                        target=target,
+                        message=build_group_reply_message(
+                            config=config,
+                            target=target,
+                            text=build_reply_failure_message(assess_failure(str(exc))),
+                        ),
+                    )
+                    return
+                managed.last_used_at = time.monotonic()
+                await reporter.prepare_final_reply()
+                assistant_message = find_last_assistant_message(managed.session.messages)
+                await send_agent_response_to_target(
+                    bot=bot,
+                    target=target,
+                    config=config,
+                    workspace_dir=workspace_dir,
+                    assistant_message=assistant_message,
+                    outbox_before=outbox_before,
+                    streamed_text=reporter.streamed_text,
+                    streamed_any_text=reporter.streamed_any_text,
+                    log_label="poke",
+                    failure_message_builder=build_reply_failure_message,
+                    empty_reply_text=None,
+                )
+            finally:
+                unsubscribe_background_origin()
+                await reporter.close()
+    except Exception:
+        logger.exception("bampi_chat failed to deliver poke reply")
+    finally:
+        await session_manager.complete_interaction(group_id)
+
+
 @dataclass(slots=True)
 class BackgroundTaskOrigin:
     """Reply metadata for a notify_on_exit session: who asked, and where."""
 
     bot_self_id: str
     user_id: int
-    reply_message_id: int
+    reply_message_id: int | None = None
 
 
 def subscribe_background_task_origins(
@@ -2039,6 +2377,7 @@ def create_background_exit_handler(
                 # while we waited for the lock.
                 return
             managed.last_used_at = time.monotonic()
+            clear_qq_turn_context(session_manager, group_id)
             outbox_before = snapshot_outbox(workspace_dir)
             logger.info(
                 f"bampi_chat auto-resume start group_id={group_id} "
@@ -2072,7 +2411,7 @@ def create_background_exit_handler(
                 )
                 return
             assistant_message = find_last_assistant_message(session.messages)
-            await send_background_agent_response(
+            await send_agent_response_to_target(
                 bot=bot,
                 target=target,
                 config=config,
@@ -2084,7 +2423,7 @@ def create_background_exit_handler(
     return _handle
 
 
-async def send_background_agent_response(
+async def send_agent_response_to_target(
     *,
     bot: Bot,
     target: GroupReplyTarget,
@@ -2095,6 +2434,9 @@ async def send_background_agent_response(
     streamed_text: str = "",
     streamed_any_text: bool = False,
     text_prefix: str = "",
+    log_label: str = "auto-resume",
+    failure_message_builder: Callable[[FailureAssessment], str] = build_background_failure_message,
+    empty_reply_text: str | None = "后续处理完成，无新内容可回复。可以发送新消息继续。",
 ) -> ResponseDispatchResult:
     full_text = extract_text_blocks(assistant_message)
     text = strip_streamed_prefix(full_text, streamed_text)
@@ -2105,7 +2447,7 @@ async def send_background_agent_response(
     stop_reason = getattr(assistant_message, "stop_reason", None)
     error_message = normalize_text(getattr(assistant_message, "error_message", None))
     logger.info(
-        f"bampi_chat preparing auto-resume reply group_id={target.group_id} "
+        f"bampi_chat preparing {log_label} reply group_id={target.group_id} "
         f"reply_message_id={target.reply_message_id} "
         f"text={log_preview(text)!r} "
         f"files={[path.name for path in files]} "
@@ -2115,7 +2457,7 @@ async def send_background_agent_response(
 
     if stop_reason in {StopReason.ABORTED, "aborted"}:
         logger.info(
-            f"bampi_chat skipped aborted auto-resume reply group_id={target.group_id} "
+            f"bampi_chat skipped aborted {log_label} reply group_id={target.group_id} "
             f"reply_message_id={target.reply_message_id}"
         )
         return ResponseDispatchResult(delivered=False, rollback_context=True)
@@ -2123,7 +2465,7 @@ async def send_background_agent_response(
     if not text and not files:
         if error_message:
             logger.warning(
-                f"bampi_chat auto-resume returned no deliverable content "
+                f"bampi_chat {log_label} returned no deliverable content "
                 f"group_id={target.group_id} "
                 f"reply_message_id={target.reply_message_id} "
                 f"stop_reason={stop_reason} "
@@ -2135,32 +2477,33 @@ async def send_background_agent_response(
                 message=build_group_reply_message(
                     config=config,
                     target=target,
-                    text=build_background_failure_message(assess_failure(error_message)),
+                    text=failure_message_builder(assess_failure(error_message)),
                 ),
             )
             return ResponseDispatchResult(delivered=False, rollback_context=True)
         if streamed_any_text:
             logger.info(
-                f"bampi_chat auto-resume fully covered by live stream "
+                f"bampi_chat {log_label} fully covered by live stream "
                 f"group_id={target.group_id} "
                 f"reply_message_id={target.reply_message_id}"
             )
             return ResponseDispatchResult(delivered=True, rollback_context=False)
 
         logger.warning(
-            f"bampi_chat auto-resume returned empty content "
+            f"bampi_chat {log_label} returned empty content "
             f"group_id={target.group_id} "
             f"reply_message_id={target.reply_message_id}"
         )
-        await _send_group_message_via_bot(
-            bot=bot,
-            target=target,
-            message=build_group_reply_message(
-                config=config,
+        if empty_reply_text:
+            await _send_group_message_via_bot(
+                bot=bot,
                 target=target,
-                text="后续处理完成，无新内容可回复。可以发送新消息继续。",
-            ),
-        )
+                message=build_group_reply_message(
+                    config=config,
+                    target=target,
+                    text=empty_reply_text,
+                ),
+            )
         return ResponseDispatchResult(delivered=False, rollback_context=True)
 
     message = build_group_reply_message(
@@ -2183,7 +2526,7 @@ async def send_background_agent_response(
                 message += MessageSegment.image(prepared_image.source)
                 sent_image_count += 1
             except Exception:
-                logger.exception(f"failed to prepare auto-resume outbox image: {path}")
+                logger.exception(f"failed to prepare {log_label} outbox image: {path}")
                 failed_artifacts.append(path.name)
 
         if message:
@@ -2193,7 +2536,7 @@ async def send_background_agent_response(
                 message=message,
             )
             logger.info(
-                f"bampi_chat auto-resume reply sent group_id={target.group_id} "
+                f"bampi_chat {log_label} reply sent group_id={target.group_id} "
                 f"reply_message_id={target.reply_message_id} "
                 f"has_text={bool(text)} "
                 f"image_count={sent_image_count}"
@@ -2214,10 +2557,10 @@ async def send_background_agent_response(
                     file=upload.file_uri,
                     name=path.name,
                 )
-                logger.info(f"bampi_chat auto-resume uploaded outbox file group_id={target.group_id} path={path}")
+                logger.info(f"bampi_chat {log_label} uploaded outbox file group_id={target.group_id} path={path}")
                 uploaded_files.append(path)
             except Exception:
-                logger.exception(f"failed to upload auto-resume outbox file: {path}")
+                logger.exception(f"failed to upload {log_label} outbox file: {path}")
                 failed_artifacts.append(path.name)
         if failed_artifacts:
             await _send_group_message_via_bot(
@@ -2234,12 +2577,12 @@ async def send_background_agent_response(
             try:
                 path.unlink(missing_ok=True)
             except OSError:
-                logger.warning(f"failed to cleanup auto-resume outbox file: {path}")
+                logger.warning(f"failed to cleanup {log_label} outbox file: {path}")
         for staged_path in staged_upload_files:
             try:
                 staged_path.unlink(missing_ok=True)
             except OSError:
-                logger.warning(f"failed to cleanup auto-resume staged upload file: {staged_path}")
+                logger.warning(f"failed to cleanup {log_label} staged upload file: {staged_path}")
     return ResponseDispatchResult(delivered=True, rollback_context=False)
 
 

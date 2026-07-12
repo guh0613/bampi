@@ -66,6 +66,9 @@ class BampiChatConfig(BaseModel):
     bampi_trigger_keywords: list[str] = Field(default_factory=list)
     bampi_group_whitelist: list[str] = Field(default_factory=list)
     bampi_random_reply_prob: float = 0.0
+    bampi_poke_reply_enabled: bool = True
+    bampi_reaction_context_enabled: bool = True
+    bampi_qq_react_tool_enabled: bool = True
     bampi_rate_limit: int = 30
     bampi_rate_limit_window_seconds: int = 60
 

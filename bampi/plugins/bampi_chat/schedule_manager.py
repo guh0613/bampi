@@ -553,7 +553,7 @@ class ScheduleManager:
                 extract_text_blocks,
                 find_last_assistant_message,
                 log_preview,
-                send_background_agent_response,
+                send_agent_response_to_target,
                 snapshot_outbox,
             )
 
@@ -598,6 +598,9 @@ class ScheduleManager:
             outbox_before = snapshot_outbox(workspace_dir)
             async with managed.lock:
                 managed.last_used_at = time.monotonic()
+                clear_turn_context = getattr(self._group_session_manager, "clear_qq_turn_context", None)
+                if callable(clear_turn_context):
+                    clear_turn_context(snapshot.group_id)
                 user_message = self._build_execution_message(
                     snapshot,
                     scheduled_for=pending.scheduled_for,
@@ -609,7 +612,7 @@ class ScheduleManager:
 
                 assistant_message = find_last_assistant_message(managed.session.messages)
                 result_text = extract_text_blocks(assistant_message)
-                result = await send_background_agent_response(
+                result = await send_agent_response_to_target(
                     bot=bot,
                     target=target,
                     config=self._config,

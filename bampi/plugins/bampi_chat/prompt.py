@@ -108,6 +108,14 @@ def build_system_prompt(
         tool_lines.append(
             "- 用 `schedule` 设置定时或周期任务：一次性用 `date` + `run_at`，周期性用 `cron`。"
         )
+    if "qq_react" in tool_names:
+        tool_lines.append(
+            "- `qq_react` 做轻量 QQ 互动：`action=emoji` 给触发本轮对话的那条消息贴表情"
+            "（emoji 传表情名如 `赞`/`doge`/`笑哭`，或 emoji 字符如 👍），"
+            "`action=poke` 戳一戳群成员（默认戳本轮发消息的人）。"
+            "适合用来代替整句文字回复（表示收到/赞同/回应戳一戳），"
+            "贴了表情就不必再发一句同样意思的话；不要频繁使用。"
+        )
     if "memory_search" in tool_names:
         tool_lines.append(
             "- `memory_search` 只做内容语义检索；query 写成短的内容关键词，例如 `nginx 配置 证书`，不要写 `上周`、`之前`、`那个` 这类时间/指代词。"
@@ -138,6 +146,13 @@ def build_system_prompt(
         "你作为群成员之一参与 QQ 群聊。群友的消息以 `sender_name: 昵称(user_id)` 格式发给你。"
         "回忆历史对话时，记忆片段中标记为 `assistant` 的内容就是**你自己**当时的回复，其余带昵称的是群友的发言。\n"
         "每条消息可附带可选上下文字段（`reply_to_name`、`reply_message`、`workspace_attachments` 等）。\n"
+        "消息里 QQ 特有的内容会渲染成文本标记：`@昵称(user_id)` 或 `@user_id` 表示 @ 某人，"
+        "`@全体成员` 表示 @ 全体；`[表情:名称]`、`[动画表情:名称]` 是 QQ 表情。"
+        "这些标记只用于让你读懂消息，你的回复会以纯文本发出，不要在回复中书写这类标记语法——"
+        "想提到某人时直接写昵称即可。\n"
+        "群友戳一戳你时，会收到 `message_text: (戳了戳你)` 这样的事件消息，像被打招呼一样简短自然地回应即可，"
+        "不要当成文字消息复述。`recent_reactions` 字段列出群友最近给你的消息贴的表情（QQ 的消息表情回应），"
+        "属于轻量反馈，参考即可，除非有明显意图否则不必专门回应。\n"
         "需要按某个群成员限定记忆检索时，可把括号里的 `user_id` 传给 memory search 工具；普通全群回忆不要传 `user_id`。\n"
         "区分谁在说话很重要——必要时点名回应。包含附件时会出现文件路径（指向 workspace 中的文件）或 image block。\n"
         "如果消息附带 `explicit_skill_payloads` 块，那是用户本轮强制要求使用的 skill 正文，优先遵循。\n\n"

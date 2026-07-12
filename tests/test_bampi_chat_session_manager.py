@@ -553,3 +553,28 @@ async def test_group_session_manager_stop_interaction_stops_and_suppresses_notif
         assert status.has_running_background is False
     finally:
         await manager.close_all()
+
+
+@pytest.mark.asyncio
+async def test_qq_turn_context_set_and_clear(tmp_path: Path):
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(tmp_path / "workspace"),
+        bampi_session_dir=str(tmp_path / "sessions"),
+    )
+    manager = GroupSessionManager(config)
+    try:
+        assert manager.qq_turn_context("1001") is None
+
+        manager.set_qq_turn_context("1001", bot_self_id="99", user_id="42", message_id=555)
+        context = manager.qq_turn_context("1001")
+        assert context is not None
+        assert context.bot_self_id == "99"
+        assert context.group_id == "1001"
+        assert context.user_id == "42"
+        assert context.message_id == 555
+        assert manager.qq_turn_context("1002") is None
+
+        manager.clear_qq_turn_context("1001")
+        assert manager.qq_turn_context("1001") is None
+    finally:
+        await manager.close_all()

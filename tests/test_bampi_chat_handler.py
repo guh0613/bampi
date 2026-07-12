@@ -34,6 +34,7 @@ from bampi.plugins.bampi_chat.handler import (
     is_stop_command,
     matched_prefix,
     prepare_group_file_upload,
+    reply_target_for_event,
     send_agent_response,
     should_respond,
     strip_streamed_prefix,
@@ -63,6 +64,7 @@ class FakeEvent:
     text: str
     to_me: bool = False
     reply: object | None = None
+    message: object | None = None
 
     def get_plaintext(self) -> str:
         return self.text
@@ -165,6 +167,36 @@ def test_should_not_random_reply_when_probability_misses():
     assert decision.should_respond is False
 
 
+def test_should_respond_when_bot_mentioned_mid_message():
+    config = BampiChatConfig()
+    message = Message([MessageSegment.text("大家觉得 "), MessageSegment.at(42), MessageSegment.text(" 怎么看")])
+    decision = should_respond(FakeEvent("", message=message), bot_self_id="42", config=config, random_value=1.0)
+    assert decision.should_respond is True
+    assert decision.reason == "mention"
+    assert decision.direct is True
+    assert decision.cleaned_text == "大家觉得 @42 怎么看"
+
+
+def test_should_respond_renders_at_and_face_segments():
+    config = BampiChatConfig()
+    message = Message(
+        [
+            MessageSegment.text("帮我提醒 "),
+            MessageSegment.at(10001),
+            MessageSegment.text(" 开会"),
+            MessageSegment.face(179),
+        ]
+    )
+    decision = should_respond(
+        FakeEvent("", to_me=True, message=message),
+        bot_self_id="42",
+        config=config,
+        random_value=1.0,
+        resolve_name={"10001": "张三"}.get,
+    )
+    assert decision.cleaned_text == "帮我提醒 @张三(10001) 开会[表情:doge]"
+
+
 def test_matched_prefix_returns_first_match():
     assert matched_prefix("@bot hello", ["@bot", "/bot"]) == "@bot"
 
@@ -241,7 +273,7 @@ async def test_live_progress_reporter_does_not_send_delayed_ack():
     bot = FakeBot()
     event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
     config = BampiChatConfig(bampi_live_progress_enabled=True)
-    reporter = LiveProgressReporter(bot=bot, event=event, config=config)
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
     session = FakeSession()
 
     reporter.start(session)
@@ -260,7 +292,7 @@ async def test_live_progress_reporter_sends_threshold_compaction_notice_even_wit
         bampi_live_progress_enabled=False,
         bampi_threshold_compaction_notice_enabled=True,
     )
-    reporter = LiveProgressReporter(bot=bot, event=event, config=config)
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
     session = FakeSession()
 
     reporter.start(session)
@@ -281,7 +313,7 @@ async def test_live_progress_reporter_sends_emoji_tool_update():
     bot = FakeBot()
     event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
     config = BampiChatConfig(bampi_live_progress_enabled=True)
-    reporter = LiveProgressReporter(bot=bot, event=event, config=config)
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
     session = FakeSession()
 
     reporter.start(session)
@@ -302,7 +334,7 @@ async def test_live_progress_reporter_can_announce_skill_loading():
     bot = FakeBot()
     event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
     config = BampiChatConfig(bampi_live_progress_enabled=True)
-    reporter = LiveProgressReporter(bot=bot, event=event, config=config)
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
     session = FakeSession()
 
     reporter.start(session)
@@ -392,7 +424,7 @@ async def test_live_progress_reporter_allows_unlimited_tool_updates_when_limit_z
         bampi_live_progress_enabled=True,
         bampi_live_progress_max_tool_updates=0,
     )
-    reporter = LiveProgressReporter(bot=bot, event=event, config=config)
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
     session = FakeSession()
 
     reporter.start(session)
@@ -427,7 +459,7 @@ async def test_live_progress_reporter_recalls_failed_tool_update_after_min_visib
         bampi_live_progress_enabled=True,
         bampi_live_progress_error_recall_min_visible_seconds=0.05,
     )
-    reporter = LiveProgressReporter(bot=bot, event=event, config=config)
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
     session = FakeSession()
 
     reporter.start(session)
@@ -454,7 +486,7 @@ async def test_live_progress_reporter_uses_text_delta_without_snapshot_desync():
         bampi_live_text_stream_min_chars=999,
         bampi_live_text_stream_force_chars=9999,
     )
-    reporter = LiveProgressReporter(bot=bot, event=event, config=config)
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
     session = FakeSession()
 
     reporter.start(session)
@@ -526,7 +558,7 @@ async def test_live_progress_reporter_flushes_pending_text_on_message_end():
         bampi_live_text_stream_min_chars=999,
         bampi_live_text_stream_force_chars=9999,
     )
-    reporter = LiveProgressReporter(bot=bot, event=event, config=config)
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
     session = FakeSession()
 
     reporter.start(session)
@@ -559,7 +591,7 @@ async def test_live_progress_reporter_emits_whole_message_once_at_end():
         bampi_live_progress_enabled=True,
         bampi_live_text_stream_enabled=True,
     )
-    reporter = LiveProgressReporter(bot=bot, event=event, config=config)
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
     session = FakeSession()
 
     reporter.start(session)
@@ -608,7 +640,7 @@ async def test_live_progress_reporter_ignores_snapshot_updates_after_text_delta(
         bampi_live_text_stream_min_chars=999,
         bampi_live_text_stream_force_chars=9999,
     )
-    reporter = LiveProgressReporter(bot=bot, event=event, config=config)
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
     session = FakeSession()
 
     reporter.start(session)
@@ -743,6 +775,34 @@ def test_build_user_message_separates_reply_media_context():
     assert len(message.content) == 3
     assert message.content[1].mime_type == "image/png"
     assert message.content[2].mime_type == "image/jpeg"
+
+
+def test_build_user_message_renders_reply_at_and_face_segments():
+    event = FakeGroupEvent(
+        group_id=1001,
+        user_id=42,
+        message_id=99,
+        sender=FakeSender(user_id=42, nickname="Alice"),
+        reply=FakeReply(
+            sender=FakeSender(user_id=7, nickname="Bob"),
+            message=Message(
+                [
+                    MessageSegment.at(10001),
+                    MessageSegment.text(" 说得对"),
+                    MessageSegment.face(14),
+                ]
+            ),
+        ),
+    )
+
+    message = build_user_message(
+        event,
+        "帮我看看",
+        IncomingMedia(),
+        resolve_name={"10001": "李四"}.get,
+    )
+
+    assert "reply_message: @李四(10001) 说得对[表情:微笑]" in message.content[0].text
 
 
 @pytest.mark.asyncio
@@ -1856,14 +1916,14 @@ async def test_background_exit_handler_runs_resume_turn_when_idle(
     monkeypatch.setattr(handler_module, "get_bot", lambda *args, **kwargs: fake_bot)
     sent: list[dict[str, object]] = []
 
-    async def fake_send_background_agent_response(**kwargs):  # noqa: ANN003
+    async def fake_send_agent_response_to_target(**kwargs):  # noqa: ANN003
         sent.append(kwargs)
         return ResponseDispatchResult(delivered=True)
 
     monkeypatch.setattr(
         handler_module,
-        "send_background_agent_response",
-        fake_send_background_agent_response,
+        "send_agent_response_to_target",
+        fake_send_agent_response_to_target,
     )
 
     handler = handler_module.create_background_exit_handler(BampiChatConfig(), session_manager)
@@ -1879,3 +1939,400 @@ async def test_background_exit_handler_runs_resume_turn_when_idle(
     assert target.reply_message_id == 99
     assistant_message = sent[0]["assistant_message"]
     assert "后台任务已处理完成" in assistant_message.content[0].text
+
+
+def test_group_reaction_buffer_dedupes_and_caps(monkeypatch: pytest.MonkeyPatch):
+    now = 1000.0
+    monkeypatch.setattr(handler_module.time, "monotonic", lambda: now)
+    buffer = handler_module.GroupReactionBuffer(ttl_seconds=60.0, max_per_group=2)
+
+    buffer.add("g", dedupe_key="m1:u1", note="旧的")
+    buffer.add("g", dedupe_key="m1:u1", note="新的")
+    buffer.add("g", dedupe_key="m2:u1", note="第二条")
+    buffer.add("g", dedupe_key="m3:u1", note="第三条")
+
+    assert buffer.drain("g") == ["第二条", "第三条"]
+    assert buffer.drain("g") == []
+
+
+def test_group_reaction_buffer_expires_notes(monkeypatch: pytest.MonkeyPatch):
+    now = 1000.0
+    monkeypatch.setattr(handler_module.time, "monotonic", lambda: now)
+    buffer = handler_module.GroupReactionBuffer(ttl_seconds=60.0)
+    buffer.add("g", dedupe_key="m1:u1", note="会过期")
+    now += 61.0
+    assert buffer.drain("g") == []
+
+
+def test_build_poke_user_message_includes_action_and_reactions():
+    message = handler_module.build_poke_user_message(
+        sender_name="张三",
+        user_id="10001",
+        action="拍了拍",
+        suffix="的头",
+        reaction_notes=["李四(2) 给你的消息「好」贴了表情 [表情:赞]"],
+    )
+    text = message.content[0].text
+    assert "sender_name: 张三(10001)" in text
+    assert "message_text: (拍了拍你的头)" in text
+    assert "recent_reactions:\n- 李四(2) 给你的消息「好」贴了表情 [表情:赞]" in text
+
+
+def test_build_user_message_includes_reaction_notes():
+    event = FakeGroupEvent(
+        group_id=1001,
+        user_id=42,
+        message_id=99,
+        sender=FakeSender(user_id=42, nickname="Alice"),
+    )
+    message = build_user_message(
+        event,
+        "继续",
+        IncomingMedia(),
+        reaction_notes=["Bob(7) 给你的消息「进度如何」贴了表情 👍"],
+    )
+    assert "recent_reactions:\n- Bob(7) 给你的消息「进度如何」贴了表情 👍" in message.content[0].text
+
+
+class FakeReactionBot:
+    def __init__(self, *, self_id: int, msg_sender_id: int, message_segments: object) -> None:
+        self.self_id = self_id
+        self._msg_sender_id = msg_sender_id
+        self._message_segments = message_segments
+        self.api_calls: list[tuple[str, dict[str, object]]] = []
+
+    async def call_api(self, action: str, **params: object) -> dict[str, object]:
+        self.api_calls.append((action, params))
+        if action == "get_msg":
+            return {
+                "sender": {"user_id": self._msg_sender_id},
+                "message": self._message_segments,
+            }
+        return {}
+
+    async def get_group_member_info(self, *, group_id: int, user_id: int) -> dict[str, object]:
+        return {"card": "", "nickname": "张三"}
+
+
+@pytest.mark.asyncio
+async def test_build_reaction_note_for_bot_message():
+    bot = FakeReactionBot(
+        self_id=99,
+        msg_sender_id=99,
+        message_segments=[{"type": "text", "data": {"text": "这是 bot 的回复内容"}}],
+    )
+    note = await handler_module.build_reaction_note(
+        bot=bot,
+        group_id="1001",
+        user_id="42",
+        message_id=555,
+        likes=[{"emoji_id": "76", "count": 1}],
+        cache=handler_module.MentionNameCache(),
+    )
+    assert note == "张三(42) 给你的消息「这是 bot 的回复内容」贴了表情 [表情:赞]"
+
+
+@pytest.mark.asyncio
+async def test_build_reaction_note_ignores_non_bot_message():
+    bot = FakeReactionBot(
+        self_id=99,
+        msg_sender_id=7,
+        message_segments=[{"type": "text", "data": {"text": "群友的消息"}}],
+    )
+    note = await handler_module.build_reaction_note(
+        bot=bot,
+        group_id="1001",
+        user_id="42",
+        message_id=555,
+        likes=[{"emoji_id": "76", "count": 1}],
+        cache=handler_module.MentionNameCache(),
+    )
+    assert note is None
+
+
+class FakePokeAgentSession:
+    def __init__(self, reply_text: str | None = "戳我干嘛，有事直接说。") -> None:
+        self.prompt_calls: list[tuple[object, str]] = []
+        self.messages: list[object] = []
+        self._reply_text = reply_text
+
+    def subscribe(self, listener):
+        def unsubscribe() -> None:
+            return None
+
+        return unsubscribe
+
+    async def prompt(self, user_message, source: str = "") -> None:
+        self.prompt_calls.append((user_message, source))
+        content = [TextContent(text=self._reply_text)] if self._reply_text else []
+        self.messages.append(AssistantMessage(content=content))
+
+
+class FakePokeSessionManager:
+    def __init__(self, workspace_dir: str, action: str = "start") -> None:
+        self.workspace_dir = workspace_dir
+        self.action = action
+        self.session = FakePokeAgentSession()
+        self.managed = SimpleNamespace(
+            session=self.session,
+            lock=asyncio.Lock(),
+            last_used_at=0.0,
+        )
+        self.completed: list[str] = []
+        self.turn_contexts: list[dict[str, object]] = []
+
+    def workspace_dir_for_group(self, group_id: str) -> str:
+        return self.workspace_dir
+
+    async def reserve_interaction(self, group_id: str, user_id: str):
+        return SimpleNamespace(action=self.action, managed=self.managed)
+
+    async def complete_interaction(self, group_id: str) -> None:
+        self.completed.append(group_id)
+
+    def set_qq_turn_context(self, group_id: str, *, bot_self_id: str, user_id: str, message_id: object) -> None:
+        self.turn_contexts.append(
+            {
+                "group_id": group_id,
+                "bot_self_id": bot_self_id,
+                "user_id": user_id,
+                "message_id": message_id,
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_poke_reply_turn_prompts_and_replies(tmp_path: Path):
+    config = BampiChatConfig(
+        bampi_live_progress_enabled=False,
+        bampi_live_text_stream_enabled=False,
+        bampi_threshold_compaction_notice_enabled=False,
+    )
+    session_manager = FakePokeSessionManager(str(tmp_path))
+    bot = FakeBot()
+    bot.self_id = 99
+
+    await handler_module.run_poke_reply_turn(
+        bot=bot,
+        config=config,
+        session_manager=session_manager,
+        group_id="1001",
+        user_id="42",
+        sender_name="张三",
+        action="戳了戳",
+        suffix="",
+        reaction_notes=None,
+    )
+
+    assert len(session_manager.session.prompt_calls) == 1
+    prompt_message, source = session_manager.session.prompt_calls[0]
+    assert source == "qq_group"
+    assert "sender_name: 张三(42)" in prompt_message.content[0].text
+    assert "message_text: (戳了戳你)" in prompt_message.content[0].text
+
+    send_calls = [call for call in bot.calls if call[0] == "send_group_msg"]
+    assert len(send_calls) == 1
+    sent_message = send_calls[0][1]["message"]
+    assert "戳我干嘛" in str(sent_message)
+    assert session_manager.completed == ["1001"]
+    assert session_manager.turn_contexts == [
+        {"group_id": "1001", "bot_self_id": "99", "user_id": "42", "message_id": None}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_poke_reply_turn_stays_silent_on_empty_reply(tmp_path: Path):
+    config = BampiChatConfig(
+        bampi_live_progress_enabled=False,
+        bampi_live_text_stream_enabled=False,
+        bampi_threshold_compaction_notice_enabled=False,
+    )
+    session_manager = FakePokeSessionManager(str(tmp_path))
+    session_manager.session._reply_text = None
+    bot = FakeBot()
+    bot.self_id = 99
+
+    await handler_module.run_poke_reply_turn(
+        bot=bot,
+        config=config,
+        session_manager=session_manager,
+        group_id="1001",
+        user_id="42",
+        sender_name="张三",
+        action="戳了戳",
+        suffix="",
+    )
+
+    assert [call for call in bot.calls if call[0] == "send_group_msg"] == []
+    assert session_manager.completed == ["1001"]
+
+
+class CapturingMatcherRegistrationForNotices:
+    def __init__(self, store: list) -> None:
+        self._store = store
+
+    def handle(self):
+        def decorator(func):
+            self._store.append(func)
+            return func
+
+        return decorator
+
+
+def _register_with_captured_notices(monkeypatch: pytest.MonkeyPatch, config, session_manager):
+    notice_handlers: list = []
+    monkeypatch.setattr(
+        handler_module,
+        "on_message",
+        lambda **kwargs: CapturingMatcherRegistrationForNotices([]),
+    )
+    monkeypatch.setattr(
+        handler_module,
+        "on_notice",
+        lambda **kwargs: CapturingMatcherRegistrationForNotices(notice_handlers),
+    )
+    handler_module.register_handlers(config, session_manager)
+    assert len(notice_handlers) == 2
+    return notice_handlers
+
+
+@pytest.mark.asyncio
+async def test_poke_notice_triggers_reply_turn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    config = BampiChatConfig()
+    session_manager = FakePokeSessionManager(str(tmp_path))
+    session_manager.inspect_interaction = lambda group_id: asyncio.sleep(
+        0, result=SimpleNamespace(is_active=False)
+    )
+    poke_handler, _ = _register_with_captured_notices(monkeypatch, config, session_manager)
+
+    runs: list[dict[str, object]] = []
+
+    async def fake_run_poke_reply_turn(**kwargs):  # noqa: ANN003
+        runs.append(kwargs)
+
+    monkeypatch.setattr(handler_module, "run_poke_reply_turn", fake_run_poke_reply_turn)
+
+    async def fake_resolve(bot, *, group_id, user_id, cache):
+        return "张三"
+
+    monkeypatch.setattr(handler_module, "resolve_member_display_name", fake_resolve)
+
+    bot = FakeBot()
+    bot.self_id = 99
+    event = SimpleNamespace(
+        group_id=1001,
+        user_id=42,
+        target_id=99,
+        raw_info=[{"type": "nor", "txt": "拍了拍"}, {"type": "nor", "txt": "的头"}],
+    )
+    await poke_handler(bot, event)
+
+    assert len(runs) == 1
+    assert runs[0]["group_id"] == "1001"
+    assert runs[0]["user_id"] == "42"
+    assert runs[0]["sender_name"] == "张三"
+    assert runs[0]["action"] == "拍了拍"
+    assert runs[0]["suffix"] == "的头"
+
+
+@pytest.mark.asyncio
+async def test_poke_notice_ignores_pokes_not_targeting_bot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    config = BampiChatConfig()
+    session_manager = FakePokeSessionManager(str(tmp_path))
+    poke_handler, _ = _register_with_captured_notices(monkeypatch, config, session_manager)
+
+    runs: list[dict[str, object]] = []
+
+    async def fake_run_poke_reply_turn(**kwargs):  # noqa: ANN003
+        runs.append(kwargs)
+
+    monkeypatch.setattr(handler_module, "run_poke_reply_turn", fake_run_poke_reply_turn)
+
+    bot = FakeBot()
+    bot.self_id = 99
+    event = SimpleNamespace(group_id=1001, user_id=42, target_id=7, raw_info=None)
+    await poke_handler(bot, event)
+
+    assert runs == []
+
+
+@pytest.mark.asyncio
+async def test_reaction_notice_buffers_note_for_bot_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    config = BampiChatConfig()
+    session_manager = FakePokeSessionManager(str(tmp_path))
+
+    class RecordingReactionBuffer:
+        instances: list["RecordingReactionBuffer"] = []
+
+        def __init__(self, **kwargs) -> None:
+            self.added: list[tuple[str, str, str]] = []
+            RecordingReactionBuffer.instances.append(self)
+
+        def add(self, group_id: str, *, dedupe_key: str, note: str) -> None:
+            self.added.append((group_id, dedupe_key, note))
+
+        def drain(self, group_id: str) -> list[str]:
+            return []
+
+    monkeypatch.setattr(handler_module, "GroupReactionBuffer", RecordingReactionBuffer)
+    _, reaction_handler = _register_with_captured_notices(monkeypatch, config, session_manager)
+    buffer = RecordingReactionBuffer.instances[-1]
+
+    bot = FakeReactionBot(
+        self_id=99,
+        msg_sender_id=99,
+        message_segments=[{"type": "text", "data": {"text": "bot 的回复"}}],
+    )
+    event = SimpleNamespace(
+        notice_type="group_msg_emoji_like",
+        group_id=1001,
+        user_id=42,
+        message_id=555,
+        likes=[{"emoji_id": "76", "count": 1}],
+        is_add=True,
+    )
+    await reaction_handler(bot, event)
+
+    assert len(buffer.added) == 1
+    group_id, dedupe_key, note = buffer.added[0]
+    assert group_id == "1001"
+    assert dedupe_key == "555:42"
+    assert "张三(42)" in note
+    assert "「bot 的回复」" in note
+    assert "[表情:赞]" in note
+
+
+@pytest.mark.asyncio
+async def test_reaction_notice_ignores_removed_reactions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    config = BampiChatConfig()
+    session_manager = FakePokeSessionManager(str(tmp_path))
+
+    class RecordingReactionBuffer:
+        instances: list["RecordingReactionBuffer"] = []
+
+        def __init__(self, **kwargs) -> None:
+            self.added: list[tuple[str, str, str]] = []
+            RecordingReactionBuffer.instances.append(self)
+
+        def add(self, group_id: str, *, dedupe_key: str, note: str) -> None:
+            self.added.append((group_id, dedupe_key, note))
+
+        def drain(self, group_id: str) -> list[str]:
+            return []
+
+    monkeypatch.setattr(handler_module, "GroupReactionBuffer", RecordingReactionBuffer)
+    _, reaction_handler = _register_with_captured_notices(monkeypatch, config, session_manager)
+    buffer = RecordingReactionBuffer.instances[-1]
+
+    bot = FakeReactionBot(self_id=99, msg_sender_id=99, message_segments=[])
+    event = SimpleNamespace(
+        notice_type="group_msg_emoji_like",
+        group_id=1001,
+        user_id=42,
+        message_id=555,
+        likes=[{"emoji_id": "76", "count": 1}],
+        is_add=False,
+    )
+    await reaction_handler(bot, event)
+
+    assert buffer.added == []

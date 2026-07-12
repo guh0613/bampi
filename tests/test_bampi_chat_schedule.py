@@ -89,7 +89,7 @@ async def test_schedule_manager_runs_task_in_shared_session_and_marks_completed(
     sent_payloads: list[dict[str, object]] = []
     bot_calls: list[tuple[str, dict[str, object]]] = []
 
-    async def fake_send_background_agent_response(**kwargs):  # noqa: ANN003
+    async def fake_send_agent_response_to_target(**kwargs):  # noqa: ANN003
         sent_payloads.append(kwargs)
         return ResponseDispatchResult(delivered=True, rollback_context=False)
 
@@ -101,8 +101,8 @@ async def test_schedule_manager_runs_task_in_shared_session_and_marks_completed(
     monkeypatch.setattr(schedule_manager_module, "get_bots", lambda: {"bot": FakeBot()})
     monkeypatch.setattr(
         handler_module,
-        "send_background_agent_response",
-        fake_send_background_agent_response,
+        "send_agent_response_to_target",
+        fake_send_agent_response_to_target,
     )
 
     record = await manager.create_task(
@@ -158,7 +158,7 @@ async def test_schedule_manager_list_hides_completed_one_time_tasks_by_default(
         group_session_manager=fake_group_manager,
     )
 
-    async def fake_send_background_agent_response(**kwargs):  # noqa: ANN003
+    async def fake_send_agent_response_to_target(**kwargs):  # noqa: ANN003
         return ResponseDispatchResult(delivered=True, rollback_context=False)
 
     class FakeBot:
@@ -168,8 +168,8 @@ async def test_schedule_manager_list_hides_completed_one_time_tasks_by_default(
     monkeypatch.setattr(schedule_manager_module, "get_bots", lambda: {"bot": FakeBot()})
     monkeypatch.setattr(
         handler_module,
-        "send_background_agent_response",
-        fake_send_background_agent_response,
+        "send_agent_response_to_target",
+        fake_send_agent_response_to_target,
     )
 
     one_time = await manager.create_task(
