@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-import json
+import logging
 import os
 from pathlib import Path
+import platform as host_platform
 import re
 import sys
 from typing import Any
 
 from .config import BrowserConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,14 +39,14 @@ class BrowserIdentity:
     locale: str
     timezone_id: str
     geolocation: Geolocation | None
-    hardware_concurrency: int
-    device_memory: int
-    webgl_vendor: str
-    webgl_renderer: str
     viewport_width: int
     viewport_height: int
     screen_width: int
     screen_height: int
+    window_left: int
+    window_top: int
+    window_width: int
+    window_height: int
     device_scale_factor: float
 
     @property
@@ -78,7 +82,19 @@ class BrowserIdentity:
             "mobile": False,
             "screenWidth": self.screen_width,
             "screenHeight": self.screen_height,
+            "positionX": self.window_left,
+            "positionY": self.window_top,
             "screenOrientation": {"type": "landscapePrimary", "angle": 0},
+        }
+
+    @property
+    def window_bounds_params(self) -> dict[str, Any]:
+        return {
+            "left": self.window_left,
+            "top": self.window_top,
+            "width": self.window_width,
+            "height": self.window_height,
+            "windowState": "normal",
         }
 
 
@@ -90,8 +106,6 @@ class _PlatformProfile:
     ua_platform_version: str
     architecture: str
     bitness: str
-    webgl_vendor: str
-    webgl_renderer: str
 
 
 _TRACKER_BLOCK_URLS = (
@@ -131,6 +145,18 @@ _TIMEZONE_GEOLOCATIONS: dict[str, Geolocation] = {
     "America/Los_Angeles": Geolocation(34.0522, -118.2437),
 }
 
+# CSS-pixel desktop resolutions. A screen is only selected when it can contain
+# both the configured viewport and a normal desktop browser frame.
+_SCREEN_SIZES = (
+    (1600, 1200),
+    (1920, 1080),
+    (1920, 1200),
+    (2560, 1440),
+    (2880, 1800),
+    (3840, 2160),
+)
+_BROWSER_FRAME_HEIGHT = 80
+
 
 def build_stealth_identity(
     workspace_dir: Path,
@@ -145,18 +171,24 @@ def build_stealth_identity(
     platform = _platform_profile(platform_name or sys.platform)
     full_version = _chrome_version(version_info) or "120.0.0.0"
     major = int(full_version.split(".", 1)[0])
-    user_agent = _user_agent(platform.ua_comment, full_version)
     timezone_id = _timezone_id(env_map)
     locale, languages, accept_language = _locale(env_map, timezone_id)
-    screen_width, screen_height = _screen_size(workspace_dir)
     viewport_width = viewport_width or 1440
     viewport_height = viewport_height or 1000
-    screen_width = max(screen_width, viewport_width)
-    screen_height = max(screen_height, viewport_height)
-    hardware_concurrency, device_memory = _machine_shape(workspace_dir)
+    screen_width, screen_height = _screen_size(
+        workspace_dir,
+        viewport_width=viewport_width,
+        viewport_height=viewport_height,
+    )
+    window_width = viewport_width
+    window_height = viewport_height + _BROWSER_FRAME_HEIGHT
+    window_left = max(0, (screen_width - window_width) // 2)
+    window_top = max(0, (screen_height - window_height) // 3)
 
     return BrowserIdentity(
-        user_agent=user_agent,
+        # Chrome's low-entropy UA freezes minor/build/patch at 0.0.0. The
+        # actual build remains available through high-entropy UA client hints.
+        user_agent=_user_agent(platform.ua_comment, major),
         brands=tuple(_brands(major)),
         full_version_list=tuple(_full_version_list(major, full_version)),
         full_version=full_version,
@@ -170,16 +202,34 @@ def build_stealth_identity(
         locale=locale,
         timezone_id=timezone_id,
         geolocation=_TIMEZONE_GEOLOCATIONS.get(timezone_id),
-        hardware_concurrency=hardware_concurrency,
-        device_memory=device_memory,
-        webgl_vendor=platform.webgl_vendor,
-        webgl_renderer=platform.webgl_renderer,
         viewport_width=viewport_width,
         viewport_height=viewport_height,
         screen_width=screen_width,
         screen_height=screen_height,
-        device_scale_factor=2.0 if screen_width >= 2560 and platform.ua_platform == "macOS" else 1.0,
+        window_left=window_left,
+        window_top=window_top,
+        window_width=window_width,
+        window_height=window_height,
+        device_scale_factor=1.0,
     )
+
+
+async def apply_window_geometry(client: Any, target_id: str, identity: BrowserIdentity) -> bool:
+    if not target_id:
+        return False
+    try:
+        result = await client.call("Browser.getWindowForTarget", {"targetId": target_id})
+        window_id = result.get("windowId")
+        if not isinstance(window_id, int):
+            return False
+        await client.call(
+            "Browser.setWindowBounds",
+            {"windowId": window_id, "bounds": identity.window_bounds_params},
+        )
+        return True
+    except Exception:
+        logger.debug("Could not apply browser window geometry for target %s", target_id, exc_info=True)
+        return False
 
 
 async def apply_stealth_to_session(
@@ -220,7 +270,6 @@ async def apply_stealth_to_session(
                 },
                 session_id=session_id,
             )
-        await _install_preload(client, session_id, identity)
 
     patterns = blocked_url_patterns(config)
     if patterns:
@@ -244,194 +293,13 @@ def stealth_launch_args(identity: BrowserIdentity) -> list[str]:
     ]
 
 
-async def _install_preload(client: Any, session_id: str, identity: BrowserIdentity) -> None:
-    source = preload_script(identity)
-    params = {"source": source, "runImmediately": True}
-    if await _best_effort_call(client, "Page.addScriptToEvaluateOnNewDocument", params, session_id=session_id):
-        await _best_effort_call(
-            client,
-            "Runtime.evaluate",
-            {"expression": source, "awaitPromise": False, "returnByValue": True},
-            session_id=session_id,
-        )
-        return
-    await _best_effort_call(
-        client,
-        "Page.addScriptToEvaluateOnNewDocument",
-        {"source": source},
-        session_id=session_id,
-    )
-    await _best_effort_call(
-        client,
-        "Runtime.evaluate",
-        {"expression": source, "awaitPromise": False, "returnByValue": True},
-        session_id=session_id,
-    )
-
-
 async def _best_effort_call(client: Any, method: str, params: dict[str, Any], *, session_id: str) -> bool:
     try:
         await client.call(method, params, session_id=session_id)
         return True
     except Exception:
+        logger.debug("CDP stealth method %s failed for session %s", method, session_id, exc_info=True)
         return False
-
-
-def preload_script(identity: BrowserIdentity) -> str:
-    payload = json.dumps(
-        {
-            "userAgent": identity.user_agent,
-            "platform": identity.platform,
-            "brands": list(identity.brands),
-            "fullVersionList": list(identity.full_version_list),
-            "fullVersion": identity.full_version,
-            "uaPlatform": identity.ua_platform,
-            "uaPlatformVersion": identity.ua_platform_version,
-            "architecture": identity.architecture,
-            "bitness": identity.bitness,
-            "languages": list(identity.languages),
-            "hardwareConcurrency": identity.hardware_concurrency,
-            "deviceMemory": identity.device_memory,
-            "webglVendor": identity.webgl_vendor,
-            "webglRenderer": identity.webgl_renderer,
-            "screenWidth": identity.screen_width,
-            "screenHeight": identity.screen_height,
-            "deviceScaleFactor": identity.device_scale_factor,
-        },
-        ensure_ascii=True,
-        separators=(",", ":"),
-    )
-    return f"""
-(() => {{
-  const identity = {payload};
-  if (globalThis.__bampi_stealth_applied__) return;
-  Object.defineProperty(globalThis, "__bampi_stealth_applied__", {{value: true, configurable: false}});
-
-  const nativeToString = Function.prototype.toString;
-  const nativeStrings = new WeakMap();
-  const markNative = (fn, name) => {{
-    try {{ nativeStrings.set(fn, `function ${{name || fn.name || ""}}() {{ [native code] }}`); }} catch (_) {{}}
-    return fn;
-  }};
-  const stealthToString = new Proxy(nativeToString, {{
-    apply(target, thisArg, args) {{
-      if (nativeStrings.has(thisArg)) return nativeStrings.get(thisArg);
-      return Reflect.apply(target, thisArg, args);
-    }}
-  }});
-  nativeStrings.set(stealthToString, "function toString() {{ [native code] }}");
-  try {{ Object.defineProperty(Function.prototype, "toString", {{value: stealthToString, configurable: true, writable: true}}); }} catch (_) {{}}
-
-  const defineGetter = (target, prop, value, name) => {{
-    if (!target) return;
-    const getter = markNative(function() {{ return typeof value === "function" ? value.call(this) : value; }}, name || `get ${{prop}}`);
-    try {{ Object.defineProperty(target, prop, {{get: getter, configurable: true}}); }} catch (_) {{}}
-  }};
-
-  defineGetter(Navigator.prototype, "webdriver", false, "get webdriver");
-  defineGetter(Navigator.prototype, "userAgent", identity.userAgent, "get userAgent");
-  defineGetter(
-    Navigator.prototype,
-    "appVersion",
-    identity.userAgent.replace(/^Mozilla\\//, ""),
-    "get appVersion"
-  );
-  defineGetter(Navigator.prototype, "platform", identity.platform, "get platform");
-  defineGetter(Navigator.prototype, "language", identity.languages[0] || "en-US", "get language");
-  defineGetter(Navigator.prototype, "languages", () => Object.freeze([...identity.languages]), "get languages");
-  defineGetter(Navigator.prototype, "hardwareConcurrency", identity.hardwareConcurrency, "get hardwareConcurrency");
-  defineGetter(Navigator.prototype, "deviceMemory", identity.deviceMemory, "get deviceMemory");
-  defineGetter(Navigator.prototype, "maxTouchPoints", 0, "get maxTouchPoints");
-
-  if (!navigator.userAgentData) {{
-    const uaData = {{
-      brands: Object.freeze(identity.brands.map((brand) => Object.freeze({{...brand}}))),
-      mobile: false,
-      platform: identity.uaPlatform,
-      getHighEntropyValues: markNative(function(hints) {{
-        const values = {{
-          architecture: identity.architecture,
-          bitness: identity.bitness,
-          brands: identity.brands.map((brand) => ({{...brand}})),
-          fullVersionList: identity.fullVersionList.map((brand) => ({{...brand}})),
-          mobile: false,
-          model: "",
-          platform: identity.uaPlatform,
-          platformVersion: identity.uaPlatformVersion,
-          uaFullVersion: identity.fullVersion,
-          wow64: false
-        }};
-        const requested = Array.isArray(hints) ? hints : [];
-        const result = {{}};
-        for (const key of requested) if (key in values) result[key] = values[key];
-        result.brands = values.brands;
-        result.mobile = false;
-        result.platform = identity.uaPlatform;
-        return Promise.resolve(result);
-      }}, "getHighEntropyValues"),
-      toJSON: markNative(function() {{ return {{brands: this.brands, mobile: this.mobile, platform: this.platform}}; }}, "toJSON")
-    }};
-    defineGetter(Navigator.prototype, "userAgentData", () => uaData, "get userAgentData");
-  }}
-
-  if (!globalThis.chrome) {{
-    try {{ Object.defineProperty(globalThis, "chrome", {{value: {{}}, configurable: true}}); }} catch (_) {{}}
-  }}
-  if (globalThis.chrome && !globalThis.chrome.runtime) {{
-    try {{
-      Object.defineProperty(globalThis.chrome, "runtime", {{
-        value: {{
-          PlatformOs: {{MAC: "mac", WIN: "win", ANDROID: "android", CROS: "cros", LINUX: "linux", OPENBSD: "openbsd"}},
-          PlatformArch: {{ARM: "arm", ARM64: "arm64", X86_32: "x86-32", X86_64: "x86-64"}},
-          PlatformNaclArch: {{ARM: "arm", X86_32: "x86-32", X86_64: "x86-64"}},
-          RequestUpdateCheckStatus: {{THROTTLED: "throttled", NO_UPDATE: "no_update", UPDATE_AVAILABLE: "update_available"}},
-          OnInstalledReason: {{INSTALL: "install", UPDATE: "update", CHROME_UPDATE: "chrome_update", SHARED_MODULE_UPDATE: "shared_module_update"}},
-          OnRestartRequiredReason: {{APP_UPDATE: "app_update", OS_UPDATE: "os_update", PERIODIC: "periodic"}},
-          connect: markNative(function() {{ throw new TypeError("Error in invocation of runtime.connect"); }}, "connect"),
-          sendMessage: markNative(function() {{ throw new TypeError("Error in invocation of runtime.sendMessage"); }}, "sendMessage")
-        }},
-        configurable: true
-      }});
-    }} catch (_) {{}}
-  }}
-
-  if (navigator.permissions && navigator.permissions.query) {{
-    const originalQuery = navigator.permissions.query.bind(navigator.permissions);
-    const patchedQuery = markNative(function(parameters) {{
-      const name = parameters && parameters.name;
-      if (name === "notifications") {{
-        return Promise.resolve({{state: Notification.permission === "denied" ? "denied" : "prompt", onchange: null}});
-      }}
-      if (name === "geolocation" || name === "camera" || name === "microphone" || name === "midi") {{
-        return Promise.resolve({{state: "prompt", onchange: null}});
-      }}
-      return originalQuery(parameters);
-    }}, "query");
-    try {{ Object.defineProperty(navigator.permissions, "query", {{value: patchedQuery, configurable: true, writable: true}}); }} catch (_) {{}}
-  }}
-
-  const patchWebGL = (proto) => {{
-    if (!proto || !proto.getParameter) return;
-    const originalGetParameter = proto.getParameter;
-    const patchedGetParameter = markNative(function(parameter) {{
-      if (parameter === 37445) return identity.webglVendor;
-      if (parameter === 37446) return identity.webglRenderer;
-      if (parameter === 7936) return "WebKit";
-      if (parameter === 7937) return "WebKit WebGL";
-      return originalGetParameter.apply(this, arguments);
-    }}, "getParameter");
-    try {{ Object.defineProperty(proto, "getParameter", {{value: patchedGetParameter, configurable: true, writable: true}}); }} catch (_) {{}}
-  }};
-  patchWebGL(globalThis.WebGLRenderingContext && WebGLRenderingContext.prototype);
-  patchWebGL(globalThis.WebGL2RenderingContext && WebGL2RenderingContext.prototype);
-
-  const outerWidth = Math.max(identity.screenWidth, innerWidth || identity.screenWidth);
-  const outerHeight = Math.max(identity.screenHeight, (innerHeight || identity.screenHeight) + 80);
-  if (!globalThis.outerWidth || globalThis.outerWidth <= 0) defineGetter(globalThis, "outerWidth", outerWidth, "get outerWidth");
-  if (!globalThis.outerHeight || globalThis.outerHeight <= 0) defineGetter(globalThis, "outerHeight", outerHeight, "get outerHeight");
-  if (globalThis.devicePixelRatio <= 0) defineGetter(globalThis, "devicePixelRatio", identity.deviceScaleFactor, "get devicePixelRatio");
-}})();
-""".strip()
 
 
 def _chrome_version(version_info: dict[str, Any] | None) -> str | None:
@@ -456,21 +324,20 @@ def _normalize_version(raw: str) -> str:
     return ".".join(parts[:4])
 
 
-def _user_agent(comment: str, full_version: str) -> str:
-    return f"Mozilla/5.0 ({comment}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{full_version} Safari/537.36"
+def _user_agent(comment: str, major: int) -> str:
+    return f"Mozilla/5.0 ({comment}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
 
 
 def _platform_profile(platform_name: str) -> _PlatformProfile:
+    architecture = _machine_architecture()
     if platform_name == "darwin":
         return _PlatformProfile(
             ua_comment="Macintosh; Intel Mac OS X 10_15_7",
             platform="MacIntel",
             ua_platform="macOS",
-            ua_platform_version="15.0.0",
-            architecture="arm" if _machine_is_arm() else "x86",
+            ua_platform_version=_host_platform_version(platform_name, fallback="15.0.0"),
+            architecture=architecture,
             bitness="64",
-            webgl_vendor="Google Inc. (Apple)",
-            webgl_renderer="ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
         )
     if platform_name.startswith("win"):
         return _PlatformProfile(
@@ -478,26 +345,37 @@ def _platform_profile(platform_name: str) -> _PlatformProfile:
             platform="Win32",
             ua_platform="Windows",
             ua_platform_version="15.0.0",
-            architecture="x86",
+            architecture=architecture,
             bitness="64",
-            webgl_vendor="Google Inc. (NVIDIA)",
-            webgl_renderer="ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
         )
     return _PlatformProfile(
         ua_comment="X11; Linux x86_64",
         platform="Linux x86_64",
         ua_platform="Linux",
-        ua_platform_version="6.6.0",
-        architecture="x86",
+        ua_platform_version=_host_platform_version(platform_name, fallback="6.6.0"),
+        architecture=architecture,
         bitness="64",
-        webgl_vendor="Google Inc. (Intel)",
-        webgl_renderer="ANGLE (Intel, Mesa Intel(R) UHD Graphics 620, OpenGL 4.6)",
     )
 
 
-def _machine_is_arm() -> bool:
-    machine = os.uname().machine.lower() if hasattr(os, "uname") else ""
-    return "arm" in machine or "aarch64" in machine
+def _machine_architecture() -> str:
+    machine = host_platform.machine().lower()
+    return "arm" if "arm" in machine or "aarch64" in machine else "x86"
+
+
+def _host_platform_version(platform_name: str, *, fallback: str) -> str:
+    raw = ""
+    if platform_name == sys.platform:
+        if platform_name == "darwin":
+            raw = host_platform.mac_ver()[0]
+        elif platform_name.startswith("linux"):
+            raw = host_platform.release()
+    parts = re.findall(r"\d+", raw)[:3]
+    if not parts:
+        return fallback
+    while len(parts) < 3:
+        parts.append("0")
+    return ".".join(parts)
 
 
 def _brands(major: int) -> list[dict[str, str]]:
@@ -563,17 +441,20 @@ def _locale(env: dict[str, str], timezone_id: str) -> tuple[str, tuple[str, ...]
     return locale, languages, accept_language
 
 
-def _screen_size(workspace_dir: Path) -> tuple[int, int]:
-    choices = ((1366, 768), (1440, 900), (1536, 864), (1600, 900), (1920, 1080), (2560, 1440))
-    return choices[_stable_int(workspace_dir, "screen", len(choices))]
+def _screen_size(workspace_dir: Path, *, viewport_width: int, viewport_height: int) -> tuple[int, int]:
+    minimum_height = viewport_height + _BROWSER_FRAME_HEIGHT
+    eligible = [
+        size
+        for size in _SCREEN_SIZES
+        if size[0] >= viewport_width and size[1] >= minimum_height
+    ]
+    if not eligible:
+        return _round_up(viewport_width + 160, 160), _round_up(minimum_height + 80, 90)
+    return eligible[_stable_int(workspace_dir, "screen", len(eligible))]
 
 
-def _machine_shape(workspace_dir: Path) -> tuple[int, int]:
-    cpu_choices = (4, 6, 8, 12, 16)
-    memory_choices = (4, 8)
-    cpu = cpu_choices[_stable_int(workspace_dir, "cpu", len(cpu_choices))]
-    memory = memory_choices[_stable_int(workspace_dir, "memory", len(memory_choices))]
-    return cpu, memory
+def _round_up(value: int, quantum: int) -> int:
+    return ((value + quantum - 1) // quantum) * quantum
 
 
 def _stable_int(workspace_dir: Path, label: str, modulo: int) -> int:

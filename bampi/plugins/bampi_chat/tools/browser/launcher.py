@@ -115,6 +115,15 @@ async def resolve_chromium(config: BrowserConfig) -> str:
 
 
 def chromium_launch_args(executable: str, profile_dir: Path, workspace_dir: Path, config: BrowserConfig) -> list[str]:
+    identity = None
+    if config.stealth:
+        identity = build_stealth_identity(
+            workspace_dir,
+            viewport_width=config.viewport_width,
+            viewport_height=config.viewport_height,
+        )
+    window_width = identity.window_width if identity is not None else config.viewport_width
+    window_height = identity.window_height if identity is not None else config.viewport_height
     args = [
         executable,
         f"--user-data-dir={profile_dir}",
@@ -132,15 +141,10 @@ def chromium_launch_args(executable: str, profile_dir: Path, workspace_dir: Path
         "--metrics-recording-only",
         "--password-store=basic",
         "--use-mock-keychain",
-        f"--window-size={config.viewport_width},{config.viewport_height}",
+        f"--window-size={window_width},{window_height}",
         "about:blank",
     ]
-    if config.stealth:
-        identity = build_stealth_identity(
-            workspace_dir,
-            viewport_width=config.viewport_width,
-            viewport_height=config.viewport_height,
-        )
+    if identity is not None:
         args[1:1] = stealth_launch_args(identity)
     if config.headless:
         args.insert(1, "--headless=new")

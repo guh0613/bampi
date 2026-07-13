@@ -14,7 +14,12 @@ from .errors import BrowserError, CommandError
 from .launcher import LaunchedChromium, launch_chromium
 from .models import PageState, RecordingState
 from .policy import NavigationPolicy
-from .stealth import BrowserIdentity, apply_stealth_to_session, build_stealth_identity
+from .stealth import (
+    BrowserIdentity,
+    apply_stealth_to_session,
+    apply_window_geometry,
+    build_stealth_identity,
+)
 
 
 class BrowserRuntime:
@@ -91,7 +96,7 @@ class BrowserRuntime:
             await self.create_page()
         for page in list(self.pages.values()):
             if page.session_id:
-                await self._enable_session(page.session_id)
+                await self._enable_session(page.session_id, target_id=page.target_id)
         self.download_dir.mkdir(parents=True, exist_ok=True)
         with suppress(Exception):
             await self.client.call(
@@ -105,7 +110,7 @@ class BrowserRuntime:
         if existing_id and existing_id in self.pages:
             page = self.pages[existing_id]
             if page.session_id:
-                await self._enable_session(page.session_id)
+                await self._enable_session(page.session_id, target_id=page.target_id)
             return page
         attached = await self.client.call("Target.attachToTarget", {"targetId": target_id, "flatten": True})
         session_id = str(attached.get("sessionId") or "")
@@ -134,10 +139,10 @@ class BrowserRuntime:
         self.target_to_page[target_id] = page_id
         if session_id:
             self.session_to_page[session_id] = page_id
-            await self._enable_session(session_id)
+            await self._enable_session(session_id, target_id=target_id)
         return page
 
-    async def _enable_session(self, session_id: str) -> None:
+    async def _enable_session(self, session_id: str, *, target_id: str | None = None) -> None:
         try:
             client = self.client
         except BrowserError:
@@ -150,6 +155,8 @@ class BrowserRuntime:
             viewport_width=self.config.viewport_width,
             viewport_height=self.config.viewport_height,
         )
+        if self.config.stealth and target_id:
+            await apply_window_geometry(client, target_id, identity)
         with suppress(Exception):
             params = identity.device_metrics_params if self.config.stealth else {
                 "width": self.config.viewport_width,
@@ -293,7 +300,7 @@ class BrowserRuntime:
             if page_id and page_id in self.pages:
                 page = self.pages[page_id]
                 if page.session_id:
-                    await self._enable_session(page.session_id)
+                    await self._enable_session(page.session_id, target_id=page.target_id)
                 return page
             await asyncio.sleep(0.02)
         info = (await self.client.call("Target.getTargetInfo", {"targetId": target_id})).get("targetInfo", {})

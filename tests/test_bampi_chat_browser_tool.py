@@ -25,9 +25,9 @@ from bampi.plugins.bampi_chat.tools.browser.models import PageState
 from bampi.plugins.bampi_chat.tools.browser.policy import NavigationPolicy
 from bampi.plugins.bampi_chat.tools.browser.stealth import (
     apply_stealth_to_session,
+    apply_window_geometry,
     blocked_url_patterns,
     build_stealth_identity,
-    preload_script,
 )
 
 
@@ -183,7 +183,7 @@ def test_chrome_for_testing_default_cache_is_project_local(
     assert default_cache_dir() == tmp_path / ".bampi" / "browser" / "chrome-for-testing"
 
 
-def test_stealth_identity_uses_real_chrome_version_without_headless_marker(tmp_path: Path) -> None:
+def test_stealth_identity_reduces_low_entropy_ua_and_keeps_coherent_geometry(tmp_path: Path) -> None:
     identity = build_stealth_identity(
         tmp_path,
         {"product": "HeadlessChrome/150.0.1.2"},
@@ -194,35 +194,35 @@ def test_stealth_identity_uses_real_chrome_version_without_headless_marker(tmp_p
     )
 
     assert "HeadlessChrome" not in identity.user_agent
-    assert "Chrome/150.0.1.2" in identity.user_agent
+    assert "Chrome/150.0.0.0" in identity.user_agent
+    assert "150.0.1.2" not in identity.user_agent
     assert identity.user_agent_metadata["platform"] == "Linux"
     assert identity.locale == "zh_CN"
     assert identity.languages == ("zh-CN", "zh")
     assert identity.timezone_id == "Asia/Shanghai"
     assert identity.geolocation is not None
-    assert identity.screen_width >= 1440
-    assert identity.screen_height >= 1000
+    assert identity.screen_width >= identity.window_width >= identity.viewport_width
+    assert identity.screen_height >= identity.window_height > identity.viewport_height
+    assert identity.window_left + identity.window_width <= identity.screen_width
+    assert identity.window_top + identity.window_height <= identity.screen_height
     assert {"brand": "Google Chrome", "version": "150.0.1.2"} in identity.full_version_list
-
-
-def test_stealth_preload_patches_high_signal_browser_surfaces(tmp_path: Path) -> None:
-    identity = build_stealth_identity(tmp_path, {"product": "Chrome/150.0.1.2"})
-    script = preload_script(identity)
-
-    assert "webdriver" in script
-    assert "userAgentData" in script
-    assert "WebGLRenderingContext" in script
-    assert "hardwareConcurrency" in script
-    assert "Function.prototype" in script
+    assert identity.user_agent_metadata["fullVersion"] == "150.0.1.2"
 
 
 def test_chromium_launch_args_enable_default_stealth(tmp_path: Path) -> None:
-    args = chromium_launch_args("/opt/chrome", tmp_path / "profile", tmp_path, BrowserConfig(headless=True))
+    config = BrowserConfig(headless=True)
+    identity = build_stealth_identity(
+        tmp_path,
+        viewport_width=config.viewport_width,
+        viewport_height=config.viewport_height,
+    )
+    args = chromium_launch_args("/opt/chrome", tmp_path / "profile", tmp_path, config)
 
     assert args[0] == "/opt/chrome"
     assert "--headless=new" in args
     assert "--disable-blink-features=AutomationControlled" in args
     assert any(arg.startswith("--lang=") for arg in args)
+    assert f"--window-size={identity.window_width},{identity.window_height}" in args
     assert args[-1] == "about:blank"
 
 
@@ -243,7 +243,7 @@ async def test_apply_stealth_to_session_installs_cdp_overrides(tmp_path: Path) -
         async def call(self, method: str, params=None, *, session_id: str | None = None, timeout: float = 20.0):
             del timeout
             self.calls.append((method, params or {}, session_id))
-            return {"identifier": "script-1"} if method == "Page.addScriptToEvaluateOnNewDocument" else {}
+            return {}
 
     client = FakeClient()
     identity = build_stealth_identity(tmp_path, {"product": "HeadlessChrome/150.0.1.2"})
@@ -254,13 +254,44 @@ async def test_apply_stealth_to_session_installs_cdp_overrides(tmp_path: Path) -
     assert "Emulation.setAutomationOverride" in methods
     assert "Emulation.setUserAgentOverride" in methods
     assert "Emulation.setTimezoneOverride" in methods
-    assert "Page.addScriptToEvaluateOnNewDocument" in methods
     assert "Network.setBlockedURLs" in methods
+    assert "Page.addScriptToEvaluateOnNewDocument" not in methods
+    assert "Runtime.evaluate" not in methods
     ua_call = next(params for method, params, _ in client.calls if method == "Emulation.setUserAgentOverride")
     assert "HeadlessChrome" not in str(ua_call["userAgent"])
+    assert "Chrome/150.0.0.0" in str(ua_call["userAgent"])
     blocked = next(params for method, params, _ in client.calls if method == "Network.setBlockedURLs")
     assert "*.png" in blocked["urls"]
     assert all(session_id == "session-1" for _, _, session_id in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_apply_window_geometry_uses_native_browser_bounds(tmp_path: Path) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def call(self, method: str, params=None, **kwargs):
+            assert not kwargs
+            self.calls.append((method, params or {}))
+            return {"windowId": 42} if method == "Browser.getWindowForTarget" else {}
+
+    identity = build_stealth_identity(
+        tmp_path,
+        {"product": "Chrome/150.0.1.2"},
+        viewport_width=1440,
+        viewport_height=1000,
+    )
+    client = FakeClient()
+
+    assert await apply_window_geometry(client, "target-1", identity) is True
+    assert client.calls == [
+        ("Browser.getWindowForTarget", {"targetId": "target-1"}),
+        (
+            "Browser.setWindowBounds",
+            {"windowId": 42, "bounds": identity.window_bounds_params},
+        ),
+    ]
 
 
 @pytest.mark.asyncio
