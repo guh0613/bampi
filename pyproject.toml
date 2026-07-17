@@ -1,7 +1,7 @@
 [project]
 name = "bampi"
 version = "0.1.0"
-description = "Add your description here"
+description = "QQ 群聊 AI Agent（NoneBot2 + OneBot v11 + bampy）"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

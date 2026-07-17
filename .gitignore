@@ -50,7 +50,11 @@ MANIFEST
 # Agent Instructions
 CLAUDE.md
 AGENTS.md
-docs/
+
+# Private / local design notes under docs/ (public guides are tracked)
+docs/*
+!docs/guide/
+!docs/guide/**
 
 # specific
 references/
