@@ -111,10 +111,8 @@ def build_system_prompt(
     if "qq_react" in tool_names:
         tool_lines.append(
             "- `qq_react` 做轻量 QQ 互动：`action=emoji` 给触发本轮对话的那条消息贴表情"
-            "（emoji 传表情名如 `赞`/`doge`/`笑哭`，或 emoji 字符如 👍），"
-            "`action=poke` 戳一戳群成员（默认戳本轮发消息的人）。"
-            "适合用来代替整句文字回复（表示收到/赞同/回应戳一戳），"
-            "贴了表情就不必再发一句同样意思的话；不要频繁使用。"
+            "适合用来表示收到/赞同/回应戳一戳，"
+            "贴了表情就不必再发一句同样意思的话；可以经常使用表达回应，但是不要频繁使用和滥用。"
         )
     if "memory_search" in tool_names:
         tool_lines.append(
