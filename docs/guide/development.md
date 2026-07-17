@@ -1,6 +1,6 @@
 # 开发指南
 
-面向在本仓库改 Bot / 插件逻辑的开发者。架构与数据流见 [架构概览](architecture.md)；配置项见 [配置参考](configuration.md)；Agent 框架本身见 [bampy 文档](../../bampy/docs/architecture.md)。
+面向在本仓库改 Bot / 插件逻辑的开发者。架构与数据流见 [架构概览](architecture.md)；配置项见 [配置参考](configuration.md)；Agent 框架本身见 [bampy 文档](https://github.com/guh0613/bampy/blob/main/docs/architecture.md)。
 
 ## 开发环境
 
@@ -81,6 +81,6 @@ uv add <package>
 
 ## 文档维护
 
-行为或配置面变更时，同步更新 `docs/guide/`（至少检查 [架构](architecture.md)、[配置](configuration.md)、[使用](usage.md)、本文）。Skills 机制细节仍以 [bampy Skills](../../bampy/docs/skills.md) 为准。
+行为或配置面变更时，同步更新 `docs/guide/`（至少检查 [架构](architecture.md)、[配置](configuration.md)、[使用](usage.md)、本文）。Skills 机制细节仍以 [bampy Skills](https://github.com/guh0613/bampy/blob/main/docs/skills.md) 为准。
 
-相关链接：[架构概览](architecture.md) · [配置参考](configuration.md) · [bampy README](../../bampy/README.md) · [bampy 架构](../../bampy/docs/architecture.md)
+相关链接：[架构概览](architecture.md) · [配置参考](configuration.md) · [bampy README](https://github.com/guh0613/bampy) · [bampy 架构](https://github.com/guh0613/bampy/blob/main/docs/architecture.md)

@@ -9,7 +9,7 @@ Bampi 的聊天能力由 NoneBot 插件 `bampi_chat` 提供。配置项对应 `B
 - `bampi_trigger_prefix` / `bampi_trigger_keywords` / `bampi_group_whitelist`：优先用 **JSON 数组**（如 `["@bot","小帮"]`）；若写成单个普通字符串，会当作只含一项的列表。
 - `bampi_model_input_types`：支持 **JSON 数组**或**逗号分隔**（如 `text,image`），且必须包含 `text`。
 
-部署步骤见 [快速开始](getting-started.md)；模型协议细节见 [bampy providers](../../bampy/docs/providers.md)；整体数据流见 [架构](architecture.md)。
+部署步骤见 [快速开始](getting-started.md)；模型协议细节见 [bampy providers](https://github.com/guh0613/bampy/blob/main/docs/providers.md)；整体数据流见 [架构](architecture.md)。
 
 ## 最小推荐配置
 
@@ -40,7 +40,7 @@ BAMPI_GROUP_WHITELIST=["123456789"]
 | `bampi_model_input_types` (`BAMPI_MODEL_INPUT_TYPES`) | 未设则按模型能力 | 覆盖输入类型：`text` / `image`（须含 `text`） |
 | `bampi_thinking_level` (`BAMPI_THINKING_LEVEL`) | `off` | 思考强度：`off` / `minimal` / `low` / `medium` / `high` / `xhigh` |
 
-更多 provider 行为见 [bampy providers](../../bampy/docs/providers.md)。
+更多 provider 行为见 [bampy providers](https://github.com/guh0613/bampy/blob/main/docs/providers.md)。
 
 ## 触发与限流
 

@@ -39,7 +39,7 @@
 
 ## Skills
 
-Skill 是带 `SKILL.md` 的能力包。仓库可带**内置 skills**，启动时会同步到群 workspace；用户也可自行安装。机制细节见 [bampy Skills](../../bampy/docs/skills.md)。
+Skill 是带 `SKILL.md` 的能力包。仓库可带**内置 skills**，启动时会同步到群 workspace；用户也可自行安装。机制细节见 [bampy Skills](https://github.com/guh0613/bampy/blob/main/docs/skills.md)。
 
 ### QQ 侧命令
 
@@ -106,4 +106,4 @@ Agent 可通过工具完成（不写具体 API）：
 
 - [快速开始](getting-started.md)
 - [配置参考](configuration.md)
-- [bampy Skills](../../bampy/docs/skills.md)
+- [bampy Skills](https://github.com/guh0613/bampy/blob/main/docs/skills.md)

@@ -1,6 +1,6 @@
 # Bampi
 
-基于 NoneBot2 + OneBot v11 + NapCat 的 QQ 群聊 AI Agent；底层 Agent 能力由 [bampy](bampy/README.md) 提供。
+基于 NoneBot2 + OneBot v11 + NapCat 的 QQ 群聊 AI Agent；底层 Agent 能力由 [bampy](https://github.com/guh0613/bampy) 提供。
 
 ## 功能亮点
 
@@ -50,4 +50,4 @@ flowchart LR
 | [配置参考](docs/guide/configuration.md) | `BAMPI_*` 配置分组与完整面 |
 | [架构](docs/guide/architecture.md) | Bot 侧架构与数据流 |
 | [开发指南](docs/guide/development.md) | 目录、流程、测试、插件结构 |
-| [bampy](bampy/README.md) | Agent 框架（机制细节见其文档，本仓库不复述） |
+| [bampy](https://github.com/guh0613/bampy) | Agent 框架（机制细节见其文档，本仓库不复述） |

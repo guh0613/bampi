@@ -10,6 +10,6 @@
 | [架构](architecture.md) | Bot 侧架构与数据流 |
 | [开发指南](development.md) | 目录、测试、插件结构 |
 
-Agent 框架文档：[bampy](../../bampy/README.md)。
+Agent 框架文档：[bampy](https://github.com/guh0613/bampy)。
 
 返回仓库首页：[README](../../README.md)。

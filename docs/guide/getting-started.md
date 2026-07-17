@@ -106,7 +106,7 @@ uv run python bot.py
 
 3. 能收到回复即冒烟通过。触发方式、命令与 Skills 用法见 [usage.md](usage.md)。
 
-Agent 框架本身的设计与 API 见 [bampy README](../../bampy/README.md) 及其 [docs](../../bampy/docs/getting-started.md)。
+Agent 框架本身的设计与 API 见 [bampy README](https://github.com/guh0613/bampy) 及其 [docs](https://github.com/guh0613/bampy/blob/main/docs/getting-started.md)。
 
 ## 8. 常见问题
 

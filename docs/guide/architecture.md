@@ -1,6 +1,6 @@
 # 架构概览
 
-Bampi 把 [bampy](../../bampy/README.md) Agent 接到 QQ 群聊：协议走 OneBot v11（NapCat），Bot 进程在宿主机，工具默认进入 `bampi-sandbox` 容器。本文只讲 **Bot 侧** 如何接线；Agent loop、工具协议、会话持久化等框架能力见 [bampy 架构](../../bampy/docs/architecture.md)。
+Bampi 把 [bampy](https://github.com/guh0613/bampy) Agent 接到 QQ 群聊：协议走 OneBot v11（NapCat），Bot 进程在宿主机，工具默认进入 `bampi-sandbox` 容器。本文只讲 **Bot 侧** 如何接线；Agent loop、工具协议、会话持久化等框架能力见 [bampy 架构](https://github.com/guh0613/bampy/blob/main/docs/architecture.md)。
 
 ## 总览
 
@@ -22,7 +22,7 @@ bampy AgentSession（每群一个 session）
 | NapCat | 登录 QQ、转发 OneBot 事件与 API |
 | NoneBot2 | 接收事件、调用 QQ API、发进度/回复消息 |
 | `bampi_chat` | 触发判定、群会话池、工具装配、记忆与定时、Skills 同步 |
-| bampy | Agent loop、流式事件、工具执行、会话 NDJSON（详见 [bampy 架构](../../bampy/docs/architecture.md)） |
+| bampy | Agent loop、流式事件、工具执行、会话 NDJSON（详见 [bampy 架构](https://github.com/guh0613/bampy/blob/main/docs/architecture.md)） |
 | sandbox | `bampi-sandbox` 容器；宿主机 `data/bampi/workspace` 挂到容器 `/workspace` |
 | memory | 可选长期记忆；默认 `data/bampi/memory.db` |
 
@@ -52,9 +52,9 @@ bampy AgentSession（每群一个 session）
 
 Bot 侧只做「创建 session、注入工具与 system prompt、订阅事件、调用 `prompt`」。agent loop、compaction、扩展与 provider 细节不在本文展开，请看：
 
-- [bampy 架构](../../bampy/docs/architecture.md)
-- [AgentSession](../../bampy/docs/agent-session.md)
-- [会话持久化](../../bampy/docs/session.md)
+- [bampy 架构](https://github.com/guh0613/bampy/blob/main/docs/architecture.md)
+- [AgentSession](https://github.com/guh0613/bampy/blob/main/docs/agent-session.md)
+- [会话持久化](https://github.com/guh0613/bampy/blob/main/docs/session.md)
 
 ### Sandbox
 
@@ -97,7 +97,7 @@ Bot 侧只做「创建 session、注入工具与 system prompt、订阅事件、
 
 - 仓库可带 **内置 skills**：启动或加载时同步到 workspace 的内置镜像目录（概念上：builtin 源 → workspace 内镜像）。
 - 用户安装目录在 workspace 下（当前约定 `.agents/skills`；亦兼容旧路径）。
-- Skill **内容与机制**（`SKILL.md`、发现规则等）见 [bampy Skills](../../bampy/docs/skills.md)。
+- Skill **内容与机制**（`SKILL.md`、发现规则等）见 [bampy Skills](https://github.com/guh0613/bampy/blob/main/docs/skills.md)。
 - QQ 侧命令与安装方式见 [使用说明](usage.md)。
 
 公开文档**不**列举内置 skill 的具体步骤或目录清单。
