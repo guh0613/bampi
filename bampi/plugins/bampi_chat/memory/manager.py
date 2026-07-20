@@ -368,12 +368,14 @@ class MemoryManager:
             nickname=current_nickname,
         )
 
+        # Preserve the session's first-seen participant order so switching the
+        # current speaker does not reorder the injected system-prompt context.
         by_user: dict[str, str] = {}
-        by_user[normalized_user_id] = current_nickname
         for participant in session_participants or []:
             if not participant.user_id:
                 continue
             by_user.setdefault(participant.user_id, participant.nickname)
+        by_user.setdefault(normalized_user_id, current_nickname)
 
         profiles: list[tuple[Any, list[MemoryProfileEdit], str]] = []
         for user_id, display_name in by_user.items():
@@ -392,8 +394,6 @@ class MemoryManager:
             profiles.append((profile, edits, display_name))
 
         return render_memory_context(
-            current_user_id=normalized_user_id,
-            current_nickname=current_nickname,
             profiles=profiles,
         )
 

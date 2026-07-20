@@ -700,6 +700,46 @@ async def test_memory_manage_defaults_to_current_speaker_and_context_injects(tmp
     assert "已记录画像删除条件" in delete_result.content[0].text
 
 
+def test_memory_context_keeps_first_seen_order_and_full_profiles_across_speakers(tmp_path: Path):
+    manager = MemoryManager(tmp_path / "memory.db")
+    first_profile = "甲的完整画像：" + ("甲" * 700) + "甲画像末尾"
+    second_profile = "乙的完整画像：" + ("乙" * 700) + "乙画像末尾"
+    participants = [
+        MemoryParticipant(user_id="1", nickname="甲"),
+        MemoryParticipant(user_id="2", nickname="乙"),
+    ]
+
+    for participant, profile in zip(participants, (first_profile, second_profile), strict=True):
+        manager.store.profiles.touch(
+            group_id="1001",
+            user_id=participant.user_id,
+            nickname=participant.nickname,
+        )
+        manager.store.profiles.consolidate(
+            group_id="1001",
+            user_id=participant.user_id,
+            profile=profile,
+        )
+
+    first_speaks = manager.get_memory_context_for_turn(
+        group_id="1001",
+        current_user_id="1",
+        current_nickname="甲",
+        session_participants=participants,
+    )
+    second_speaks = manager.get_memory_context_for_turn(
+        group_id="1001",
+        current_user_id="2",
+        current_nickname="乙",
+        session_participants=participants,
+    )
+
+    assert first_speaks == second_speaks
+    assert first_speaks.index("### 甲") < first_speaks.index("### 乙")
+    assert "甲画像末尾" in first_speaks
+    assert "乙画像末尾" in first_speaks
+
+
 @pytest.mark.asyncio
 async def test_profile_generation_scan_uses_llm_and_consolidates_pending_edits(
     tmp_path: Path,

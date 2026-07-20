@@ -67,10 +67,7 @@ class MemoryContextRequest:
 
 def render_memory_context(
     *,
-    current_user_id: str,
-    current_nickname: str,
     profiles: list[tuple[MemoryProfile | None, list[MemoryProfileEdit], str]],
-    max_profile_chars_for_others: int = 600,
 ) -> str:
     sections: list[str] = []
     for profile, edits, display_name in profiles:
@@ -80,14 +77,12 @@ def render_memory_context(
         if not user_id:
             continue
 
-        is_current = user_id == current_user_id
-        rendered_name = display_name or current_nickname or (profile.nickname if profile is not None else user_id)
+        rendered_name = display_name or (profile.nickname if profile is not None else user_id)
         body = profile.profile if profile is not None else ""
         body = _render_profile_body(
             body,
             nickname=rendered_name,
             edits=edits,
-            truncate_chars=0 if is_current else max_profile_chars_for_others,
         )
         if not body.strip():
             continue
@@ -213,13 +208,10 @@ def _render_profile_body(
     *,
     nickname: str,
     edits: list[MemoryProfileEdit],
-    truncate_chars: int,
 ) -> str:
     delete_edits = [edit for edit in edits if edit.edit_type == "delete"]
     body = _filter_deleted_lines(profile_text, delete_edits)
     body = body.replace("{nickname}", nickname or "{nickname}").strip()
-    if truncate_chars > 0 and len(body) > truncate_chars:
-        body = body[: max(0, truncate_chars - 3)].rstrip() + "..."
 
     delete_terms = [edit.content.strip() for edit in delete_edits if edit.content.strip()]
     additions = [
