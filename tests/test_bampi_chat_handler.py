@@ -119,21 +119,6 @@ class FakeSession:
         return unsubscribe
 
 
-class FakeGroupSessionManager:
-    def __init__(self, workspace_dir: str) -> None:
-        self.workspace_dir = workspace_dir
-        self.released_group_ids: list[str] = []
-
-    def workspace_dir_for_group(self, group_id: str) -> str:
-        return self.workspace_dir
-
-    async def inspect_interaction(self, group_id: str):
-        return SimpleNamespace(is_active=False, is_streaming=False)
-
-    async def release(self, group_id: str) -> None:
-        self.released_group_ids.append(group_id)
-
-
 def test_should_respond_when_to_me():
     config = BampiChatConfig()
     decision = should_respond(FakeEvent("hello", to_me=True), bot_self_id="42", config=config, random_value=1.0)
@@ -327,93 +312,6 @@ async def test_live_progress_reporter_sends_emoji_tool_update():
     assert action == "send_group_msg"
     assert params["group_id"] == 1001
     assert str(params["message"]) == "[CQ:reply,id=99]🔍 正在搜索：TODO"
-
-
-@pytest.mark.asyncio
-async def test_live_progress_reporter_can_announce_skill_loading():
-    bot = FakeBot()
-    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
-    config = BampiChatConfig(bampi_live_progress_enabled=True)
-    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
-    session = FakeSession()
-
-    reporter.start(session)
-    reporter.announce_skill_loading(["docx", "skill-creator"])
-    await reporter.prepare_final_reply()
-    await reporter.close()
-
-    assert len(bot.calls) == 1
-    _, params = bot.calls[0]
-    assert str(params["message"]) == "[CQ:reply,id=99]🧩 正在加载 skills：docx, skill-creator"
-
-
-@pytest.mark.asyncio
-async def test_handle_skill_command_installs_from_message_attachment(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    bot = FakeBot()
-    matcher = FakeMatcher()
-    manager = FakeGroupSessionManager(str(tmp_path / "workspace"))
-    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
-    config = BampiChatConfig()
-    install_calls: list[str] = []
-
-    async def fake_collect_incoming_media(bot, event, config, workspace_dir):  # noqa: ANN001
-        return IncomingMedia(saved_paths=["inbox/skill-pack.zip"], reply_saved_paths=["inbox/other-skill.md"])
-
-    def fake_install_skills_from_source(source: str, **kwargs):  # noqa: ANN003
-        install_calls.append(source)
-        if source.endswith(".zip"):
-            return SimpleNamespace(installed_names=["docx"], replaced_names=[], diagnostics=[])
-        return SimpleNamespace(installed_names=["skill-creator"], replaced_names=[], diagnostics=[])
-
-    monkeypatch.setattr(handler_module, "collect_incoming_media", fake_collect_incoming_media)
-    monkeypatch.setattr(handler_module, "install_skills_from_source", fake_install_skills_from_source)
-
-    handled = await handler_module._handle_skill_command(
-        bot=bot,
-        event=event,
-        command_text="/skill install",
-        group_id="1001",
-        matcher=matcher,
-        session_manager=manager,
-        config=config,
-    )
-
-    assert handled is True
-    assert install_calls == ["inbox/skill-pack.zip", "inbox/other-skill.md"]
-    assert manager.released_group_ids == ["1001"]
-    assert matcher.sent == [
-        "已安装 2 个 skill：docx, skill-creator\n"
-        "使用方法：在消息开头写 `/skill-name` 即可调用。"
-    ]
-
-
-@pytest.mark.asyncio
-async def test_handle_skill_command_rejects_local_path_argument(tmp_path: Path):
-    bot = FakeBot()
-    matcher = FakeMatcher()
-    manager = FakeGroupSessionManager(str(tmp_path / "workspace"))
-    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
-    config = BampiChatConfig()
-
-    handled = await handler_module._handle_skill_command(
-        bot=bot,
-        event=event,
-        command_text="/skill install inbox/skill-pack.zip",
-        group_id="1001",
-        matcher=matcher,
-        session_manager=manager,
-        config=config,
-    )
-
-    assert handled is True
-    assert matcher.sent == [
-        "URL 无效。\n"
-        "请发送或引用 skill 文件后执行 `/skill install`，"
-        "或使用 `/skill install <url>`。"
-    ]
 
 
 @pytest.mark.asyncio

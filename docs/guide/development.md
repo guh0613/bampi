@@ -42,7 +42,7 @@ uv run python bot.py
 | `config.py` | `BampiChatConfig`（全部 `BAMPI_*` 配置） |
 | `handler.py` | 消息/通知触发、`should_respond`、回复与 outbox 出站 |
 | `session_manager.py` | 群会话池、创建 `AgentSession`、工具注入、空闲清理 |
-| `skills.py` | 内置 skill 同步、安装、列表/显式调用解析 |
+| `skills.py` | 内置及 workspace skill 的发现、同步与 prompt 路径映射 |
 | `schedule_manager.py` | 定时任务持久化与调度 |
 | `service_manager.py` | 沙箱内临时 HTTP 服务端口管理 |
 | `memory/` | 记忆存储、检索、后台归档 |

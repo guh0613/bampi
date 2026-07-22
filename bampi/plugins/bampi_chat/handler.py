@@ -32,19 +32,7 @@ from .feedback import (
     build_background_failure_message,
     build_reply_failure_message,
 )
-from .skills import (
-    ExplicitSkillResolution,
-    build_explicit_skill_payload_text,
-    describe_skill_resource_path,
-    format_skill_details,
-    format_skill_help,
-    format_skill_list,
-    install_skills_from_source,
-    load_chat_skills,
-    parse_skill_command,
-    resolve_explicit_skills,
-    strip_explicit_skill_mentions,
-)
+from .skills import describe_skill_resource_path
 from .message_render import (
     MentionNameCache,
     NameResolver,
@@ -417,17 +405,6 @@ class LiveProgressReporter:
         self._streamed_text = ""
         self._streamed_any_text = False
 
-    def announce_skill_loading(self, skill_names: list[str]) -> None:
-        if not self._live_progress_enabled or not skill_names:
-            return
-        limit = self._config.bampi_live_progress_max_tool_updates
-        if limit > 0 and self._tool_updates_sent >= limit:
-            return
-        if self._config.bampi_live_text_stream_enabled:
-            self._flush_pending_text(force=True)
-        self._tool_updates_sent += 1
-        self._enqueue(format_skill_load_message(skill_names))
-
     def _handle_tool_start(self, event: Any) -> None:
         if getattr(event, "tool_name", "") in SILENT_PROGRESS_TOOLS:
             return
@@ -665,15 +642,6 @@ def longest_common_prefix_len(left: str, right: str) -> int:
     return index
 
 
-def format_skill_load_message(skill_names: list[str]) -> str:
-    unique_names = list(dict.fromkeys(name for name in skill_names if name))
-    if not unique_names:
-        return f"{TOOL_PROGRESS_EMOJIS['skill']} 正在加载 skill"
-    if len(unique_names) == 1:
-        return f"{TOOL_PROGRESS_EMOJIS['skill']} 正在加载 skill：{unique_names[0]}"
-    return f"{TOOL_PROGRESS_EMOJIS['skill']} 正在加载 skills：{', '.join(unique_names)}"
-
-
 def format_skill_resource_progress(skill_resource: tuple[str, str]) -> str:
     skill_name, relative_path = skill_resource
     normalized = relative_path.strip("/")
@@ -848,157 +816,6 @@ def build_stop_success_message(
     return message
 
 
-def _format_skill_diagnostics(diagnostics: list[Any]) -> str:
-    if not diagnostics:
-        return ""
-
-    lines = ["Skill 诊断："]
-    for diagnostic in diagnostics[:5]:
-        path = getattr(diagnostic, "path", "")
-        message = getattr(diagnostic, "message", "")
-        lines.append(f"- {message} ({path})")
-    if len(diagnostics) > 5:
-        lines.append(f"- 其余 {len(diagnostics) - 5} 条已省略")
-    return "\n".join(lines)
-
-
-def _format_missing_skills_message(names: list[str]) -> str:
-    missing = ", ".join(names)
-    return (
-        f"这些 skill 不存在或当前不可用：{missing}\n"
-        "先用 `/skills` 查看已安装 skill，"
-        "或发送/引用 skill 文件后执行 `/skill install`，也可以用 `/skill install https://...` 安装。"
-    )
-
-
-async def _handle_skill_command(
-    *,
-    bot: Bot,
-    event: GroupMessageEvent,
-    command_text: str,
-    group_id: str,
-    matcher: Matcher,
-    session_manager: GroupSessionManager,
-    config: BampiChatConfig,
-) -> bool:
-    command = parse_skill_command(command_text)
-    if command is None:
-        return False
-
-    workspace_dir = session_manager.workspace_dir_for_group(group_id)
-
-    if command.action == "help":
-        await matcher.send(format_skill_help())
-        return True
-
-    if command.action == "list":
-        loaded = load_chat_skills(workspace_dir)
-        message = format_skill_list(loaded.skills, workspace_dir=workspace_dir)
-        diagnostics = _format_skill_diagnostics(loaded.diagnostics)
-        if diagnostics:
-            message = f"{message}\n\n{diagnostics}"
-        await matcher.send(message)
-        return True
-
-    if command.action == "show":
-        if not command.argument:
-            await matcher.send("用法：`/skill show <name>`")
-            return True
-
-        loaded = load_chat_skills(workspace_dir)
-        by_name = {skill.name.lower(): skill for skill in loaded.skills}
-        skill = by_name.get(command.argument.lower())
-        if skill is None:
-            await matcher.send(_format_missing_skills_message([command.argument]))
-            return True
-
-        message = format_skill_details(skill, workspace_dir=workspace_dir)
-        diagnostics = _format_skill_diagnostics(loaded.diagnostics)
-        if diagnostics:
-            message = f"{message}\n\n{diagnostics}"
-        await matcher.send(message)
-        return True
-
-    if command.action == "install":
-        status = await session_manager.inspect_interaction(group_id)
-        if status.is_active:
-            message = (
-                ACTIVE_SESSION_WINDING_DOWN_MESSAGE
-                if not status.is_streaming
-                else ACTIVE_SESSION_BUSY_MESSAGE
-            )
-            await matcher.send(message)
-            return True
-
-        install_sources: list[str] = []
-        if command.argument:
-            parsed = urlparse(command.argument)
-            if parsed.scheme in {"http", "https"}:
-                install_sources.append(command.argument)
-            else:
-                await matcher.send(
-                    "URL 无效。\n"
-                    "请发送或引用 skill 文件后执行 `/skill install`，"
-                    "或使用 `/skill install <url>`。"
-                )
-                return True
-        else:
-            try:
-                media = await collect_incoming_media(bot, event, config, workspace_dir)
-            except Exception:
-                logger.exception("bampi_chat failed to collect media for skill installation")
-                await matcher.send("附件读取失败，请重新发送或引用。")
-                return True
-
-            install_sources.extend(media.saved_paths)
-            install_sources.extend(media.reply_saved_paths)
-            if not install_sources:
-                await matcher.send(
-                    "没有找到可安装的 skill 文件。\n"
-                    "请直接发送或引用一个 zip/tar/Markdown skill 文件，再执行 `/skill install`；"
-                    "也可以使用 `/skill install https://...`。"
-                )
-                return True
-
-        installed_names: list[str] = []
-        replaced_names: list[str] = []
-        collected_diagnostics: list[Any] = []
-        try:
-            for source in install_sources:
-                result = install_skills_from_source(
-                    source,
-                    workspace_dir=workspace_dir,
-                    force=command.force,
-                    max_bytes=config.bampi_max_download_size,
-                    timeout=config.bampi_web_search_timeout,
-                )
-                installed_names.extend(result.installed_names)
-                replaced_names.extend(result.replaced_names)
-                collected_diagnostics.extend(result.diagnostics)
-        except Exception as exc:
-            logger.warning(f"skill installation error: {exc}")
-            await matcher.send("安装 skill 失败，请检查文件格式后重试。")
-            return True
-
-        await session_manager.release(group_id)
-
-        lines = [
-            f"已安装 {len(installed_names)} 个 skill：{', '.join(installed_names)}",
-            "使用方法：在消息开头写 `/skill-name` 即可调用。",
-        ]
-        if replaced_names:
-            lines.append(f"已覆盖：{', '.join(replaced_names)}")
-        diagnostics = _format_skill_diagnostics(collected_diagnostics)
-        if diagnostics:
-            lines.append("")
-            lines.append(diagnostics)
-        await matcher.send("\n".join(lines))
-        return True
-
-    await matcher.send(format_skill_help())
-    return True
-
-
 def register_handlers(config: BampiChatConfig, session_manager: GroupSessionManager) -> None:
     limiter = GroupRateLimiter(
         config.bampi_rate_limit,
@@ -1026,8 +843,7 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
             )
             return
 
-        original_text = (event.get_plaintext() or "").strip()
-        raw_text = normalize_text(original_text)
+        raw_text = normalize_text(event.get_plaintext())
         workspace_dir = session_manager.workspace_dir_for_group(group_id)
         logger.info(
             f"bampi_chat received group_id={event.group_id} "
@@ -1037,17 +853,6 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
             f"segments={summarize_segments(event.message)} "
             f"text={log_preview(raw_text)!r}"
         )
-
-        if await _handle_skill_command(
-            bot=bot,
-            event=event,
-            command_text=original_text,
-            group_id=group_id,
-            matcher=matcher,
-            session_manager=session_manager,
-            config=config,
-        ):
-            return
 
         if is_clear_command(raw_text):
             status = await session_manager.inspect_interaction(group_id)
@@ -1177,19 +982,10 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 logger.exception("bampi_chat failed to collect follow-up media")
                 await matcher.send("⚠️ 获取消息里的图片或文件失败，请重发一次。")
                 return
-            explicit_skills = resolve_explicit_skills(
-                decision.cleaned_text,
-                workspace_dir=workspace_dir,
-            )
-            if explicit_skills.missing_names:
-                await matcher.send(_format_missing_skills_message(explicit_skills.missing_names))
-                return
             user_message = build_user_message(
                 event,
                 decision.cleaned_text,
                 media,
-                workspace_dir=workspace_dir,
-                explicit_skills=explicit_skills,
                 resolve_name=mention_names.get,
                 reaction_notes=reaction_buffer.drain(group_id) or None,
             )
@@ -1271,19 +1067,10 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 f"notes={media.notes} "
                 f"reply_notes={media.reply_notes}"
             )
-            explicit_skills = resolve_explicit_skills(
-                decision.cleaned_text,
-                workspace_dir=workspace_dir,
-            )
-            if explicit_skills.missing_names:
-                await matcher.send(_format_missing_skills_message(explicit_skills.missing_names))
-                return
             user_message = build_user_message(
                 event,
                 decision.cleaned_text,
                 media,
-                workspace_dir=workspace_dir,
-                explicit_skills=explicit_skills,
                 resolve_name=mention_names.get,
                 reaction_notes=reaction_buffer.drain(group_id) or None,
             )
@@ -1334,8 +1121,6 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 )
                 reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
                 reporter.start(managed.session)
-                if explicit_skills.skills:
-                    reporter.announce_skill_loading([skill.name for skill in explicit_skills.skills])
                 try:
                     logger.info(
                         f"bampi_chat prompt start group_id={group_id} "
@@ -1495,9 +1280,6 @@ def should_respond(
     if text and any(keyword in text for keyword in config.bampi_trigger_keywords):
         return TriggerDecision(True, reason="keyword", direct=True, cleaned_text=text)
 
-    if text and strip_explicit_skill_mentions(text) != text:
-        return TriggerDecision(True, reason="skill", direct=True, cleaned_text=text)
-
     if text and config.bampi_random_reply_prob > 0 and random_value < config.bampi_random_reply_prob:
         return TriggerDecision(True, reason="random", direct=False, cleaned_text=text)
 
@@ -1612,15 +1394,12 @@ def build_user_message(
     cleaned_text: str,
     media: IncomingMedia,
     *,
-    workspace_dir: str | None = None,
-    explicit_skills: ExplicitSkillResolution | None = None,
     resolve_name: NameResolver | None = None,
     reaction_notes: list[str] | None = None,
 ) -> UserMessage:
-    effective_text = explicit_skills.cleaned_text if explicit_skills is not None else cleaned_text
     sender_name = display_name(event.sender)
-    if effective_text:
-        body = effective_text
+    if cleaned_text:
+        body = cleaned_text
     elif media.inline_images or media.saved_paths:
         body = "(无纯文本内容；本条消息仅包含媒体/文件)"
     elif media.reply_inline_images or media.reply_saved_paths:
@@ -1639,10 +1418,6 @@ def build_user_message(
         lines.append(f"reply_to_name: {reply_name}")
         if reply_text:
             lines.append(f"reply_message: {reply_text}")
-
-    if explicit_skills is not None and explicit_skills.skills:
-        lines.append("requested_skills:")
-        lines.extend(f"- {skill.name}" for skill in explicit_skills.skills)
 
     if media.inline_images:
         lines.append(f"inline_image_count: {len(media.inline_images)}")
@@ -1665,15 +1440,6 @@ def build_user_message(
         lines.extend(f"- {note}" for note in reaction_notes)
 
     content: list[TextContent | ImageContent] = [TextContent(text="\n".join(lines))]
-    if explicit_skills is not None and explicit_skills.skills:
-        if workspace_dir is None:
-            raise ValueError("workspace_dir is required when explicit_skills are provided")
-        payload = build_explicit_skill_payload_text(
-            explicit_skills.skills,
-            workspace_dir=workspace_dir,
-        )
-        if payload:
-            content.append(TextContent(text=payload))
     content.extend(media.inline_images)
     content.extend(media.reply_inline_images)
     return UserMessage(content=content)

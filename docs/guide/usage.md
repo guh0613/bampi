@@ -17,7 +17,6 @@
 | @机器人 | `@` 机器人，或回复机器人的消息（`to_me` / 回复） |
 | 戳一戳 | 默认开启（`bampi_poke_reply_enabled`）；戳机器人会触发一轮回复 |
 | 随机回复 | `bampi_random_reply_prob` > 0 时，普通消息有概率被接住 |
-| 显式 Skill | 消息最开头写 `/skill-name`（见下）也会触发 |
 
 触发后同一群内通常串行处理；进行中时其他人需等待，或由发起者 `/stop`。
 
@@ -39,28 +38,11 @@
 
 ## Skills
 
-Skill 是带 `SKILL.md` 的能力包。仓库可带**内置 skills**，启动时会同步到群 workspace；用户也可自行安装。机制细节见 [bampy Skills](https://github.com/guh0613/bampy/blob/main/docs/skills.md)。
+Skill 是带 `SKILL.md` 的能力包。仓库可带**内置 skills**，启动时会同步到群 workspace；运维也可以在 workspace 中预置额外 skills。机制细节见 [bampy Skills](https://github.com/guh0613/bampy/blob/main/docs/skills.md)。
 
-### QQ 侧命令
+群聊侧不提供 `/skill-name`、`/skill` 或 `/skills` 触发与安装命令。Skill 的使用方式与普通对话一致：先通过 @、回复、触发前缀等常规方式唤醒机器人，再用自然语言描述任务；Agent 会根据任务和 skill 描述自行选择。需要指定某项能力时，也直接在自然语言中说明即可。
 
-| 命令 | 作用 |
-|------|------|
-| `/skills` 或 `/skill list` | 列出已安装 skill |
-| `/skill` / `/skills`（无参数） | 同 list |
-| `/skill help` | 显示帮助 |
-| `/skill show <name>` | 查看某个 skill 简介 |
-| `/skill install [--force]` | 发送或**引用** skill 文件（压缩包 / Markdown）后执行，安装到本群 workspace |
-| `/skill install https://... [--force]` | 从 URL 安装；`-f` / `--force` 可覆盖已有同名 skill |
-
-### 显式调用
-
-在普通消息**最开头**写 `/skill-name`，例如：
-
-```text
-/code-review 看看这个文件
-```
-
-会优先按该 skill 处理本轮（具体行为由 skill 自身定义）。用 `/skills` 查看当前可用名称。
+单独发送以 `/` 开头的文本不会因 skill 机制触发机器人；如果消息同时满足 @、回复、触发前缀等条件，斜杠文本只会作为普通消息内容传入。
 
 ## 进度与流式
 

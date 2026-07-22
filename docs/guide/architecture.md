@@ -44,7 +44,7 @@ bampy AgentSession（每群一个 session）
 - **会话池**：每群一个 `AgentSession`；空闲 TTL、并发预约、`/stop` 等
 - **工具装配**：workspace 读写、沙箱 bash、检索/浏览器、记忆、定时、服务等
 - **记忆 / 定时**：后台归档与 schedule 调度（可按配置关闭）
-- **Skills**：启动或加载时把内置 skills 同步到 workspace；用户可安装到安装目录（见下）
+- **Skills**：启动或加载时把内置 skills 同步到 workspace，并向 Agent 暴露可按任务选用的 skill 描述
 
 配置项说明见 [配置参考](configuration.md)。群侧用法见 [使用说明](usage.md)。
 
@@ -96,9 +96,9 @@ Bot 侧只做「创建 session、注入工具与 system prompt、订阅事件、
 ## Skills（Bot 侧位置）
 
 - 仓库可带 **内置 skills**：启动或加载时同步到 workspace 的内置镜像目录（概念上：builtin 源 → workspace 内镜像）。
-- 用户安装目录在 workspace 下（当前约定 `.agents/skills`；亦兼容旧路径）。
+- 也会加载运维侧预置在群 workspace 下的 skills（当前约定 `.agents/skills`；亦兼容旧路径）。
+- QQ 群聊不提供 skill 列表、显式调用或安装命令；Agent 根据用户的自然语言任务与 skill 描述自行选择。
 - Skill **内容与机制**（`SKILL.md`、发现规则等）见 [bampy Skills](https://github.com/guh0613/bampy/blob/main/docs/skills.md)。
-- QQ 侧命令与安装方式见 [使用说明](usage.md)。
 
 公开文档**不**列举内置 skill 的具体步骤或目录清单。
 

@@ -9,7 +9,7 @@
 - **记忆**：跨会话归档与检索，可按群积累长期上下文。
 - **定时**：群内可创建定时任务，到点由 Bot 回调执行。
 - **服务**：在沙箱中拉起临时 HTTP 等服务，并映射端口供访问。
-- **Skills**：以 `SKILL.md` 能力包扩展行为；仓库可带内置 skills，启动时同步到 workspace，也可自行安装。
+- **Skills**：以 `SKILL.md` 能力包扩展行为；仓库可带内置 skills，启动时同步到 workspace，并由 Agent 按自然语言任务自行选用。
 - **QQ 互动**：支持戳一戳、表情回应等群内互动（可配置开关）。
 
 ## 架构简图
@@ -46,7 +46,7 @@ flowchart LR
 | 文档 | 说明 |
 |------|------|
 | [快速开始](docs/guide/getting-started.md) | 环境、`.env`、Docker、NapCat 对接、首次启动 |
-| [使用说明](docs/guide/usage.md) | 触发方式、命令、进度/流式、workspace、Skills 概念与命令 |
+| [使用说明](docs/guide/usage.md) | 触发方式、命令、进度/流式、workspace、Skills 使用方式 |
 | [配置参考](docs/guide/configuration.md) | `BAMPI_*` 配置分组与完整面 |
 | [架构](docs/guide/architecture.md) | Bot 侧架构与数据流 |
 | [开发指南](docs/guide/development.md) | 目录、流程、测试、插件结构 |

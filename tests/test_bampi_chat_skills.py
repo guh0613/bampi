@@ -1,35 +1,17 @@
 from __future__ import annotations
 
-import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from bampi.plugins.bampi_chat.config import BampiChatConfig
-from bampi.plugins.bampi_chat.handler import IncomingMedia, build_user_message, should_respond
+from bampi.plugins.bampi_chat.handler import should_respond
 from bampi.plugins.bampi_chat.skills import (
     builtin_skill_source_root,
-    install_skills_from_source,
     load_chat_skills,
-    resolve_explicit_skills,
 )
 from bampi.plugins.bampi_chat.session_manager import GroupSessionManager
-
-
-@dataclass
-class FakeSender:
-    user_id: int
-    nickname: str = ""
-    card: str = ""
-
-
-@dataclass
-class FakeEvent:
-    group_id: int
-    user_id: int
-    sender: object
-    reply: object | None = None
 
 
 @dataclass
@@ -49,20 +31,41 @@ def _write_skill(skill_dir: Path, content: str) -> Path:
     return skill_file
 
 
-def test_should_respond_when_explicit_skill_is_requested():
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/code-review 帮我看这个文件",
+        "/skill install https://example.com/demo.zip",
+        "/skills",
+        "/foo/bar",
+    ],
+)
+def test_slash_text_does_not_trigger_a_skill(text: str):
     decision = should_respond(
-        PlaintextEvent("/code-review 帮我看这个文件"),
+        PlaintextEvent(text),
+        bot_self_id="42",
+        config=BampiChatConfig(),
+        random_value=1.0,
+    )
+
+    assert decision.should_respond is False
+
+
+def test_slash_text_is_preserved_when_a_normal_trigger_applies():
+    text = "/code-review 帮我看这个文件"
+    decision = should_respond(
+        PlaintextEvent(text, to_me=True),
         bot_self_id="42",
         config=BampiChatConfig(),
         random_value=1.0,
     )
 
     assert decision.should_respond is True
-    assert decision.reason == "skill"
-    assert decision.direct is True
+    assert decision.reason == "to_me"
+    assert decision.cleaned_text == text
 
 
-def test_should_not_treat_non_prefix_or_formula_text_as_explicit_skill():
+def test_should_not_trigger_for_formula_or_mid_message_slash_text():
     config = BampiChatConfig()
 
     formula_decision = should_respond(
@@ -119,105 +122,8 @@ def test_load_chat_skills_mirrors_available_builtin_skills(tmp_path: Path):
         assert (tmp_path / ".agents" / "builtin-skills" / name / "SKILL.md").exists()
 
 
-def test_install_skills_from_markdown_file(tmp_path: Path):
-    source = tmp_path / "downloads" / "docs-search.md"
-    source.parent.mkdir(parents=True, exist_ok=True)
-    source.write_text(
-        "---\n"
-        "name: docs-search\n"
-        "description: Search API docs.\n"
-        "---\n\n"
-        "# Docs Search\n",
-        encoding="utf-8",
-    )
-
-    result = install_skills_from_source(str(source), workspace_dir=str(tmp_path))
-    installed = tmp_path / ".agents" / "skills" / "docs-search" / "SKILL.md"
-
-    assert result.installed_names == ["docs-search"]
-    assert installed.exists()
-    assert "Docs Search" in installed.read_text(encoding="utf-8")
-
-
-def test_install_skills_from_zip_archive_preserves_skill_files(tmp_path: Path):
-    source_root = tmp_path / "source-skill" / "security-review"
-    _write_skill(
-        source_root,
-        "---\n"
-        "name: security-review\n"
-        "description: Review for security issues.\n"
-        "---\n\n"
-        "# Security Review\n",
-    )
-    reference = source_root / "references" / "checklist.md"
-    reference.parent.mkdir(parents=True, exist_ok=True)
-    reference.write_text("# Checklist\n", encoding="utf-8")
-
-    archive = tmp_path / "security-review.zip"
-    with zipfile.ZipFile(archive, "w") as bundle:
-        bundle.write(source_root / "SKILL.md", arcname="security-review/SKILL.md")
-        bundle.write(reference, arcname="security-review/references/checklist.md")
-
-    result = install_skills_from_source(str(archive), workspace_dir=str(tmp_path))
-    installed_ref = tmp_path / ".agents" / "skills" / "security-review" / "references" / "checklist.md"
-
-    assert result.installed_names == ["security-review"]
-    assert installed_ref.exists()
-    assert installed_ref.read_text(encoding="utf-8") == "# Checklist\n"
-
-
-def test_build_user_message_includes_explicit_skill_payload(tmp_path: Path):
-    skill_dir = tmp_path / ".agents" / "skills" / "code-review"
-    _write_skill(
-        skill_dir,
-        "---\n"
-        "name: code-review\n"
-        "description: Review code carefully.\n"
-        "---\n\n"
-        "# Code Review\n\nFollow the checklist.\n",
-    )
-
-    resolution = resolve_explicit_skills(
-        "/code-review 帮我看看这个补丁",
-        workspace_dir=str(tmp_path),
-    )
-    event = FakeEvent(
-        group_id=1001,
-        user_id=42,
-        sender=FakeSender(user_id=42, nickname="Alice"),
-    )
-
-    message = build_user_message(
-        event,
-        "/code-review 帮我看看这个补丁",
-        media=IncomingMedia(),
-        workspace_dir=str(tmp_path),
-        explicit_skills=resolution,
-    )
-
-    assert "requested_skills:\n- code-review" in message.content[0].text
-    assert "message_text: 帮我看看这个补丁" in message.content[0].text
-    assert len(message.content) == 2
-    assert "explicit_skill_payloads:" in message.content[1].text
-    assert "base_dir: .agents/skills/code-review" in message.content[1].text
-    assert "# Code Review" in message.content[1].text
-
-
-def test_resolve_explicit_skills_ignores_markdown_math(tmp_path: Path):
-    resolution = resolve_explicit_skills(
-        "这是**现代控制理论**：$G(s)=\\dfrac{s^2+4s+8}{s^2+5s+3}$，以及 $e^{At}$。",
-        workspace_dir=str(tmp_path),
-    )
-
-    assert resolution.requested_names == []
-    assert resolution.skills == []
-    assert resolution.missing_names == []
-    assert resolution.cleaned_text == "这是**现代控制理论**：$G(s)=\\dfrac{s^2+4s+8}{s^2+5s+3}$，以及 $e^{At}$。"
-
-
 @pytest.mark.asyncio
-async def test_group_session_manager_session_prompt_lists_installed_skills(tmp_path: Path):
-    workspace_root = tmp_path / "workspace"
+async def test_group_session_manager_session_prompt_lists_workspace_skills(tmp_path: Path):
     config = BampiChatConfig(
         bampi_workspace_dir=str(tmp_path / "workspace"),
         bampi_session_dir=str(tmp_path / "sessions"),
