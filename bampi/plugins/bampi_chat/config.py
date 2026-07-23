@@ -84,7 +84,9 @@ class BampiChatConfig(BaseModel):
 
     bampi_persona: str = ""
     bampi_reply_with_quote: bool = True
-    bampi_at_sender: bool = False
+    bampi_outbound_markup_enabled: bool = True
+    bampi_outbound_at_all_enabled: bool = False
+    bampi_outbound_at_limit: int = Field(default=5, ge=0)
     bampi_live_progress_enabled: bool = True
     bampi_live_progress_max_tool_updates: int = 0
     bampi_live_progress_error_recall_min_visible_seconds: float = 1.0

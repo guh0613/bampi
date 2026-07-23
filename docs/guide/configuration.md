@@ -67,7 +67,9 @@ BAMPI_GROUP_WHITELIST=["123456789"]
 | `bampi_session_dir` (`BAMPI_SESSION_DIR`) | `data/bampi/sessions` | 会话持久化目录 |
 | `bampi_persona` (`BAMPI_PERSONA`) | 空 | 额外人设/系统提示片段 |
 | `bampi_reply_with_quote` (`BAMPI_REPLY_WITH_QUOTE`) | `true` | 回复是否引用原消息 |
-| `bampi_at_sender` (`BAMPI_AT_SENDER`) | `false` | 是否 @ 发送者 |
+| `bampi_outbound_markup_enabled` (`BAMPI_OUTBOUND_MARKUP_ENABLED`) | `true` | 是否解析 Assistant 回复中的 `@QQ号` / `@昵称(QQ号)` / `[表情:名称]` / `[名称]` 为真实消息段 |
+| `bampi_outbound_at_all_enabled` (`BAMPI_OUTBOUND_AT_ALL_ENABLED`) | `false` | 是否允许 `@全体成员` 转为 at all |
+| `bampi_outbound_at_limit` (`BAMPI_OUTBOUND_AT_LIMIT`) | `5` | 单条回复最多解析多少个 at；超出保留为文本，`0` 表示不限制 |
 | `bampi_live_progress_enabled` (`BAMPI_LIVE_PROGRESS_ENABLED`) | `true` | 工具进度提示 |
 | `bampi_live_progress_max_tool_updates` (`BAMPI_LIVE_PROGRESS_MAX_TOOL_UPDATES`) | `0` | 进度更新条数上限；`0` 表示不限制 |
 | `bampi_live_text_stream_enabled` (`BAMPI_LIVE_TEXT_STREAM_ENABLED`) | `true` | 文本流式更新 |
@@ -77,6 +79,8 @@ BAMPI_GROUP_WHITELIST=["123456789"]
 | `bampi_threshold_compaction_notice_enabled` (`BAMPI_THRESHOLD_COMPACTION_NOTICE_ENABLED`) | `true` | 自动压缩开始时是否提示 |
 | `bampi_workspace_cleanup_enabled` (`BAMPI_WORKSPACE_CLEANUP_ENABLED`) | `true` | 是否定期清理过期群 workspace |
 | `bampi_workspace_cleanup_ttl_seconds` (`BAMPI_WORKSPACE_CLEANUP_TTL_SECONDS`) | `259200` | 清理 TTL（默认 3 天） |
+
+出站标记只解析 Assistant 正文，工具进度和系统提示始终按纯文本发送。需要原样显示标记时，可写成 `\@123456` 或 `\[doge]`。
 
 更细的 live progress 召回时间等，见源码 `config.py`。
 

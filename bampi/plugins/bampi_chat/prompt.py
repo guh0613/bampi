@@ -5,8 +5,41 @@ from datetime import datetime, timedelta, timezone
 from bampy.app import Skill, format_skills_for_prompt
 
 from .config import BampiChatConfig
+from .message_compose import format_curated_face_names_for_prompt
 
 PROMPT_TIMEZONE = timezone(timedelta(hours=8), name="UTC+8")
+
+
+def _group_chat_markup_section(config: BampiChatConfig) -> str:
+    """群聊章节中关于入站标记 / 出站 at·表情 的说明。"""
+    inbound = (
+        "消息里 QQ 特有的内容会渲染成文本标记：`@昵称(user_id)` 或 `@user_id` 表示 @ 某人，"
+        "`@全体成员` 表示 @ 全体；`[表情:名称]`、`[动画表情:名称]` 是 QQ 表情。\n"
+    )
+    if not config.bampi_outbound_markup_enabled:
+        return (
+            f"{inbound}"
+            "这些标记只用于让你读懂消息，你的回复会以纯文本发出，不要在回复中书写这类标记语法——"
+            "想提到某人时直接写昵称即可。\n"
+        )
+
+    face_names = format_curated_face_names_for_prompt()
+    at_all_line = (
+        "- 只有确实需要通知全群时才写 `@全体成员`，不要滥用。\n"
+        if config.bampi_outbound_at_all_enabled
+        else "- 不要写 `@全体成员`；当前未开启该能力，写出也只会作为普通文字。\n"
+    )
+    return (
+        f"{inbound}"
+        "你的回复也可以使用以下语法发出真实 QQ 消息段：\n"
+        "- 需要真正提醒某位群友时，优先写 `@QQ号`；也可以照抄上下文里的 `@昵称(QQ号)`。"
+        "QQ号必须从消息中原样复制，不要猜测。普通回复不需要 @，不要每条都 @。\n"
+        f"{at_all_line}"
+        "- 写 `[表情:名称]` 会发出真实 QQ 表情；以下常用表情也可以直接写成 `[名称]`："
+        f"{face_names}。表情点到为止，一条消息通常使用 0–2 个。\n"
+        "- 如果需要原样显示上述语法，在开头加反斜杠，例如 `\\@123456` 或 `\\[doge]`；"
+        "其他未识别的写法会原样显示为文字。\n"
+    )
 
 
 def build_system_prompt(
@@ -110,9 +143,9 @@ def build_system_prompt(
         )
     if "qq_react" in tool_names:
         tool_lines.append(
-            "- `qq_react` 做轻量 QQ 互动：`action=emoji` 给触发本轮对话的那条消息贴表情"
-            "适合用来表示收到/赞同/回应戳一戳，"
-            "贴了表情就不必再发一句同样意思的话；可以经常使用表达回应，但是不要频繁使用和滥用。"
+            "- `qq_react` 给触发本轮对话的那条消息贴表情回应（收到/赞同等轻量反馈），"
+            "贴了表情就不必再发一句同样意思的话；可以经常使用，但不要滥用。"
+            "注意：这是给别人的消息贴表情；若要在自己的回复正文里带 QQ 表情，直接写内联标记即可（见「群聊」）。"
         )
     if "memory_search" in tool_names:
         tool_lines.append(
@@ -144,10 +177,7 @@ def build_system_prompt(
         "你作为群成员之一参与 QQ 群聊。群友的消息以 `sender_name: 昵称(user_id)` 格式发给你。"
         "回忆历史对话时，记忆片段中标记为 `assistant` 的内容就是**你自己**当时的回复，其余带昵称的是群友的发言。\n"
         "每条消息可附带可选上下文字段（`reply_to_name`、`reply_message`、`workspace_attachments` 等）。\n"
-        "消息里 QQ 特有的内容会渲染成文本标记：`@昵称(user_id)` 或 `@user_id` 表示 @ 某人，"
-        "`@全体成员` 表示 @ 全体；`[表情:名称]`、`[动画表情:名称]` 是 QQ 表情。"
-        "这些标记只用于让你读懂消息，你的回复会以纯文本发出，不要在回复中书写这类标记语法——"
-        "想提到某人时直接写昵称即可。\n"
+        f"{_group_chat_markup_section(config)}"
         "群友戳一戳你时，会收到 `message_text: (戳了戳你)` 这样的事件消息，像被打招呼一样简短自然地回应即可，"
         "不要当成文字消息复述。`recent_reactions` 字段列出群友最近给你的消息贴的表情（QQ 的消息表情回应），"
         "属于轻量反馈，参考即可，除非有明显意图否则不必专门回应。\n"

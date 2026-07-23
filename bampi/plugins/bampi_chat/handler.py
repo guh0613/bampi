@@ -33,6 +33,10 @@ from .feedback import (
     build_reply_failure_message,
 )
 from .skills import describe_skill_resource_path
+from .message_compose import (
+    append_composed_text,
+    compose_options_from_config,
+)
 from .message_render import (
     MentionNameCache,
     NameResolver,
@@ -78,6 +82,7 @@ class ProgressMessage:
     text: str
     quote: bool = False
     tool_call_id: str | None = None
+    parse_outbound_markup: bool = False
 
 
 @dataclass(slots=True)
@@ -343,7 +348,14 @@ class LiveProgressReporter:
                 message = Message()
                 if item.quote and self._target.reply_message_id is not None:
                     message += MessageSegment.reply(self._target.reply_message_id)
-                message += MessageSegment.text(item.text)
+                if item.parse_outbound_markup:
+                    append_composed_text(
+                        message,
+                        item.text,
+                        options=compose_options_from_config(self._config),
+                    )
+                else:
+                    message += MessageSegment.text(item.text)
                 response = await self._bot.call_api(
                     "send_group_msg",
                     group_id=self._target.group_id,
@@ -471,7 +483,11 @@ class LiveProgressReporter:
         self._streamed_text += payload
         self._streamed_any_text = True
         self._last_text_flush_at = now
-        self._enqueue(payload, preserve_whitespace=True)
+        self._enqueue(
+            payload,
+            preserve_whitespace=True,
+            parse_outbound_markup=True,
+        )
 
     def _extract_snapshot_delta(self, current_text: str) -> str:
         if not self._last_seen_text:
@@ -505,6 +521,7 @@ class LiveProgressReporter:
         *,
         preserve_whitespace: bool = False,
         tool_call_id: str | None = None,
+        parse_outbound_markup: bool = False,
     ) -> None:
         if self._closed:
             return
@@ -519,6 +536,7 @@ class LiveProgressReporter:
                 text=payload,
                 quote=quote,
                 tool_call_id=tool_call_id,
+                parse_outbound_markup=parse_outbound_markup,
             )
         )
 
@@ -1853,14 +1871,20 @@ def build_group_reply_message(
     config: BampiChatConfig,
     target: GroupReplyTarget,
     text: str,
+    parse_outbound_markup: bool = False,
 ) -> Message:
     message = Message()
     if config.bampi_reply_with_quote and target.reply_message_id is not None:
         message += MessageSegment.reply(target.reply_message_id)
-    if config.bampi_at_sender and target.user_id is not None:
-        message += MessageSegment.at(target.user_id)
     if text:
-        message += MessageSegment.text(text)
+        if parse_outbound_markup:
+            append_composed_text(
+                message,
+                text,
+                options=compose_options_from_config(config),
+            )
+        else:
+            message += MessageSegment.text(text)
     return message
 
 
@@ -2281,6 +2305,7 @@ async def send_agent_response_to_target(
         config=config,
         target=target,
         text=text,
+        parse_outbound_markup=True,
     )
 
     uploaded_files: list[Path] = []
@@ -2421,10 +2446,12 @@ async def send_agent_response(
     message = Message()
     if config.bampi_reply_with_quote:
         message += MessageSegment.reply(event.message_id)
-    if config.bampi_at_sender:
-        message += MessageSegment.at(event.user_id)
     if text:
-        message += MessageSegment.text(text)
+        append_composed_text(
+            message,
+            text,
+            options=compose_options_from_config(config),
+        )
 
     uploaded_files: list[Path] = []
     staged_upload_files: list[Path] = []

@@ -39,6 +39,7 @@ from bampi.plugins.bampi_chat.handler import (
     should_respond,
     strip_streamed_prefix,
 )
+from bampi.plugins.bampi_chat.message_render import FACE_ID_BY_NAME
 
 
 @dataclass
@@ -482,6 +483,78 @@ async def test_live_progress_reporter_flushes_pending_text_on_message_end():
 
 
 @pytest.mark.asyncio
+async def test_live_progress_reporter_composes_markup_only_for_assistant_text():
+    bot = FakeBot()
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
+    config = BampiChatConfig(
+        bampi_live_progress_enabled=True,
+        bampi_live_text_stream_enabled=True,
+    )
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
+    session = FakeSession()
+
+    reporter.start(session)
+    assert session.listener is not None
+    partial = AssistantMessage(content=[TextContent(text="请 @10001 看[doge]")])
+    session.listener(
+        SimpleNamespace(
+            type="message_update",
+            message=partial,
+            assistant_message_event=TextDeltaEvent(
+                content_index=0,
+                delta="请 @10001 看[doge]",
+                partial=partial,
+            ),
+        )
+    )
+    session.listener(SimpleNamespace(type="message_end", message=partial))
+    await reporter.prepare_final_reply()
+    await reporter.close()
+
+    assert len(bot.calls) == 1
+    assert str(bot.calls[0][1]["message"]) == (
+        f"[CQ:reply,id=99]请 [CQ:at,qq=10001] 看"
+        f"[CQ:face,id={FACE_ID_BY_NAME['doge']}]"
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_progress_reporter_keeps_tool_progress_markup_literal():
+    bot = FakeBot()
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
+    config = BampiChatConfig(bampi_live_progress_enabled=True)
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
+    session = FakeSession()
+
+    reporter.start(session)
+    assert session.listener is not None
+    session.listener(
+        SimpleNamespace(
+            type="tool_execution_start",
+            tool_name="grep",
+            args={"pattern": "@10001 [doge]"},
+            tool_call_id="tc1",
+        )
+    )
+    session.listener(
+        SimpleNamespace(
+            type="tool_execution_end",
+            tool_name="grep",
+            tool_call_id="tc1",
+            is_error=False,
+            result=None,
+        )
+    )
+    await reporter.prepare_final_reply()
+    await reporter.close()
+
+    assert len(bot.calls) == 1
+    segments = list(bot.calls[0][1]["message"])
+    assert [segment.type for segment in segments] == ["reply", "text"]
+    assert segments[1].data["text"] == "🔍 正在搜索：@10001 [doge]"
+
+
+@pytest.mark.asyncio
 async def test_live_progress_reporter_emits_whole_message_once_at_end():
     bot = FakeBot()
     event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
@@ -838,7 +911,6 @@ async def test_send_agent_response_uploads_file_with_uri_and_cleans_up(tmp_path:
     config = BampiChatConfig(
         bampi_workspace_dir=str(workspace),
         bampi_reply_with_quote=False,
-        bampi_at_sender=False,
         bampi_group_file_upload_host_dir=str(tmp_path / "qq-temp"),
         bampi_group_file_upload_container_dir="/app/.config/QQ/temp",
     )
@@ -880,7 +952,6 @@ async def test_send_agent_response_uses_streamed_text_prefix_without_truncation(
     config = BampiChatConfig(
         bampi_workspace_dir=str(workspace),
         bampi_reply_with_quote=False,
-        bampi_at_sender=False,
     )
     bot = FakeBot()
     matcher = FakeMatcher()
@@ -921,7 +992,6 @@ async def test_send_agent_response_inlines_small_image_and_cleans_up(tmp_path: P
     config = BampiChatConfig(
         bampi_workspace_dir=str(workspace),
         bampi_reply_with_quote=False,
-        bampi_at_sender=False,
         bampi_max_inline_image_size=1024,
         bampi_group_file_upload_host_dir=str(tmp_path / "qq-temp"),
         bampi_group_file_upload_container_dir="/app/.config/QQ/temp",
@@ -964,7 +1034,6 @@ async def test_send_agent_response_stages_large_image_for_napcat(tmp_path: Path)
     config = BampiChatConfig(
         bampi_workspace_dir=str(workspace),
         bampi_reply_with_quote=False,
-        bampi_at_sender=False,
         bampi_max_inline_image_size=1,
         bampi_group_file_upload_host_dir=str(staging_dir),
         bampi_group_file_upload_container_dir="/app/.config/QQ/temp",
@@ -1007,7 +1076,6 @@ async def test_send_agent_response_skips_aborted_reply(tmp_path: Path):
     config = BampiChatConfig(
         bampi_workspace_dir=str(workspace),
         bampi_reply_with_quote=False,
-        bampi_at_sender=False,
     )
     bot = FakeBot()
     matcher = FakeMatcher()

@@ -79,7 +79,9 @@ QQ_FACE_NAMES: dict[int, str] = {
 
 
 # 反查表：表情名 -> ID（重名时保留 ID 较大的新表情，例如"拜托"）
-_FACE_ID_BY_NAME: dict[str, int] = {name.lower(): face_id for face_id, name in QQ_FACE_NAMES.items()}
+FACE_ID_BY_NAME: dict[str, int] = {
+    name.lower(): face_id for face_id, name in QQ_FACE_NAMES.items()
+}
 
 # Unicode 变体选择符/皮肤色修饰符，解析 emoji 字符时跳过
 _EMOJI_MODIFIER_CODEPOINTS = frozenset(
@@ -104,7 +106,7 @@ def resolve_reaction_emoji_id(value: Any) -> int | None:
     text = text.strip()
     if not text:
         return None
-    named = _FACE_ID_BY_NAME.get(text.lower())
+    named = FACE_ID_BY_NAME.get(text.lower())
     if named is not None:
         return named
     if text.isdigit():
