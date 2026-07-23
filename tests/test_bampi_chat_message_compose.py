@@ -116,6 +116,84 @@ def test_compose_escaped_markup_as_plain_text():
     ]
 
 
+def test_compose_protects_inline_code_but_parses_outside_markup():
+    message = compose_outbound_message("代码 `@10001 [doge]`，外面 @10002 [笑哭]")
+    assert _segment_snapshot(message) == [
+        ("text", {"text": "代码 `@10001 [doge]`，外面 "}),
+        ("at", {"qq": "10002"}),
+        ("text", {"text": " "}),
+        ("face", {"id": str(FACE_ID_BY_NAME["笑哭"])}),
+    ]
+
+
+def test_compose_at_limit_is_shared_across_protected_ranges():
+    message = compose_outbound_message(
+        "@10001 `@10002` @10003",
+        options=ComposeOptions(at_limit=1),
+    )
+    assert _segment_snapshot(message) == [
+        ("at", {"qq": "10001"}),
+        ("text", {"text": " `@10002` @10003"}),
+    ]
+
+
+def test_compose_protects_fenced_code_but_parses_after_closing_fence():
+    message = compose_outbound_message(
+        "示例：\n```text\n@10001 [doge]\n```\n外面 @10002"
+    )
+    assert _segment_snapshot(message) == [
+        ("text", {"text": "示例：\n```text\n@10001 [doge]\n```\n外面 "}),
+        ("at", {"qq": "10002"}),
+    ]
+
+
+def test_compose_protects_tilde_fenced_code():
+    text = "~~~\n@10001 [doge]\n~~~\n"
+    message = compose_outbound_message(text)
+    assert _segment_snapshot(message) == [("text", {"text": text})]
+
+
+def test_compose_protects_markdown_links_and_images():
+    message = compose_outbound_message(
+        "看 [doge](https://example.com/@10001) 和 "
+        "![笑哭](https://example.com/a_(1).png)，再 @10002 [doge]"
+    )
+    assert _segment_snapshot(message) == [
+        (
+            "text",
+            {
+                "text": (
+                    "看 [doge](https://example.com/@10001) 和 "
+                    "![笑哭](https://example.com/a_(1).png)，再 "
+                )
+            },
+        ),
+        ("at", {"qq": "10002"}),
+        ("text", {"text": " "}),
+        ("face", {"id": str(FACE_ID_BY_NAME["doge"])}),
+    ]
+
+
+def test_compose_keeps_bare_face_before_separate_parentheses():
+    message = compose_outbound_message("[doge] (补充说明)")
+    assert _segment_snapshot(message) == [
+        ("face", {"id": str(FACE_ID_BY_NAME["doge"])}),
+        ("text", {"text": " (补充说明)"}),
+    ]
+
+
+def test_compose_conservatively_protects_unclosed_inline_code():
+    text = "未闭合 `@10001 [doge] 后面 @10002"
+    message = compose_outbound_message(text)
+    assert _segment_snapshot(message) == [("text", {"text": text})]
+
+
+def test_compose_conservatively_protects_unclosed_link_target():
+    text = "未闭合 [doge](https://example.com/@10001 后面 @10002"
+    message = compose_outbound_message(text)
+    assert _segment_snapshot(message) == [("text", {"text": text})]
+
+
 def test_compose_disabled_returns_plain_text():
     message = compose_outbound_message(
         "@张三(10001) [doge]",

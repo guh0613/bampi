@@ -11,6 +11,9 @@
 - 裸 ``[doge]`` / ``[笑哭]``（命中表情名白名单时）→ face 段
 - ``\\@123456`` / ``\\[doge]`` → 转义后按普通文本发送
 
+Markdown 行内代码、围栏代码块、行内链接和图片会作为受保护区间原样发送，
+其中形似 at / face 的内容不参与解析。
+
 未识别或超出护栏的标记原样保留为文本，绝不吞字。
 """
 
@@ -127,9 +130,46 @@ def compose_outbound_message(
     message = Message()
     at_count = 0
     pos = 0
-    while pos < len(text):
-        at_match = _AT_PATTERN.search(text, pos)
-        bracket_match = _BRACKET_PATTERN.search(text, pos)
+    for protected_start, protected_end in _find_markdown_protected_ranges(text):
+        if pos < protected_start:
+            at_count = _compose_plain_range(
+                message,
+                text,
+                start=pos,
+                end=protected_start,
+                options=opts,
+                at_count=at_count,
+            )
+        _append_literal_text(message, text[protected_start:protected_end])
+        pos = protected_end
+
+    if pos < len(text):
+        _compose_plain_range(
+            message,
+            text,
+            start=pos,
+            end=len(text),
+            options=opts,
+            at_count=at_count,
+        )
+
+    return message
+
+
+def _compose_plain_range(
+    message: Message,
+    text: str,
+    *,
+    start: int,
+    end: int,
+    options: ComposeOptions,
+    at_count: int,
+) -> int:
+    """解析 ``text[start:end]``，并返回累计使用的 at 数量。"""
+    pos = start
+    while pos < end:
+        at_match = _AT_PATTERN.search(text, pos, end)
+        bracket_match = _BRACKET_PATTERN.search(text, pos, end)
 
         next_match: re.Match[str] | None = None
         kind: str | None = None
@@ -144,14 +184,18 @@ def compose_outbound_message(
             next_match, kind = bracket_match, "bracket"
 
         if next_match is None or kind is None:
-            _append_text(message, text[pos:])
+            _append_text(message, text[pos:end])
             break
 
         if next_match.start() > pos:
             _append_text(message, text[pos : next_match.start()])
 
         if kind == "at":
-            segment, consumed, used_at = _try_compose_at(next_match, opts, at_count)
+            segment, consumed, used_at = _try_compose_at(
+                next_match,
+                options,
+                at_count,
+            )
             if used_at:
                 at_count += 1
             if segment is not None:
@@ -168,7 +212,7 @@ def compose_outbound_message(
             _append_text(message, next_match.group(0))
         pos = next_match.end()
 
-    return message
+    return at_count
 
 
 def append_composed_text(
@@ -188,10 +232,227 @@ def _append_text(message: Message, text: str) -> None:
     if not text:
         return
     text = _ESCAPED_MARKUP_PREFIX.sub(r"\g<prefix>", text)
+    _append_literal_text(message, text)
+
+
+def _append_literal_text(message: Message, text: str) -> None:
+    """追加不做转义处理的文本，并与相邻 text 段合并。"""
+    if not text:
+        return
     if message and message[-1].type == "text":
         message[-1].data["text"] = str(message[-1].data.get("text", "")) + text
         return
     message.append(MessageSegment.text(text))
+
+
+def _find_markdown_protected_ranges(text: str) -> list[tuple[int, int]]:
+    """线性扫描需要绕过 QQ 标记解析的 Markdown 区间。
+
+    这里只识别会与本模块语法发生实际冲突的结构，不承担完整 Markdown
+    渲染职责：行内代码、反引号/波浪号围栏代码块，以及 ``[label](target)``
+    / ``![alt](target)``。未闭合的代码或链接目标保守地保护到文本末尾。
+    """
+    protected: list[tuple[int, int]] = []
+    brackets: list[tuple[int, int]] = []
+    length = len(text)
+    line_start = 0
+    pos = 0
+
+    while pos < length:
+        char = text[pos]
+
+        if char == "\n":
+            line_start = pos + 1
+            pos += 1
+            continue
+
+        # Markdown 反斜杠转义：跳过被转义字符，避免将其识别为定界符。
+        if char == "\\" and pos + 1 < length:
+            if text[pos + 1] == "\n":
+                line_start = pos + 2
+            pos += 2
+            continue
+
+        if char in {"`", "~"}:
+            fence_length = _markdown_fence_length(text, pos, line_start)
+            if fence_length is not None:
+                protected_end = _find_fenced_code_end(
+                    text,
+                    opening_start=pos,
+                    marker=char,
+                    opening_length=fence_length,
+                )
+                _add_protected_range(protected, pos, protected_end)
+                if protected_end >= length:
+                    break
+                line_start = protected_end
+                pos = protected_end
+                continue
+
+        if char == "`":
+            run_length = _delimiter_run_length(text, pos, "`")
+            protected_end = _find_inline_code_end(text, pos, run_length)
+            if protected_end is None:
+                _add_protected_range(protected, pos, length)
+                break
+            _add_protected_range(protected, pos, protected_end)
+            last_newline = text.rfind("\n", pos, protected_end)
+            if last_newline >= 0:
+                line_start = last_newline + 1
+            pos = protected_end
+            continue
+
+        if char == "[":
+            protected_start = pos
+            if (
+                pos > 0
+                and text[pos - 1] == "!"
+                and not _is_backslash_escaped(text, pos - 1)
+            ):
+                protected_start -= 1
+            brackets.append((pos, protected_start))
+            pos += 1
+            continue
+
+        if char == "]" and brackets:
+            _, protected_start = brackets.pop()
+            if pos + 1 < length and text[pos + 1] == "(":
+                protected_end = _find_parenthesized_end(text, pos + 1)
+                if protected_end is None:
+                    _add_protected_range(protected, protected_start, length)
+                    break
+                _add_protected_range(protected, protected_start, protected_end)
+                last_newline = text.rfind("\n", pos, protected_end)
+                if last_newline >= 0:
+                    line_start = last_newline + 1
+                pos = protected_end
+                continue
+
+        pos += 1
+
+    return protected
+
+
+def _markdown_fence_length(text: str, pos: int, line_start: int) -> int | None:
+    """若 ``pos`` 是 CommonMark 风格围栏开头，返回定界符长度。"""
+    indent_width = pos - line_start
+    if indent_width > 3 or any(text[index] != " " for index in range(line_start, pos)):
+        return None
+
+    marker = text[pos]
+    run_length = _delimiter_run_length(text, pos, marker)
+    if run_length < 3:
+        return None
+
+    if marker == "`":
+        line_end = text.find("\n", pos + run_length)
+        if line_end < 0:
+            line_end = len(text)
+        if "`" in text[pos + run_length : line_end]:
+            return None
+    return run_length
+
+
+def _find_fenced_code_end(
+    text: str,
+    *,
+    opening_start: int,
+    marker: str,
+    opening_length: int,
+) -> int:
+    """返回围栏代码块结束位置；未闭合时返回文本末尾。"""
+    opening_line_end = text.find("\n", opening_start + opening_length)
+    if opening_line_end < 0:
+        return len(text)
+
+    line_start = opening_line_end + 1
+    while line_start < len(text):
+        line_end = text.find("\n", line_start)
+        content_end = len(text) if line_end < 0 else line_end
+
+        marker_start = line_start
+        while marker_start < content_end and text[marker_start] == " ":
+            marker_start += 1
+        indent = marker_start - line_start
+
+        if indent <= 3 and marker_start < content_end:
+            run_length = _delimiter_run_length(text, marker_start, marker)
+            trailing = text[marker_start + run_length : content_end]
+            if run_length >= opening_length and not trailing.strip(" \t"):
+                return len(text) if line_end < 0 else line_end + 1
+
+        if line_end < 0:
+            break
+        line_start = line_end + 1
+
+    return len(text)
+
+
+def _find_inline_code_end(
+    text: str, opening_start: int, opening_length: int
+) -> int | None:
+    """查找长度完全相同的行内反引号闭合定界符。"""
+    pos = opening_start + opening_length
+    while pos < len(text):
+        candidate = text.find("`", pos)
+        if candidate < 0:
+            return None
+        run_length = _delimiter_run_length(text, candidate, "`")
+        if run_length == opening_length:
+            return candidate + run_length
+        pos = candidate + run_length
+    return None
+
+
+def _find_parenthesized_end(text: str, opening_start: int) -> int | None:
+    """查找 Markdown 行内链接目标的配对右括号，支持嵌套和转义。"""
+    depth = 1
+    pos = opening_start + 1
+    while pos < len(text):
+        char = text[pos]
+        if char == "\\" and pos + 1 < len(text):
+            pos += 2
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return pos + 1
+        pos += 1
+    return None
+
+
+def _delimiter_run_length(text: str, start: int, marker: str) -> int:
+    end = start
+    while end < len(text) and text[end] == marker:
+        end += 1
+    return end - start
+
+
+def _is_backslash_escaped(text: str, pos: int) -> bool:
+    backslashes = 0
+    cursor = pos - 1
+    while cursor >= 0 and text[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return backslashes % 2 == 1
+
+
+def _add_protected_range(
+    ranges: list[tuple[int, int]],
+    start: int,
+    end: int,
+) -> None:
+    """按扫描顺序加入区间，并摊销 O(n) 合并嵌套/相邻区间。"""
+    while ranges and ranges[-1][0] >= start:
+        _, previous_end = ranges.pop()
+        end = max(end, previous_end)
+    if ranges and ranges[-1][1] >= start:
+        previous_start, previous_end = ranges.pop()
+        start = previous_start
+        end = max(end, previous_end)
+    ranges.append((start, end))
 
 
 def _try_compose_at(

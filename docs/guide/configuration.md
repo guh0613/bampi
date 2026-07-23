@@ -80,7 +80,7 @@ BAMPI_GROUP_WHITELIST=["123456789"]
 | `bampi_workspace_cleanup_enabled` (`BAMPI_WORKSPACE_CLEANUP_ENABLED`) | `true` | 是否定期清理过期群 workspace |
 | `bampi_workspace_cleanup_ttl_seconds` (`BAMPI_WORKSPACE_CLEANUP_TTL_SECONDS`) | `259200` | 清理 TTL（默认 3 天） |
 
-出站标记只解析 Assistant 正文，工具进度和系统提示始终按纯文本发送。需要原样显示标记时，可写成 `\@123456` 或 `\[doge]`。
+出站标记只解析 Assistant 正文，工具进度和系统提示始终按纯文本发送。Markdown 行内代码、围栏代码块、链接和图片中的标记也按原文发送。需要原样显示其他标记时，可写成 `\@123456` 或 `\[doge]`。
 
 更细的 live progress 召回时间等，见源码 `config.py`。
 
