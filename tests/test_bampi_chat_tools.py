@@ -233,11 +233,11 @@ def test_system_prompt_mentions_background_bash_sessions():
     assert "notify_on_exit" in prompt
 
 
-def test_system_prompt_uses_utc_plus_8_time_to_minute(monkeypatch: pytest.MonkeyPatch):
+def test_system_prompt_uses_local_timezone_time_to_minute(monkeypatch: pytest.MonkeyPatch):
     class _FakeDatetime:
         @classmethod
         def now(cls, tz):
-            assert tz.utcoffset(None) == timedelta(hours=8)
+            assert tz.utcoffset(datetime(2026, 4, 1)) == timedelta(hours=8)
             return datetime(2026, 4, 1, 0, 30, tzinfo=tz)
 
     monkeypatch.setattr(prompt_module, "datetime", _FakeDatetime)
@@ -245,6 +245,23 @@ def test_system_prompt_uses_utc_plus_8_time_to_minute(monkeypatch: pytest.Monkey
     prompt = build_system_prompt(BampiChatConfig(), ["bash", "read"])
 
     assert "当前时间(UTC+8): 2026-04-01 00:30" in prompt
+
+
+def test_system_prompt_follows_configured_timezone(monkeypatch: pytest.MonkeyPatch):
+    class _FakeDatetime:
+        @classmethod
+        def now(cls, tz):
+            assert tz.utcoffset(datetime(2026, 4, 1)) == timedelta(hours=9)
+            return datetime(2026, 4, 1, 9, 30, tzinfo=tz)
+
+    monkeypatch.setattr(prompt_module, "datetime", _FakeDatetime)
+    config = BampiChatConfig(bampi_schedule_timezone="Asia/Tokyo")
+
+    prompt = build_system_prompt(config, ["bash", "memory_time_search"])
+
+    assert "当前时间(UTC+9): 2026-04-01 09:30" in prompt
+    assert "所有时间都是 UTC+9 的本地时间" in prompt
+    assert "当前时区（UTC+9）" in prompt
 
 
 def test_create_agent_tools_includes_browser_by_default(tmp_path: Path):

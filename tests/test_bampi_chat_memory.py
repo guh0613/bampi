@@ -289,6 +289,87 @@ def test_memory_time_search_finds_archives_by_range(tmp_path: Path):
     assert all(hit.snippets for hit in hits)
 
 
+def test_memory_time_search_reads_naive_bounds_as_local_time(tmp_path: Path):
+    manager = MemoryManager(tmp_path / "memory.db")
+    archive_id = manager.archive_conversation(
+        group_id="1001",
+        # 存储层用 UTC；这段会话在 UTC+8 是 4 月 28 日晚上 21:00~21:30。
+        started_at="2026-04-28T13:00:00+00:00",
+        ended_at="2026-04-28T13:30:00+00:00",
+        participants=[MemoryParticipant(user_id="42", nickname="张三")],
+        title="晚间会话",
+        summary="晚上聊的内容。",
+        messages=[
+            MemoryMessage(
+                role="user",
+                user_id="42",
+                nickname="张三",
+                content="晚上好。",
+                timestamp="2026-04-28T13:00:00+00:00",
+            )
+        ],
+    )
+
+    evening = manager.time_search(
+        group_id="1001",
+        start_time="2026-04-28T20:00:00",
+        end_time="2026-04-28T23:59:59",
+    )
+    morning = manager.time_search(
+        group_id="1001",
+        start_time="2026-04-28T08:00:00",
+        end_time="2026-04-28T12:00:00",
+    )
+
+    assert [hit.archive.id for hit in evening] == [archive_id]
+    assert morning == []
+
+
+def test_memory_rendering_shows_local_time_instead_of_utc(tmp_path: Path):
+    manager = MemoryManager(tmp_path / "memory.db")
+    archive_id = manager.archive_conversation(
+        group_id="1001",
+        started_at="2026-04-28T13:00:00+00:00",
+        ended_at="2026-04-28T13:30:00+00:00",
+        participants=[MemoryParticipant(user_id="42", nickname="张三")],
+        title="晚间会话",
+        summary="晚上聊的内容。",
+        keywords=["晚间"],
+        messages=[
+            MemoryMessage(
+                role="user",
+                user_id="42",
+                nickname="张三",
+                content="晚上好。",
+                timestamp="2026-04-28T13:00:00+00:00",
+            )
+        ],
+        tool_events=[
+            MemoryToolEvent(
+                tool_name="bash",
+                arguments_text="{}",
+                result_preview="ok",
+                timestamp="2026-04-28T13:05:00+00:00",
+            )
+        ],
+    )
+
+    opened = manager.open_archive(group_id="1001", archive_id=archive_id, mode="full")
+    assert opened is not None
+    assert "2026-04-28 21:00 ~ 2026-04-28 21:30" in opened.text
+    assert "2026-04-28 21:00 张三: 晚上好。" in opened.text
+    assert "2026-04-28 21:05 bash" in opened.text
+    assert "+00:00" not in opened.text
+
+    hits = manager.time_search(
+        group_id="1001",
+        start_time="2026-04-28T00:00:00+08:00",
+        end_time="2026-04-29T00:00:00+08:00",
+    )
+    rendered = render_search_results(hits, tz=manager.local_timezone)
+    assert "2026-04-28 21:00 ~ 2026-04-28 21:30" in rendered
+
+
 def test_memory_search_uses_tool_events_and_user_filter(tmp_path: Path):
     manager = MemoryManager(tmp_path / "memory.db")
     ids = _seed_memory(manager)

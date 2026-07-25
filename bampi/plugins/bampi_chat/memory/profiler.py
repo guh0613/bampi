@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import tzinfo
 from typing import Any
 
 from nonebot import logger
 
+from ..timeutil import default_timezone, format_date
 from .types import MemoryArchive, MemoryParticipant, MemoryProfile, MemoryProfileEdit
 
 _PROFILE_SECTION_HEADINGS = ("Work context", "Personal context", "Top of mind", "Brief history")
@@ -68,7 +69,9 @@ class MemoryContextRequest:
 def render_memory_context(
     *,
     profiles: list[tuple[MemoryProfile | None, list[MemoryProfileEdit], str]],
+    tz: tzinfo | None = None,
 ) -> str:
+    display_timezone = tz or default_timezone()
     sections: list[str] = []
     for profile, edits, display_name in profiles:
         user_id = profile.user_id if profile is not None else ""
@@ -83,6 +86,7 @@ def render_memory_context(
             body,
             nickname=rendered_name,
             edits=edits,
+            tz=display_timezone,
         )
         if not body.strip():
             continue
@@ -102,7 +106,9 @@ def build_profile_from_archives(
     profile: MemoryProfile,
     archives: list[MemoryArchive],
     pending_edits: list[MemoryProfileEdit],
+    tz: tzinfo | None = None,
 ) -> str:
+    display_timezone = tz or default_timezone()
     keywords = _top_keywords(archives)
     recent_archives = sorted(archives, key=lambda archive: archive.ended_at, reverse=True)[:8]
     additions = [edit for edit in pending_edits if edit.edit_type in {"add", "update"}]
@@ -124,7 +130,7 @@ def build_profile_from_archives(
 
     if recent_archives:
         for archive in recent_archives:
-            date = _short_date(archive.ended_at)
+            date = _short_date(archive.ended_at, tz=display_timezone)
             summary = archive.summary or archive.title
             if not summary:
                 continue
@@ -132,7 +138,7 @@ def build_profile_from_archives(
     else:
         lines.append("暂无新的可归档会话。")
     for edit in additions[-5:]:
-        lines.append(f"{_short_date(edit.created_at)} 补充信息：{edit.content}")
+        lines.append(f"{_short_date(edit.created_at, tz=display_timezone)} 补充信息：{edit.content}")
 
     prior = _filter_deleted_lines(profile.profile, deletions).strip()
     lines.extend(["", "**Brief history**", "*Recent months*"])
@@ -155,6 +161,7 @@ async def generate_profile_with_llm(
     pending_edits: list[MemoryProfileEdit],
     model: Any,
     api_key: str | None = None,
+    tz: tzinfo | None = None,
 ) -> str | None:
     from bampy.ai.stream import complete_simple
     from bampy.ai.types import Context, SimpleStreamOptions, StopReason, TextContent, UserMessage
@@ -163,6 +170,7 @@ async def generate_profile_with_llm(
         profile=profile,
         archives=archives,
         pending_edits=pending_edits,
+        tz=tz or default_timezone(),
     )
     if len(prompt) > _LLM_PROFILE_MAX_INPUT_CHARS:
         prompt = prompt[:_LLM_PROFILE_MAX_INPUT_CHARS].rstrip() + "\n...(已截断)"
@@ -208,6 +216,7 @@ def _render_profile_body(
     *,
     nickname: str,
     edits: list[MemoryProfileEdit],
+    tz: tzinfo,
 ) -> str:
     delete_edits = [edit for edit in edits if edit.edit_type == "delete"]
     body = _filter_deleted_lines(profile_text, delete_edits)
@@ -223,7 +232,7 @@ def _render_profile_body(
     if additions:
         lines = [body, "", "[近期补充]"] if body else ["[近期补充]"]
         for edit in additions:
-            lines.append(f"- {edit.content}。记录于 {_short_date(edit.created_at)}")
+            lines.append(f"- {edit.content}。记录于 {_short_date(edit.created_at, tz=tz)}")
         body = "\n".join(lines)
 
     if delete_edits:
@@ -240,11 +249,12 @@ def _build_llm_profile_prompt(
     profile: MemoryProfile,
     archives: list[MemoryArchive],
     pending_edits: list[MemoryProfileEdit],
+    tz: tzinfo,
 ) -> str:
     deletions = [edit for edit in pending_edits if edit.edit_type == "delete"]
     old_profile = _filter_deleted_lines(profile.profile, deletions).strip() or "无"
-    archive_text = _render_archives_for_prompt(archives)
-    edit_text = _render_edits_for_prompt(pending_edits)
+    archive_text = _render_archives_for_prompt(archives, tz=tz)
+    edit_text = _render_edits_for_prompt(pending_edits, tz=tz)
     nickname = profile.nickname or "未知群名片"
     return f"""\
 请为这个群成员生成新的主画像。
@@ -277,7 +287,7 @@ pending_sessions: {profile.pending_sessions}
 """
 
 
-def _render_archives_for_prompt(archives: list[MemoryArchive]) -> str:
+def _render_archives_for_prompt(archives: list[MemoryArchive], *, tz: tzinfo) -> str:
     if not archives:
         return "无"
     lines: list[str] = []
@@ -290,7 +300,7 @@ def _render_archives_for_prompt(archives: list[MemoryArchive]) -> str:
         keywords = "、".join(keyword for keyword in archive.keywords if keyword.strip())
         lines.extend(
             [
-                f"- 时间: {_short_date(archive.ended_at)}",
+                f"- 时间: {_short_date(archive.ended_at, tz=tz)}",
                 f"  标题: {archive.title or '未命名会话'}",
                 f"  摘要: {archive.summary or '无摘要'}",
                 f"  关键词: {keywords or '无'}",
@@ -300,7 +310,7 @@ def _render_archives_for_prompt(archives: list[MemoryArchive]) -> str:
     return "\n".join(lines)
 
 
-def _render_edits_for_prompt(edits: list[MemoryProfileEdit]) -> str:
+def _render_edits_for_prompt(edits: list[MemoryProfileEdit], *, tz: tzinfo) -> str:
     if not edits:
         return "无"
     lines: list[str] = []
@@ -311,7 +321,7 @@ def _render_edits_for_prompt(edits: list[MemoryProfileEdit]) -> str:
             action = "update/更新"
         else:
             action = "add/补充"
-        lines.append(f"- [{action}] {_short_date(edit.created_at)}: {edit.content}")
+        lines.append(f"- [{action}] {_short_date(edit.created_at, tz=tz)}: {edit.content}")
     return "\n".join(lines)
 
 
@@ -430,13 +440,8 @@ def _top_keywords(archives: list[MemoryArchive]) -> list[str]:
     ]
 
 
-def _short_date(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
+def _short_date(value: str, *, tz: tzinfo) -> str:
+    """把存储的 UTC 时间渲染成本地时区的日期，避免跨零点的日期偏移。"""
+    if not str(value or "").strip():
         return "未知时间"
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        return datetime.fromisoformat(text).date().isoformat()
-    except ValueError:
-        return value[:10] if len(value) >= 10 else value
+    return format_date(value, tz=tz)

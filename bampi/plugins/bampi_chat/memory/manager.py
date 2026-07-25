@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
+from datetime import tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo
 
 from nonebot import logger
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from ..timeutil import default_timezone, format_datetime, resolve_timezone
 from .archiver import build_archive_from_agent_messages, summarize_archive_with_llm
 from .embeddings import MemoryEmbeddingProvider, build_embedding_provider
 from .profiler import build_profile_from_archives, generate_profile_with_llm, render_memory_context
@@ -53,7 +54,7 @@ class MemoryManager:
         profile_cron: str = "0 4 * * *",
         profile_max_tokens: int = 1500,
         pending_edits_max_inject: int = 10,
-        scheduler_timezone: str = "Asia/Shanghai",
+        local_timezone: str | tzinfo | None = None,
         llm_summary_enabled: bool = True,
     ) -> None:
         self._db_path = Path(db_path)
@@ -74,7 +75,12 @@ class MemoryManager:
         self._profile_cron = profile_cron.strip() or "0 4 * * *"
         self._profile_max_tokens = max(200, profile_max_tokens)
         self._pending_edits_max_inject = max(0, pending_edits_max_inject)
-        self._scheduler_timezone = scheduler_timezone
+        # 归档一律以 UTC 落库；这个时区只用于后台任务调度和展示给模型的时间文本。
+        self._local_timezone = (
+            local_timezone
+            if isinstance(local_timezone, tzinfo)
+            else resolve_timezone(local_timezone) if local_timezone else default_timezone()
+        )
         self._llm_summary_enabled = llm_summary_enabled
         self._store: MemoryStore | None = None
         self._scheduler: AsyncIOScheduler | None = None
@@ -109,13 +115,17 @@ class MemoryManager:
             profile_cron=config.bampi_memory_profile_cron,
             profile_max_tokens=config.bampi_memory_profile_max_tokens,
             pending_edits_max_inject=config.bampi_memory_pending_edits_max_inject,
-            scheduler_timezone=config.bampi_schedule_timezone,
+            local_timezone=config.bampi_schedule_timezone,
             llm_summary_enabled=config.bampi_memory_archive_llm_summary,
         )
 
     @property
     def db_path(self) -> Path:
         return self._db_path
+
+    @property
+    def local_timezone(self) -> tzinfo:
+        return self._local_timezone
 
     @property
     def store(self) -> MemoryStore:
@@ -125,6 +135,7 @@ class MemoryManager:
                 search_snippet_messages=self._search_snippet_messages,
                 like_fallback=self._like_fallback,
                 embedding_provider=self._embedding_provider,
+                display_timezone=self._local_timezone,
             )
         return self._store
 
@@ -137,15 +148,14 @@ class MemoryManager:
         if self._scheduler is not None:
             return
         try:
-            timezone = ZoneInfo(self._scheduler_timezone)
-            trigger = CronTrigger.from_crontab(self._profile_cron, timezone=timezone)
+            trigger = CronTrigger.from_crontab(self._profile_cron, timezone=self._local_timezone)
         except Exception:
             logger.opt(exception=True).error(
                 f"bampi_chat memory background tasks not started due to invalid schedule "
-                f"cron={self._profile_cron} timezone={self._scheduler_timezone}"
+                f"cron={self._profile_cron} timezone={self._local_timezone}"
             )
             return
-        scheduler = AsyncIOScheduler(timezone=timezone)
+        scheduler = AsyncIOScheduler(timezone=self._local_timezone)
         async def _maintenance_job() -> None:
             await self.run_memory_maintenance_async(model=model, api_key=api_key)
 
@@ -395,6 +405,7 @@ class MemoryManager:
 
         return render_memory_context(
             profiles=profiles,
+            tz=self._local_timezone,
         )
 
     def run_memory_maintenance(self) -> dict[str, int]:
@@ -435,6 +446,7 @@ class MemoryManager:
                 profile=profile,
                 archives=archives,
                 pending_edits=edits,
+                tz=self._local_timezone,
             )
             self.store.profiles.consolidate(
                 group_id=profile.group_id,
@@ -480,6 +492,7 @@ class MemoryManager:
                 pending_edits=edits,
                 model=model,
                 api_key=api_key,
+                tz=self._local_timezone,
             )
             if new_profile is None:
                 logger.warning(
@@ -520,10 +533,12 @@ class MemoryManager:
         )
 
 
-def render_search_results(hits: list[MemorySearchHit]) -> str:
+def render_search_results(hits: list[MemorySearchHit], *, tz: tzinfo | None = None) -> str:
+    """渲染检索结果；时间统一换算到 `tz`（默认本地时区）后展示。"""
     if not hits:
         return "没有找到相关的历史会话。"
 
+    display_timezone = tz or default_timezone()
     lines = [f"找到 {len(hits)} 次可能相关的历史会话："]
     for index, hit in enumerate(hits, start=1):
         archive = hit.archive
@@ -537,7 +552,10 @@ def render_search_results(hits: list[MemorySearchHit]) -> str:
         lines.extend(
             [
                 "",
-                f"[{index}] archive_id={archive.id} | {archive.started_at} ~ {archive.ended_at} | 参与者: {participants}",
+                f"[{index}] archive_id={archive.id}"
+                f" | {format_datetime(archive.started_at, tz=display_timezone)}"
+                f" ~ {format_datetime(archive.ended_at, tz=display_timezone)}"
+                f" | 参与者: {participants}",
                 f"标题: {archive.title or '-'}",
                 f"摘要: {archive.summary or '-'}",
                 f"关键词: {keywords}",

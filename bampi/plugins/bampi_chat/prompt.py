@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 from bampy.app import Skill, format_skills_for_prompt
 
 from .config import BampiChatConfig
 from .message_compose import format_curated_face_names_for_prompt
-
-PROMPT_TIMEZONE = timezone(timedelta(hours=8), name="UTC+8")
+from .timeutil import resolve_timezone, timezone_label
 
 
 def _group_chat_markup_section(config: BampiChatConfig) -> str:
@@ -56,7 +55,9 @@ def build_system_prompt(
     )
     default_prompt_cwd = config.bampi_bash_container_workdir if config.bampi_bash_mode != "local" else "."
     effective_prompt_cwd = (prompt_cwd or default_prompt_cwd).replace("\\", "/")
-    current_time = datetime.now(PROMPT_TIMEZONE).strftime("%Y-%m-%d %H:%M")
+    local_timezone = resolve_timezone(config.bampi_schedule_timezone)
+    local_timezone_label = timezone_label(local_timezone)
+    current_time = datetime.now(local_timezone).strftime("%Y-%m-%d %H:%M")
 
     # ── 运行环境 ──
     env_lines: list[str] = []
@@ -153,7 +154,7 @@ def build_system_prompt(
         )
     if "memory_time_search" in tool_names:
         tool_lines.append(
-            "- 用户问“上周我们聊了什么”“昨天聊过什么”“某个时间段发生了什么”时，先用 `memory_time_search` 按时间范围检索历史会话；把相对时间换成当前 UTC+8 下的 ISO 时间。"
+            f"- 用户问“上周我们聊了什么”“昨天聊过什么”“某个时间段发生了什么”时，先用 `memory_time_search` 按时间范围检索历史会话；把相对时间换成当前时区（{local_timezone_label}）下的 ISO 时间。"
         )
     if "memory_open" in tool_names:
         tool_lines.append(
@@ -169,8 +170,8 @@ def build_system_prompt(
 
     prompt = (
         f"{persona}\n\n"
-        f"当前时间(UTC+8): {current_time} | 工作目录: {effective_prompt_cwd}\n"
-        f"当前的时间请始终以此为准，不要依赖训练数据推测日期。用户所在时区为 UTC+8（北京时间），涉及时间时统一换算到该时区。\n\n"
+        f"当前时间({local_timezone_label}): {current_time} | 工作目录: {effective_prompt_cwd}\n"
+        f"当前的时间请始终以此为准，不要依赖训练数据推测日期。所有时间都是 {local_timezone_label} 的本地时间。\n\n"
         "## 环境\n"
         f"{env_section}\n\n"
         "## 群聊\n"

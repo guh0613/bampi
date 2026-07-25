@@ -6,10 +6,11 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any
 
+from ..timeutil import default_timezone, format_datetime, parse_datetime
 from .embeddings import MemoryEmbeddingProvider
 from .schema import CURRENT_SCHEMA_VERSION, initialize_memory_schema
 from .search_text import (
@@ -82,10 +83,13 @@ class MemoryStore:
         search_snippet_messages: int = 2,
         like_fallback: bool = True,
         embedding_provider: MemoryEmbeddingProvider | None = None,
+        display_timezone: tzinfo | None = None,
     ) -> None:
         self._db_path = Path(db_path)
         self._search_snippet_messages = max(0, search_snippet_messages)
         self._like_fallback = like_fallback
+        # 库里存 UTC，渲染给模型看的文本和模型传入的时间边界都按这个时区解释。
+        self._display_timezone = display_timezone or default_timezone()
         self._embedding_provider = embedding_provider
         self._vector_index = (
             SqliteVecArchiveIndex(
@@ -103,6 +107,10 @@ class MemoryStore:
     @property
     def db_path(self) -> Path:
         return self._db_path
+
+    @property
+    def display_timezone(self) -> tzinfo:
+        return self._display_timezone
 
     @property
     def schema_version(self) -> int:
@@ -420,10 +428,13 @@ class MemoryStore:
     ) -> list[MemorySearchHit]:
         normalized_group_id = str(group_id).strip()
         normalized_user_id = str(user_id).strip() if user_id is not None else None
-        normalized_start_time = normalize_for_search(start_time)
-        normalized_end_time = normalize_for_search(end_time)
-        start_dt = _parse_required_time_bound(normalized_start_time, name="start_time")
-        end_dt = _parse_required_time_bound(normalized_end_time, name="end_time")
+        # 边界由模型按系统提示里的本地时间推导，不带时区时按本地时区解释。
+        start_dt = _parse_required_time_bound(
+            normalize_for_search(start_time), name="start_time", assume=self._display_timezone
+        )
+        end_dt = _parse_required_time_bound(
+            normalize_for_search(end_time), name="end_time", assume=self._display_timezone
+        )
         if start_dt is not None and end_dt is not None and start_dt > end_dt:
             raise ValueError("start_time must be before or equal to end_time")
         limit = min(max(1, int(max_results or 5)), 10)
@@ -442,8 +453,6 @@ class MemoryStore:
                 archive_id = int(row["id"])
                 if not self._archive_overlaps_time_range(
                     row=row,
-                    start_time=normalized_start_time,
-                    end_time=normalized_end_time,
                     start_dt=start_dt,
                     end_dt=end_dt,
                 ):
@@ -1282,18 +1291,13 @@ class MemoryStore:
         self,
         *,
         row: sqlite3.Row,
-        start_time: str,
-        end_time: str,
         start_dt: datetime | None,
         end_dt: datetime | None,
     ) -> bool:
         archive_started = _parse_iso_datetime(row["started_at"])
         archive_ended = _parse_iso_datetime(row["ended_at"])
         if archive_started is None or archive_ended is None:
-            if start_time and str(row["ended_at"]) < start_time:
-                return False
-            if end_time and str(row["started_at"]) > end_time:
-                return False
+            # 归档时间损坏时无法判断落点，保留候选交给上层排序，不做静默丢弃。
             return True
         if start_dt is not None and archive_ended < start_dt:
             return False
@@ -1775,10 +1779,11 @@ class MemoryStore:
         after: int,
         include_tool_results: bool,
     ) -> str:
-        lines = _archive_header_lines(archive)
+        tz = self._display_timezone
+        lines = _archive_header_lines(archive, tz=tz)
         if mode == "tools":
             lines.extend(["", "工具事件:"])
-            lines.extend(_tool_lines(tool_events, include_full=include_tool_results))
+            lines.extend(_tool_lines(tool_events, tz=tz, include_full=include_tool_results))
             return "\n".join(lines)
 
         selected_messages = messages
@@ -1793,30 +1798,32 @@ class MemoryStore:
         if mode == "compact":
             selected_messages = _compact_messages(messages, around_message_id=around_message_id)
             lines.extend(["", "会话片段:"])
-            lines.extend(_message_lines(selected_messages))
+            lines.extend(_message_lines(selected_messages, tz=tz))
             if tool_events:
                 lines.extend(["", "工具事件预览:"])
-                lines.extend(_tool_lines(tool_events[:8], include_full=include_tool_results))
+                lines.extend(_tool_lines(tool_events[:8], tz=tz, include_full=include_tool_results))
             return "\n".join(lines)
 
         if mode in {"transcript", "full"}:
             lines.extend(["", "消息:"])
-            lines.extend(_message_lines(selected_messages))
+            lines.extend(_message_lines(selected_messages, tz=tz))
         if mode == "full" and tool_events:
             lines.extend(["", "工具事件:"])
-            lines.extend(_tool_lines(tool_events, include_full=include_tool_results))
+            lines.extend(_tool_lines(tool_events, tz=tz, include_full=include_tool_results))
         return "\n".join(lines)
 
 
-def _archive_header_lines(archive: MemoryArchive) -> list[str]:
+def _archive_header_lines(archive: MemoryArchive, *, tz: tzinfo) -> list[str]:
     participants = ", ".join(
         participant.nickname or participant.user_id
         for participant in archive.participants
         if participant.nickname or participant.user_id
     ) or "-"
     keywords = ", ".join(archive.keywords) or "-"
+    started_at = format_datetime(archive.started_at, tz=tz)
+    ended_at = format_datetime(archive.ended_at, tz=tz)
     return [
-        f"archive_id={archive.id} | {archive.started_at} ~ {archive.ended_at}",
+        f"archive_id={archive.id} | {started_at} ~ {ended_at}",
         f"参与者: {participants}",
         f"标题: {archive.title or '-'}",
         f"摘要: {archive.summary or '-'}",
@@ -1825,19 +1832,20 @@ def _archive_header_lines(archive: MemoryArchive) -> list[str]:
     ]
 
 
-def _message_lines(messages: list[MemoryMessage]) -> list[str]:
+def _message_lines(messages: list[MemoryMessage], *, tz: tzinfo) -> list[str]:
     if not messages:
         return ["(无消息)"]
     lines: list[str] = []
     for message in messages:
         speaker = message.nickname if message.role == "user" and message.nickname else message.role
+        timestamp = format_datetime(message.timestamp, tz=tz)
         lines.append(
-            f"[message_id={message.id}] {message.timestamp} {speaker}: {message.content}"
+            f"[message_id={message.id}] {timestamp} {speaker}: {message.content}"
         )
     return lines
 
 
-def _tool_lines(tool_events: list[MemoryToolEvent], *, include_full: bool) -> list[str]:
+def _tool_lines(tool_events: list[MemoryToolEvent], *, tz: tzinfo, include_full: bool) -> list[str]:
     if not tool_events:
         return ["(无工具事件)"]
     lines: list[str] = []
@@ -1845,8 +1853,9 @@ def _tool_lines(tool_events: list[MemoryToolEvent], *, include_full: bool) -> li
         status = "error" if event.is_error else "ok"
         result = event.result_full if include_full and event.result_full else event.result_preview
         result = _truncate(result, 1200 if include_full else 360)
+        timestamp = format_datetime(event.timestamp, tz=tz)
         lines.append(
-            f"[tool_event_id={event.id}] {event.timestamp} {event.tool_name or '-'} "
+            f"[tool_event_id={event.id}] {timestamp} {event.tool_name or '-'} "
             f"({status}) args={_truncate(event.arguments_text, 220)} result={result or '-'}"
         )
     return lines
@@ -1957,24 +1966,14 @@ def _now_iso() -> str:
 
 
 def _parse_iso_datetime(value: str) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    """解析库里存的时间；历史数据可能没有时区后缀，一律按 UTC 处理。"""
+    return parse_datetime(value)
 
 
-def _parse_required_time_bound(value: str, *, name: str) -> datetime | None:
+def _parse_required_time_bound(value: str, *, name: str, assume: tzinfo) -> datetime | None:
     if not value:
         return None
-    parsed = _parse_iso_datetime(value)
+    parsed = parse_datetime(value, assume=assume)
     if parsed is None:
         raise ValueError(f"{name} must be an ISO datetime")
     return parsed

@@ -56,14 +56,16 @@ class MemoryTimeSearchInput(BaseModel):
         default=None,
         description=(
             "Optional ISO datetime lower bound for the requested chat time range. "
-            "Use the current UTC+8 time from the system prompt to resolve relative dates."
+            "Resolve relative dates against the current local time in the system prompt; "
+            "datetimes without an explicit offset are read in that same local timezone."
         ),
     )
     end_time: str | None = Field(
         default=None,
         description=(
             "Optional ISO datetime upper bound for the requested chat time range. "
-            "Use the current UTC+8 time from the system prompt to resolve relative dates."
+            "Resolve relative dates against the current local time in the system prompt; "
+            "datetimes without an explicit offset are read in that same local timezone."
         ),
     )
     user_id: str | None = Field(default=None, description="Optional QQ user id to restrict participation.")
@@ -183,7 +185,7 @@ class MemorySearchTool:
             max_results=arguments.max_results,
         )
         return AgentToolResult(
-            content=[TextContent(text=render_search_results(hits))],
+            content=[TextContent(text=render_search_results(hits, tz=self._manager.local_timezone))],
             details={"archives": [search_hit_to_dict(hit) for hit in hits]},
         )
 
@@ -194,8 +196,8 @@ class MemoryTimeSearchTool:
     description = (
         "Search this group's archived historical conversations by time range. Use it when the user asks "
         "what was discussed during a period, such as last week, yesterday, this morning, or a specific "
-        "date/time range. Provide ISO datetimes resolved from the current UTC+8 system time. It returns "
-        "matching archives, not full transcripts."
+        "date/time range. Provide ISO datetimes resolved from the current local time in the system "
+        "prompt. It returns matching archives, not full transcripts."
     )
     parameters = MemoryTimeSearchInput
 
@@ -225,7 +227,7 @@ class MemoryTimeSearchTool:
             max_results=arguments.max_results,
         )
         return AgentToolResult(
-            content=[TextContent(text=render_search_results(hits))],
+            content=[TextContent(text=render_search_results(hits, tz=self._manager.local_timezone))],
             details={"archives": [search_hit_to_dict(hit) for hit in hits]},
         )
 

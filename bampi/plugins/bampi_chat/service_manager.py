@@ -8,13 +8,14 @@ import shlex
 import tempfile
 import time
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from nonebot import logger
 
 from .config import BampiChatConfig
+from .timeutil import default_timezone, format_datetime, resolve_timezone
 
 ServiceStatus = Literal["starting", "running", "stopped", "exited", "failed", "unknown"]
 ServiceProtocol = Literal["tcp"]
@@ -140,7 +141,14 @@ class ServiceManager:
         startup_timeout: float,
         stop_timeout: float,
         max_active_services_per_group: int,
+        local_timezone: str | tzinfo | None = None,
     ) -> None:
+        # 注册表里存 UTC；这个时区只用于渲染给模型看的时间。
+        self._local_timezone = (
+            local_timezone
+            if isinstance(local_timezone, tzinfo)
+            else resolve_timezone(local_timezone) if local_timezone else default_timezone()
+        )
         self._workspace_root = Path(workspace_root).resolve()
         self._workspace_root.mkdir(parents=True, exist_ok=True)
         self._visible_container_root = PurePosixPath(visible_container_root).as_posix()
@@ -175,6 +183,7 @@ class ServiceManager:
             startup_timeout=config.bampi_service_startup_timeout,
             stop_timeout=config.bampi_service_stop_timeout,
             max_active_services_per_group=config.bampi_service_max_active_services_per_group,
+            local_timezone=config.bampi_schedule_timezone,
         )
 
     @property
@@ -263,12 +272,12 @@ class ServiceManager:
             f"Port: {service.port}/{service.protocol}",
             f"Working directory: {service.workdir}",
             f"Command: {service.command}",
-            f"Created at: {service.created_at}",
+            f"Created at: {self._format_timestamp(service.created_at)}",
         ]
         if service.started_at:
-            lines.append(f"Started at: {service.started_at}")
+            lines.append(f"Started at: {self._format_timestamp(service.started_at)}")
         if service.stopped_at:
-            lines.append(f"Stopped at: {service.stopped_at}")
+            lines.append(f"Stopped at: {self._format_timestamp(service.stopped_at)}")
         if service.pid is not None:
             lines.append(f"PID: {service.pid}")
         if service.exit_code is not None:
@@ -281,6 +290,9 @@ class ServiceManager:
             lines.append("Recent logs:")
             lines.append(self.read_log_text(service, max_chars=max_chars) or "(no logs yet)")
         return "\n".join(lines)
+
+    def _format_timestamp(self, value: str | None) -> str:
+        return format_datetime(value, tz=self._local_timezone) or "-"
 
     def read_log_text(self, service: ManagedServiceRecord, *, max_chars: int) -> str:
         return self._read_log_tail(Path(service.log_path), max_chars=max_chars)

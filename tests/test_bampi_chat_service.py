@@ -6,7 +6,11 @@ import pytest
 
 from bampi.plugins.bampi_chat.config import BampiChatConfig
 from bampi.plugins.bampi_chat.prompt import build_system_prompt
-from bampi.plugins.bampi_chat.service_manager import ServiceManager, parse_service_port_range
+from bampi.plugins.bampi_chat.service_manager import (
+    ManagedServiceRecord,
+    ServiceManager,
+    parse_service_port_range,
+)
 from bampi.plugins.bampi_chat.tools import create_agent_tools
 from bampi.plugins.bampi_chat.tools.workspace import resolve_group_workspace_dir
 
@@ -46,6 +50,44 @@ def test_create_agent_tools_includes_service_when_manager_is_provided(tmp_path: 
     )
 
     assert "service" in [tool.name for tool in tools]
+
+
+def test_service_summary_renders_local_time(tmp_path: Path):
+    manager = ServiceManager(
+        workspace_root=str(tmp_path / "workspace-root"),
+        visible_container_root="/workspace",
+        container_name="bampi-sandbox",
+        container_shell="/bin/bash",
+        port_range="46000-46003",
+        public_host="127.0.0.1",
+        startup_timeout=20.0,
+        stop_timeout=10.0,
+        max_active_services_per_group=4,
+        local_timezone="Asia/Shanghai",
+    )
+    record = ManagedServiceRecord(
+        service_id="svc-1",
+        group_id="1001",
+        name="demo",
+        command="python -m http.server",
+        port=46000,
+        protocol="tcp",
+        status="running",
+        workdir="/workspace/app",
+        pid=123,
+        created_at="2026-04-28T13:00:00+00:00",
+        updated_at="2026-04-28T13:05:00+00:00",
+        log_path="/tmp/log",
+        pid_file="/tmp/pid",
+        exit_code_file="/tmp/exit",
+        started_at="2026-04-28T13:01:00+00:00",
+    )
+
+    summary = manager.render_service_summary(record)
+
+    assert "Created at: 2026-04-28 21:00" in summary
+    assert "Started at: 2026-04-28 21:01" in summary
+    assert "+00:00" not in summary
 
 
 @pytest.mark.asyncio
