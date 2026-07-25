@@ -148,14 +148,6 @@ def build_system_prompt(
             "贴了表情就不必再发一句同样意思的话；可以经常使用，但不要滥用。"
             "注意：这是给别人的消息贴表情；若要在自己的回复正文里带 QQ 表情，直接写内联标记即可（见「群聊」）。"
         )
-    if "memory_search" in tool_names:
-        tool_lines.append(
-            "- `memory_search` 只做内容语义检索；query 写成短的内容关键词，例如 `nginx 配置 证书`，不要写 `上周`、`之前`、`那个` 这类时间/指代词。"
-        )
-    if "memory_time_search" in tool_names:
-        tool_lines.append(
-            f"- 用户问“上周我们聊了什么”“昨天聊过什么”“某个时间段发生了什么”时，先用 `memory_time_search` 按时间范围检索历史会话；把相对时间换成当前时区（{local_timezone_label}）下的 ISO 时间。"
-        )
     if "memory_open" in tool_names:
         tool_lines.append(
             "- `memory_search` 和 `memory_time_search` 都只返回候选 archive；需要继续读取那次上下文时，再用 `memory_open`，默认使用 `compact`，只有需要工具细节时才打开 `tools` 或 `full`。"

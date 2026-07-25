@@ -704,7 +704,8 @@ def test_system_prompt_mentions_memory_tools():
     assert "memory_time_search" in prompt
     assert "memory_open" in prompt
     assert "memory_manage" in prompt
-    assert "nginx 配置 证书" in prompt
+    # 检索用法和参数格式由 tool schema 承载，提示词只保留 schema 说不到的记录策略。
+    assert "不要记录临时闲聊" in prompt
     assert BampiChatConfig(bampi_memory_storage_mode=" single ").bampi_memory_storage_mode == "single"
 
 

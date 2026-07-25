@@ -261,7 +261,7 @@ def test_system_prompt_follows_configured_timezone(monkeypatch: pytest.MonkeyPat
 
     assert "当前时间(UTC+9): 2026-04-01 09:30" in prompt
     assert "所有时间都是 UTC+9 的本地时间" in prompt
-    assert "当前时区（UTC+9）" in prompt
+    assert "UTC+8" not in prompt
 
 
 def test_create_agent_tools_includes_browser_by_default(tmp_path: Path):
