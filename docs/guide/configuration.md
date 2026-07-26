@@ -34,7 +34,7 @@ BAMPI_GROUP_WHITELIST=["123456789"]
 |-------------|------|------|
 | `bampi_model_provider` (`BAMPI_MODEL_PROVIDER`) | `openai` | 模型供应商标识 |
 | `bampi_model_id` (`BAMPI_MODEL_ID`) | `gpt-5-mini` | 模型名 |
-| `bampi_model_api` (`BAMPI_MODEL_API`) | `auto` | 协议：`auto` / `anthropic-messages` / `openai-responses` / `openai-completions` / `ollama-responses` / `google-genai`（及常见别名） |
+| `bampi_model_api` (`BAMPI_MODEL_API`) | `auto` | 协议：`auto` / `anthropic-messages` / `openai-responses` / `openai-completions` / `google-genai`（及常见别名） |
 | `bampi_api_key` (`BAMPI_API_KEY`) | 空 | API Key |
 | `bampi_base_url` (`BAMPI_BASE_URL`) | 空 | 自定义 API Base URL |
 | `bampi_model_input_types` (`BAMPI_MODEL_INPUT_TYPES`) | 未设则按模型能力 | 覆盖输入类型：`text` / `image`（须含 `text`） |

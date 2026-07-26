@@ -41,7 +41,6 @@ BackgroundNotifyHandler = Callable[
 _API_KEY_ENV_BY_API: dict[str, str] = {
     "anthropic-messages": "ANTHROPIC_API_KEY",
     "google-genai": "GOOGLE_API_KEY",
-    "ollama-responses": "OLLAMA_API_KEY",
     "openai-completions": "OPENAI_API_KEY",
     "openai-responses": "OPENAI_API_KEY",
 }
@@ -1296,8 +1295,6 @@ class GroupSessionManager:
             return "google-genai"
         if provider_key == "openai":
             return "openai-responses"
-        if provider_key == "ollama" or "ollama" in provider_key:
-            return "ollama-responses"
         return "openai-completions"
 
     async def _resolve_memory_api_key(

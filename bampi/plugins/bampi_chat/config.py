@@ -17,7 +17,6 @@ SUPPORTED_MODEL_APIS = {
     "anthropic-messages",
     "openai-responses",
     "openai-completions",
-    "ollama-responses",
     "google-genai",
 }
 
@@ -38,8 +37,6 @@ MODEL_API_ALIASES = {
     "completions": "openai-completions",
     "openai-completions": "openai-completions",
     "openai-chat-completions": "openai-completions",
-    "ollama": "ollama-responses",
-    "ollama-responses": "ollama-responses",
 }
 
 DEFAULT_WORKSPACE_DIR = "data/bampi/workspace"

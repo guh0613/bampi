@@ -8,26 +8,6 @@ from bampi.plugins.bampi_chat.config import BampiChatConfig
 from bampi.plugins.bampi_chat.session_manager import GroupSessionManager
 
 
-def test_group_session_manager_accepts_custom_ollama_compatible_model(tmp_path: Path):
-    config = BampiChatConfig(
-        bampi_workspace_dir=str(tmp_path / "workspace"),
-        bampi_session_dir=str(tmp_path / "sessions"),
-        bampi_model_provider="ollama",
-        bampi_model_id="kimi-k2.5",
-        bampi_base_url="https://api.sanuki.cn",
-    )
-
-    manager = GroupSessionManager(config)
-
-    model = manager._build_model()
-
-    assert model.provider == "ollama"
-    assert model.api == "ollama-responses"
-    assert model.id == "kimi-k2.5"
-    assert model.base_url == "https://api.sanuki.cn"
-    assert model.input_types == ["text"]
-
-
 def test_group_session_manager_defaults_unknown_custom_provider_to_chat_completions(tmp_path: Path):
     config = BampiChatConfig(
         bampi_workspace_dir=str(tmp_path / "workspace"),
@@ -80,29 +60,6 @@ def test_group_session_manager_accepts_explicit_chat_completions_api_alias(tmp_p
     assert model.api == "openai-completions"
     assert model.id == "kimi-k2.6"
     assert model.base_url == "https://api.moonshot.cn/v1"
-
-
-def test_group_session_manager_uses_builtin_ollama_model_metadata(tmp_path: Path):
-    config = BampiChatConfig(
-        bampi_workspace_dir=str(tmp_path / "workspace"),
-        bampi_session_dir=str(tmp_path / "sessions"),
-        bampi_model_provider="ollama",
-        bampi_model_id="gemini-3-flash",
-        bampi_base_url="https://ollama.example.com",
-    )
-
-    manager = GroupSessionManager(config)
-
-    model = manager._build_model()
-
-    assert model.provider == "ollama"
-    assert model.api == "ollama-responses"
-    assert model.id == "gemini-3-flash"
-    assert model.reasoning is True
-    assert model.context_window == 1_048_576
-    assert model.max_tokens == 65_536
-    assert model.base_url == "https://ollama.example.com"
-    assert model.input_types == ["text", "image"]
 
 
 def test_group_session_manager_allows_overriding_builtin_model_input_types(tmp_path: Path):
@@ -269,7 +226,7 @@ def test_group_session_manager_memory_model_overrides_fields_independently(tmp_p
 
     assert memory_model.provider == "ollama"
     assert memory_model.id == "qwen3"
-    assert memory_model.api == "ollama-responses"
+    assert memory_model.api == "openai-completions"
     assert memory_model.base_url == "https://ollama.example.com"
 
 
