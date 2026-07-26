@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -774,6 +775,38 @@ def test_build_user_message_renders_reply_at_and_face_segments():
     )
 
     assert "reply_message: @李四(10001) 说得对[表情:微笑]" in message.content[0].text
+
+
+def test_build_user_message_includes_replied_miniapp_card():
+    payload = {
+        "app": "com.tencent.miniapp_01",
+        "desc": "示例应用",
+        "meta": {
+            "detail_1": {
+                "desc": "回复里的小程序卡片",
+                "qqdocurl": "https://example.com/content/replied",
+            }
+        },
+    }
+    event = FakeGroupEvent(
+        group_id=1001,
+        user_id=42,
+        message_id=99,
+        sender=FakeSender(user_id=42, nickname="Alice"),
+        reply=FakeReply(
+            sender=FakeSender(user_id=7, nickname="Bob"),
+            message=Message(
+                [MessageSegment("json", {"data": json.dumps(payload, ensure_ascii=False)})]
+            ),
+        ),
+    )
+
+    message = build_user_message(event, "看看这个", IncomingMedia())
+
+    assert (
+        "reply_message: [QQ小程序:示例应用 | 回复里的小程序卡片 | "
+        "https://example.com/content/replied]" in message.content[0].text
+    )
 
 
 @pytest.mark.asyncio

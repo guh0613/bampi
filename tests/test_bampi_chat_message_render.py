@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
@@ -90,6 +91,56 @@ def test_render_skips_media_segments():
 def test_render_dice_and_rps():
     message = Message([MessageSegment("dice", {"result": "3"}), MessageSegment("rps", {})])
     assert render_message_text(message) == "[骰子:3][猜拳]"
+
+
+def test_render_qq_miniapp_json_card_keeps_title_and_target_url():
+    payload = {
+        "app": "com.tencent.miniapp_01",
+        "desc": "示例应用",
+        "prompt": "[QQ小程序]示例应用",
+        "meta": {
+            "detail_1": {
+                "title": "示例应用",
+                "desc": "一个通过小程序分享的内容",
+                "qqdocurl": "https://example.com/content/123?share_source=qq",
+                "url": "m.q.qq.com/a/s/example",
+            }
+        },
+    }
+    message = Message(
+        [MessageSegment("json", {"data": json.dumps(payload, ensure_ascii=False)})]
+    )
+
+    assert render_message_text(message) == (
+        "[QQ小程序:示例应用 | 一个通过小程序分享的内容 | "
+        "https://example.com/content/123?share_source=qq]"
+    )
+
+
+def test_render_miniapp_accepts_object_payload():
+    payload = {
+        "desc": "示例应用",
+        "meta": {
+            "detail": {
+                "desc": "测试内容",
+                "qqdocurl": "https://example.com/content/item",
+            }
+        },
+    }
+    message = Message([MessageSegment("miniapp", {"data": payload})])
+
+    assert render_message_text(message) == (
+        "[QQ小程序:示例应用 | 测试内容 | https://example.com/content/item]"
+    )
+
+
+def test_render_malformed_card_stays_visible():
+    assert render_message_text(
+        Message([MessageSegment("json", {"data": "not-json"})])
+    ) == "[JSON卡片]"
+    assert render_message_text(
+        Message([MessageSegment("miniapp", {"data": "not-json"})])
+    ) == "[QQ小程序]"
 
 
 def test_render_plain_string_message():

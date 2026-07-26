@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -245,6 +246,47 @@ async def test_collects_forward_from_reply_separately():
     assert context.has_reply is True
     assert "ReplyUser(8)" in context.reply_render.text
     assert "quoted forward" in context.reply_render.text
+
+
+@pytest.mark.asyncio
+async def test_forwarded_miniapp_card_keeps_target_url():
+    payload = {
+        "app": "com.tencent.miniapp_01",
+        "desc": "示例应用",
+        "meta": {
+            "detail_1": {
+                "desc": "合并转发里的小程序卡片",
+                "qqdocurl": "https://example.com/content/forwarded",
+            }
+        },
+    }
+    bot = FakeForwardBot(
+        {
+            "root": {
+                "messages": [
+                    {
+                        "user_id": 7,
+                        "sender": {"nickname": "Bob"},
+                        "message": [
+                            {
+                                "type": "json",
+                                "data": {
+                                    "data": json.dumps(payload, ensure_ascii=False)
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+    )
+
+    context = await collect(bot, Message([forward_segment("root")]))
+
+    assert (
+        "[QQ小程序:示例应用 | 合并转发里的小程序卡片 | "
+        "https://example.com/content/forwarded]" in context.current_render.text
+    )
 
 
 @pytest.mark.asyncio

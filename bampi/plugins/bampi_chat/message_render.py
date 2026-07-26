@@ -1,20 +1,24 @@
 """将 OneBot v11 消息段渲染为 LLM 可读的纯文本。
 
 `Message.extract_plain_text()` 只保留 `text` 段，QQ 特有的消息段
-（@ 提及、QQ 表情、商城动画表情等）会被直接丢弃，导致模型看不到
-这部分内容。本模块把它们渲染为文本标记：
+（@ 提及、QQ 表情、商城动画表情、小程序卡片等）会被直接丢弃，
+导致模型看不到这部分内容。本模块把它们渲染为文本标记：
 
 - ``@昵称(123456)`` / ``@123456`` / ``@全体成员``
 - ``[表情:doge]`` / ``[表情#123]``（未知表情 ID 回退为编号）
 - ``[动画表情:名称]``、``[骰子:3]``、``[猜拳:2]``
+- ``[QQ小程序:示例应用 | 分享内容标题 | https://example.com/content/123]``
 
 图片、文件、回复等消息段由媒体收集逻辑单独处理，这里跳过。
 """
 
 from __future__ import annotations
 
+import html
+import json
 import time
 from typing import Any, Callable, Iterable, Protocol
+from urllib.parse import urlparse
 
 from nonebot import logger
 
@@ -86,6 +90,26 @@ FACE_ID_BY_NAME: dict[str, int] = {
 # Unicode 变体选择符/皮肤色修饰符，解析 emoji 字符时跳过
 _EMOJI_MODIFIER_CODEPOINTS = frozenset(
     {0xFE0E, 0xFE0F, 0x200D, 0x1F3FB, 0x1F3FC, 0x1F3FD, 0x1F3FE, 0x1F3FF}
+)
+
+_CARD_SEGMENT_TYPES = frozenset({"json", "miniapp", "lightapp"})
+_CARD_PAYLOAD_MAX_CHARS = 256_000
+_CARD_METADATA_MAX_NODES = 256
+_CARD_TEXT_MAX_CHARS = 300
+_CARD_URL_MAX_CHARS = 2_000
+_CARD_METADATA_KEYS = frozenset(
+    {
+        "title",
+        "name",
+        "desc",
+        "description",
+        "content",
+        "summary",
+        "qqdocurl",
+        "jumpurl",
+        "jump_url",
+        "url",
+    }
 )
 
 
@@ -195,7 +219,164 @@ def render_segment_text(segment: Any, *, resolve_name: NameResolver | None = Non
         return _render_with_result("骰子", data)
     if seg_type == "rps":
         return _render_with_result("猜拳", data)
+    if seg_type in _CARD_SEGMENT_TYPES:
+        return _render_card_segment(seg_type, data)
     return ""
+
+
+def _render_card_segment(seg_type: str, data: dict[str, Any]) -> str:
+    payload = _decode_card_payload(data)
+    fallback_kind = "QQ小程序" if seg_type in {"miniapp", "lightapp"} else "JSON卡片"
+    if payload is None:
+        return f"[{fallback_kind}]"
+
+    app = _clean_card_text(payload.get("app"), max_chars=_CARD_TEXT_MAX_CHARS)
+    prompt = _strip_card_prompt(
+        _clean_card_text(payload.get("prompt"), max_chars=_CARD_TEXT_MAX_CHARS)
+    )
+    root_desc = _clean_card_text(
+        payload.get("desc"), max_chars=_CARD_TEXT_MAX_CHARS
+    )
+    metadata = _collect_card_metadata(payload.get("meta"))
+    metadata_title = metadata.get("title") or metadata.get("name") or ""
+    metadata_desc = (
+        metadata.get("desc")
+        or metadata.get("description")
+        or metadata.get("content")
+        or metadata.get("summary")
+        or ""
+    )
+    target_url = _first_valid_card_url(
+        metadata.get("qqdocurl"),
+        metadata.get("jumpurl"),
+        metadata.get("jump_url"),
+        metadata.get("url"),
+    )
+
+    is_miniapp = (
+        fallback_kind == "QQ小程序"
+        or app.casefold().startswith("com.tencent.miniapp")
+        or "小程序" in _clean_card_text(payload.get("prompt"), max_chars=80)
+    )
+    kind = "QQ小程序" if is_miniapp else "JSON卡片"
+    parts = _dedupe_card_parts(
+        root_desc,
+        prompt,
+        metadata_title,
+        metadata_desc,
+        target_url,
+    )
+    return f"[{kind}:{' | '.join(parts)}]" if parts else f"[{kind}]"
+
+
+def _decode_card_payload(data: dict[str, Any]) -> dict[str, Any] | None:
+    raw: Any = data.get("data")
+    if raw is None and any(key in data for key in ("app", "meta", "prompt", "desc")):
+        raw = data
+
+    decoded = raw
+    for _ in range(2):
+        if isinstance(decoded, dict):
+            return decoded
+        if not isinstance(decoded, str):
+            return None
+        text = decoded.strip()
+        if not text or len(text) > _CARD_PAYLOAD_MAX_CHARS:
+            return None
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            unescaped = html.unescape(text)
+            if unescaped == text:
+                return None
+            try:
+                decoded = json.loads(unescaped)
+            except json.JSONDecodeError:
+                return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def _collect_card_metadata(value: Any) -> dict[str, str]:
+    collected: dict[str, str] = {}
+    nodes_seen = 0
+
+    def visit(node: Any, depth: int) -> None:
+        nonlocal nodes_seen
+        if depth > 5 or nodes_seen >= _CARD_METADATA_MAX_NODES:
+            return
+        if isinstance(node, dict):
+            nodes_seen += 1
+            for raw_key, child in node.items():
+                key = str(raw_key).casefold()
+                if key in _CARD_METADATA_KEYS and key not in collected:
+                    if key in {"qqdocurl", "jumpurl", "jump_url", "url"}:
+                        cleaned = _normalize_card_scalar(child)
+                        if len(cleaned) > _CARD_URL_MAX_CHARS:
+                            cleaned = ""
+                    else:
+                        cleaned = _clean_card_text(
+                            child, max_chars=_CARD_TEXT_MAX_CHARS
+                        )
+                    if cleaned:
+                        collected[key] = cleaned
+                if isinstance(child, (dict, list, tuple)):
+                    visit(child, depth + 1)
+                if nodes_seen >= _CARD_METADATA_MAX_NODES:
+                    return
+        elif isinstance(node, (list, tuple)):
+            nodes_seen += 1
+            for child in node:
+                if isinstance(child, (dict, list, tuple)):
+                    visit(child, depth + 1)
+                if nodes_seen >= _CARD_METADATA_MAX_NODES:
+                    return
+
+    visit(value, 0)
+    return collected
+
+
+def _normalize_card_scalar(value: Any) -> str:
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return ""
+    return " ".join(html.unescape(str(value)).split())
+
+
+def _clean_card_text(value: Any, *, max_chars: int) -> str:
+    normalized = _normalize_card_scalar(value)
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max(0, max_chars - 1)].rstrip() + "…"
+
+
+def _strip_card_prompt(value: str) -> str:
+    stripped = value
+    for prefix in ("[QQ小程序]", "[小程序]", "[应用]", "[分享]", "[音乐]"):
+        if stripped.startswith(prefix):
+            return stripped[len(prefix) :].strip()
+    return stripped
+
+
+def _first_valid_card_url(*values: str | None) -> str:
+    for value in values:
+        candidate = _normalize_card_scalar(value)
+        if not candidate or len(candidate) > _CARD_URL_MAX_CHARS:
+            continue
+        parsed = urlparse(candidate)
+        if parsed.scheme.casefold() in {"http", "https"} and parsed.netloc:
+            return candidate
+    return ""
+
+
+def _dedupe_card_parts(*values: str) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = value.casefold()
+        if not value or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(value)
+    return result
 
 
 def _render_at(data: dict[str, Any], resolve_name: NameResolver | None) -> str:
