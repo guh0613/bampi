@@ -4,8 +4,33 @@ from pathlib import Path
 
 import pytest
 
+from bampy.ai import Model, ModelCost
+
 from bampi.plugins.bampi_chat.config import BampiChatConfig
 from bampi.plugins.bampi_chat.session_manager import GroupSessionManager
+
+
+@pytest.fixture
+def fake_builtin_model(monkeypatch: pytest.MonkeyPatch) -> Model:
+    """Stub bampy's model registry with test-owned data, so bampy registry
+    churn (renamed/removed/tuned models) never breaks these tests."""
+    model = Model(
+        id="fake-builtin",
+        name="Fake Builtin",
+        api="openai-responses",
+        provider="fake",
+        base_url="https://api.fake.example.com/v1",
+        reasoning=True,
+        input_types=["text", "image"],
+        context_window=200_000,
+        max_tokens=32_000,
+        cost=ModelCost(),
+    )
+    monkeypatch.setattr(
+        "bampi.plugins.bampi_chat.session_manager.get_model",
+        lambda model_id, provider=None: model if model_id == model.id else None,
+    )
+    return model
 
 
 def test_group_session_manager_defaults_unknown_custom_provider_to_chat_completions(tmp_path: Path):
@@ -62,12 +87,14 @@ def test_group_session_manager_accepts_explicit_chat_completions_api_alias(tmp_p
     assert model.base_url == "https://api.moonshot.cn/v1"
 
 
-def test_group_session_manager_allows_overriding_builtin_model_input_types(tmp_path: Path):
+def test_group_session_manager_allows_overriding_builtin_model_input_types(
+    tmp_path: Path, fake_builtin_model: Model
+):
     config = BampiChatConfig(
         bampi_workspace_dir=str(tmp_path / "workspace"),
         bampi_session_dir=str(tmp_path / "sessions"),
-        bampi_model_provider="openai",
-        bampi_model_id="gpt-5-mini",
+        bampi_model_provider="fake",
+        bampi_model_id="fake-builtin",
         bampi_model_input_types=["text"],
     )
 
@@ -123,12 +150,14 @@ def test_text_only_model_session_does_not_advertise_read_image_support(
     assert "image" not in read_tool.description.lower()
 
 
-def test_group_session_manager_allows_overriding_builtin_model_api(tmp_path: Path):
+def test_group_session_manager_allows_overriding_builtin_model_api(
+    tmp_path: Path, fake_builtin_model: Model
+):
     config = BampiChatConfig(
         bampi_workspace_dir=str(tmp_path / "workspace"),
         bampi_session_dir=str(tmp_path / "sessions"),
-        bampi_model_provider="openai",
-        bampi_model_id="gpt-5-mini",
+        bampi_model_provider="fake",
+        bampi_model_id="fake-builtin",
         bampi_model_api="chat-completions",
         bampi_base_url="https://gateway.example.com/v1",
     )
@@ -137,12 +166,12 @@ def test_group_session_manager_allows_overriding_builtin_model_api(tmp_path: Pat
 
     model = manager._build_model()
 
-    assert model.provider == "openai"
+    assert model.provider == "fake"
     assert model.api == "openai-completions"
-    assert model.id == "gpt-5-mini"
+    assert model.id == "fake-builtin"
     assert model.reasoning is True
-    assert model.context_window == 400_000
-    assert model.max_tokens == 128_000
+    assert model.context_window == 200_000
+    assert model.max_tokens == 32_000
     assert model.base_url == "https://gateway.example.com/v1"
 
 
@@ -254,14 +283,16 @@ def test_group_session_manager_memory_model_auto_api_does_not_inherit_main_api(
     assert memory_model.api != "anthropic-messages"
 
 
-def test_group_session_manager_memory_base_url_only_keeps_main_api(tmp_path: Path):
+def test_group_session_manager_memory_base_url_only_keeps_main_api(
+    tmp_path: Path, fake_builtin_model: Model
+):
     config = BampiChatConfig(
         bampi_workspace_dir=str(tmp_path / "workspace"),
         bampi_session_dir=str(tmp_path / "sessions"),
-        bampi_model_provider="openai",
-        bampi_model_id="gpt-5-mini",
+        bampi_model_provider="fake",
+        bampi_model_id="fake-builtin",
         bampi_model_api="chat-completions",
-        bampi_base_url="https://api.openai.com/v1",
+        bampi_base_url="https://api.fake.example.com/v1",
         bampi_memory_base_url="https://gateway.example.com/v1",
     )
 
@@ -269,8 +300,8 @@ def test_group_session_manager_memory_base_url_only_keeps_main_api(tmp_path: Pat
 
     memory_model = manager._build_memory_model()
 
-    assert memory_model.provider == "openai"
-    assert memory_model.id == "gpt-5-mini"
+    assert memory_model.provider == "fake"
+    assert memory_model.id == "fake-builtin"
     assert memory_model.api == "openai-completions"
     assert memory_model.base_url == "https://gateway.example.com/v1"
 
