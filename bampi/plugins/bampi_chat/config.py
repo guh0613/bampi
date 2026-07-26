@@ -69,6 +69,16 @@ class BampiChatConfig(BaseModel):
     bampi_rate_limit: int = 30
     bampi_rate_limit_window_seconds: int = 60
 
+    bampi_forward_enabled: bool = True
+    bampi_forward_max_depth: int = Field(default=4, ge=1, le=10)
+    bampi_forward_max_nodes: int = Field(default=100, ge=1, le=1000)
+    bampi_forward_max_roots: int = Field(default=4, ge=1, le=20)
+    bampi_forward_max_api_calls: int = Field(default=8, ge=1, le=50)
+    bampi_forward_max_text_chars: int = Field(default=30_000, ge=1000)
+    bampi_forward_resolve_timeout_seconds: float = Field(default=10.0, gt=0)
+    bampi_forward_max_media_items: int = Field(default=8, ge=0, le=100)
+    bampi_forward_max_total_media_bytes: int = Field(default=30 * 1024 * 1024, ge=0)
+
     bampi_max_turns: int = 50
     bampi_session_idle_ttl_seconds: int = 30 * 60
     bampi_workspace_cleanup_enabled: bool = True

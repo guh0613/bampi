@@ -32,6 +32,11 @@ from .feedback import (
     build_background_failure_message,
     build_reply_failure_message,
 )
+from .forward_messages import (
+    ForwardContext,
+    collect_forward_context,
+    iter_forward_nodes,
+)
 from .skills import describe_skill_resource_path
 from .message_compose import (
     append_composed_text,
@@ -43,12 +48,16 @@ from .message_render import (
     collect_mention_names,
     describe_reaction_emojis,
     extract_poke_action_texts,
+    iter_segments,
     message_mentions_user,
     render_event_text,
     render_message_text,
     resolve_member_display_name,
+    segment_data,
+    segment_type,
 )
 from .session_manager import GroupSessionManager, ManagedGroupSession
+from .timeutil import resolve_timezone
 from .tools.safe_bash import BackgroundSessionExitEvent
 from .tools.workspace import ensure_workspace_dirs, is_image_file
 
@@ -69,6 +78,27 @@ class IncomingMedia:
     reply_inline_images: list[ImageContent] = field(default_factory=list)
     reply_saved_paths: list[str] = field(default_factory=list)
     reply_notes: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class _ForwardMediaBudget:
+    remaining_items: int
+    remaining_bytes: int
+    seen_sources: set[str] = field(default_factory=set)
+    limit_noted: bool = False
+
+    def claim(self, source_key: str) -> bool:
+        if source_key and source_key in self.seen_sources:
+            return False
+        if self.remaining_items <= 0 or self.remaining_bytes <= 0:
+            return False
+        if source_key:
+            self.seen_sources.add(source_key)
+        self.remaining_items -= 1
+        return True
+
+    def consume(self, byte_count: int) -> None:
+        self.remaining_bytes = max(0, self.remaining_bytes - max(0, byte_count))
 
 
 @dataclass(slots=True)
@@ -995,15 +1025,21 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 f"reason={decision.reason}"
             )
             try:
-                media = await collect_incoming_media(bot, event, config, workspace_dir)
+                media, forwards = await collect_incoming_context(
+                    bot,
+                    event,
+                    config,
+                    workspace_dir,
+                )
             except Exception:
-                logger.exception("bampi_chat failed to collect follow-up media")
-                await matcher.send("⚠️ 获取消息里的图片或文件失败，请重发一次。")
+                logger.exception("bampi_chat failed to collect follow-up message context")
+                await matcher.send("⚠️ 获取消息里的附件或合并转发失败，请重发一次。")
                 return
             user_message = build_user_message(
                 event,
                 decision.cleaned_text,
                 media,
+                forwards=forwards,
                 resolve_name=mention_names.get,
                 reaction_notes=reaction_buffer.drain(group_id) or None,
             )
@@ -1074,14 +1110,21 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
 
         managed = reservation.managed
         try:
-            media = await collect_incoming_media(bot, event, config, workspace_dir)
+            media, forwards = await collect_incoming_context(
+                bot,
+                event,
+                config,
+                workspace_dir,
+            )
             logger.info(
-                f"bampi_chat media collected group_id={group_id} "
+                f"bampi_chat message context collected group_id={group_id} "
                 f"message_id={event.message_id} "
                 f"inline_images={len(media.inline_images)} "
                 f"saved_paths={media.saved_paths} "
                 f"reply_inline_images={len(media.reply_inline_images)} "
                 f"reply_saved_paths={media.reply_saved_paths} "
+                f"forward_roots={len(forwards.current)} "
+                f"reply_forward_roots={len(forwards.reply)} "
                 f"notes={media.notes} "
                 f"reply_notes={media.reply_notes}"
             )
@@ -1089,6 +1132,7 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                 event,
                 decision.cleaned_text,
                 media,
+                forwards=forwards,
                 resolve_name=mention_names.get,
                 reaction_notes=reaction_buffer.drain(group_id) or None,
             )
@@ -1318,9 +1362,10 @@ def extract_message_text(message: Any, *, resolve_name: NameResolver | None = No
         return normalize_text(str(message))
 
 
-def extract_segment_filename(segment: MessageSegment) -> str | None:
+def extract_segment_filename(segment: Any) -> str | None:
+    data = segment_data(segment)
     for key in ("name", "file", "file_name", "filename"):
-        raw_value = segment.data.get(key)
+        raw_value = data.get(key)
         if raw_value is None:
             continue
         filename = sanitize_filename(str(raw_value))
@@ -1412,14 +1457,20 @@ def build_user_message(
     cleaned_text: str,
     media: IncomingMedia,
     *,
+    forwards: ForwardContext | None = None,
     resolve_name: NameResolver | None = None,
     reaction_notes: list[str] | None = None,
 ) -> UserMessage:
+    forwards = forwards or ForwardContext()
     sender_name = display_name(event.sender)
     if cleaned_text:
         body = cleaned_text
+    elif forwards.has_current:
+        body = "(无附言；本条消息包含合并转发，请结合 forwarded_messages 理解)"
     elif media.inline_images or media.saved_paths:
         body = "(无纯文本内容；本条消息仅包含媒体/文件)"
+    elif forwards.has_reply:
+        body = "(无附言；请结合回复引用中的合并转发理解)"
     elif media.reply_inline_images or media.reply_saved_paths:
         body = "(无纯文本内容；请结合回复引用内容理解)"
     else:
@@ -1436,6 +1487,13 @@ def build_user_message(
         lines.append(f"reply_to_name: {reply_name}")
         if reply_text:
             lines.append(f"reply_message: {reply_text}")
+
+    if forwards.current_render.text:
+        lines.append("forwarded_messages:")
+        lines.extend(f"  {line}" for line in forwards.current_render.text.splitlines())
+    if forwards.reply_render.text:
+        lines.append("reply_forwarded_messages:")
+        lines.extend(f"  {line}" for line in forwards.reply_render.text.splitlines())
 
     if media.inline_images:
         lines.append(f"inline_image_count: {len(media.inline_images)}")
@@ -1463,11 +1521,91 @@ def build_user_message(
     return UserMessage(content=content)
 
 
+async def collect_incoming_context(
+    bot: Bot,
+    event: GroupMessageEvent,
+    config: BampiChatConfig,
+    workspace_dir: str,
+) -> tuple[IncomingMedia, ForwardContext]:
+    """Collect ordinary media and lazily expand merged-forward messages."""
+    reply_message = getattr(event.reply, "message", None)
+    forwards = await collect_forward_context(
+        bot,
+        message=event.message,
+        reply_message=reply_message,
+        enabled=config.bampi_forward_enabled,
+        max_depth=config.bampi_forward_max_depth,
+        max_nodes=config.bampi_forward_max_nodes,
+        max_roots=config.bampi_forward_max_roots,
+        max_api_calls=config.bampi_forward_max_api_calls,
+        max_text_chars=config.bampi_forward_max_text_chars,
+        timeout_seconds=config.bampi_forward_resolve_timeout_seconds,
+        timezone=resolve_timezone(config.bampi_schedule_timezone),
+    )
+    media = await collect_incoming_media(
+        bot,
+        event,
+        config,
+        workspace_dir,
+        forwards=forwards,
+    )
+    await _persist_truncated_forward_transcripts(
+        media=media,
+        forwards=forwards,
+        workspace_dir=workspace_dir,
+    )
+    return media, forwards
+
+
+async def _persist_truncated_forward_transcripts(
+    *,
+    media: IncomingMedia,
+    forwards: ForwardContext,
+    workspace_dir: str,
+) -> None:
+    targets = (
+        (
+            forwards.current_render,
+            media.saved_paths,
+            media.notes,
+            "forwarded-messages.txt",
+            "合并转发",
+        ),
+        (
+            forwards.reply_render,
+            media.reply_saved_paths,
+            media.reply_notes,
+            "reply-forwarded-messages.txt",
+            "回复引用中的合并转发",
+        ),
+    )
+    for rendered, saved_paths, notes, preferred_name, label in targets:
+        if not rendered.truncated or not rendered.full_text:
+            continue
+        try:
+            saved = await save_bytes_to_inbox(
+                workspace_dir,
+                rendered.full_text.encode("utf-8"),
+                preferred_name=preferred_name,
+                mime_type="text/plain",
+            )
+        except Exception as exc:
+            logger.warning(
+                f"bampi_chat failed to save full forward transcript error={exc!r}"
+            )
+            notes.append(f"{label}内容较长，预览已截断，完整转录保存失败。")
+            continue
+        saved_paths.append(saved)
+        notes.append(f"{label}内容较长，完整转录已保存到 {saved}")
+
+
 async def collect_incoming_media(
     bot: Bot,
     event: GroupMessageEvent,
     config: BampiChatConfig,
     workspace_dir: str,
+    *,
+    forwards: ForwardContext | None = None,
 ) -> IncomingMedia:
     ensure_workspace_dirs(workspace_dir)
     media = IncomingMedia()
@@ -1494,6 +1632,28 @@ async def collect_incoming_media(
             from_reply=True,
         )
 
+    if forwards is not None and (forwards.has_current or forwards.has_reply):
+        budget = _ForwardMediaBudget(
+            remaining_items=config.bampi_forward_max_media_items,
+            remaining_bytes=config.bampi_forward_max_total_media_bytes,
+        )
+        for from_reply, resolved in (
+            (False, forwards.current),
+            (True, forwards.reply),
+        ):
+            for node in iter_forward_nodes(resolved):
+                await _collect_media_from_message(
+                    bot=bot,
+                    event=event,
+                    message=node.segments,
+                    media=media,
+                    config=config,
+                    workspace_dir=workspace_dir,
+                    from_reply=from_reply,
+                    allow_group_file_lookup=False,
+                    forward_budget=budget,
+                )
+
     return media
 
 
@@ -1516,34 +1676,61 @@ async def _collect_media_from_message(
     config: BampiChatConfig,
     workspace_dir: str,
     from_reply: bool,
+    allow_group_file_lookup: bool = True,
+    forward_budget: _ForwardMediaBudget | None = None,
 ) -> None:
     source = "reply" if from_reply else "message"
+    if forward_budget is not None:
+        source = f"forward_{source}"
     if message is None:
         return
 
-    for segment in message:
-        if segment.type == "image":
-            logger.info(
-                f"bampi_chat processing image segment "
-                f"group_id={event.group_id} "
-                f"message_id={event.message_id} "
-                f"source={source}"
-            )
-            await _handle_image_segment(
+    for segment in iter_segments(message):
+        seg_type = segment_type(segment)
+        if seg_type not in {"image", "file"}:
+            continue
+        data = segment_data(segment)
+        source_key = _media_source_key(seg_type, data)
+        if forward_budget is not None:
+            direct_url = str(data.get("url") or "").strip()
+            if direct_url and urlparse(direct_url).scheme.lower() not in {
+                "http",
+                "https",
+            }:
+                if not source_key or source_key not in forward_budget.seen_sources:
+                    if source_key:
+                        forward_budget.seen_sources.add(source_key)
+                    _, _, notes = _media_targets(media, from_reply=from_reply)
+                    notes.append(
+                        "合并转发中的媒体 URL 不是可下载的 HTTP(S) 地址，已跳过。"
+                    )
+                continue
+            if source_key and source_key in forward_budget.seen_sources:
+                continue
+            if not forward_budget.claim(source_key):
+                _note_forward_media_limit(media, from_reply=from_reply, budget=forward_budget)
+                continue
+
+        logger.info(
+            f"bampi_chat processing {seg_type} segment "
+            f"group_id={event.group_id} "
+            f"message_id={event.message_id} "
+            f"source={source}"
+        )
+        max_download_bytes = (
+            forward_budget.remaining_bytes if forward_budget is not None else None
+        )
+        if seg_type == "image":
+            consumed = await _handle_image_segment(
                 segment,
                 media,
                 config,
                 workspace_dir,
                 from_reply=from_reply,
+                max_download_bytes=max_download_bytes,
             )
-        elif segment.type == "file":
-            logger.info(
-                f"bampi_chat processing file segment "
-                f"group_id={event.group_id} "
-                f"message_id={event.message_id} "
-                f"source={source}"
-            )
-            await _handle_file_segment(
+        else:
+            consumed = await _handle_file_segment(
                 bot,
                 event,
                 segment,
@@ -1551,36 +1738,76 @@ async def _collect_media_from_message(
                 config,
                 workspace_dir,
                 from_reply=from_reply,
+                allow_group_file_lookup=allow_group_file_lookup,
+                max_download_bytes=max_download_bytes,
             )
+        if forward_budget is not None:
+            forward_budget.consume(consumed)
+
+
+def _media_source_key(seg_type: str, data: dict[str, Any]) -> str:
+    source = (
+        data.get("url")
+        or data.get("file_id")
+        or data.get("id")
+        or data.get("file")
+    )
+    return f"{seg_type}:{source}" if source else ""
+
+
+def _note_forward_media_limit(
+    media: IncomingMedia,
+    *,
+    from_reply: bool,
+    budget: _ForwardMediaBudget,
+) -> None:
+    if budget.limit_noted:
+        return
+    budget.limit_noted = True
+    _, _, notes = _media_targets(media, from_reply=from_reply)
+    notes.append("合并转发中的媒体较多或总大小超过限制，仅处理了前一部分。")
 
 
 async def _handle_image_segment(
-    segment: MessageSegment,
+    segment: Any,
     media: IncomingMedia,
     config: BampiChatConfig,
     workspace_dir: str,
     *,
     from_reply: bool,
-) -> None:
+    max_download_bytes: int | None = None,
+) -> int:
     inline_images, saved_paths, notes = _media_targets(media, from_reply=from_reply)
-    url = segment.data.get("url")
+    data = segment_data(segment)
+    url = str(data.get("url") or "").strip()
     if not url:
         logger.warning("bampi_chat image segment missing download url")
         if from_reply:
             notes.append("回复引用里有图片，但适配器未提供可下载 URL。")
         else:
             notes.append("收到图片，但适配器未提供可下载 URL。")
-        return
+        return 0
+
+    download_limit = config.bampi_max_download_size
+    if max_download_bytes is not None:
+        download_limit = min(download_limit, max_download_bytes)
+    if download_limit <= 0:
+        notes.append("图片未下载：已达到本轮合并转发媒体大小上限。")
+        return 0
 
     try:
-        content, mime_type = await download_url(url, timeout=config.bampi_web_search_timeout, max_bytes=config.bampi_max_download_size)
+        content, mime_type = await download_url(
+            url,
+            timeout=config.bampi_web_search_timeout,
+            max_bytes=download_limit,
+        )
     except Exception as exc:
         logger.warning(f"bampi_chat failed to download image: {exc}")
         if from_reply:
             notes.append(f"下载回复引用图片失败: {exc}")
         else:
             notes.append(f"下载图片失败: {exc}")
-        return
+        return 0
 
     mime_type = mime_type or guess_mime_type(url, default="image/png")
     if len(content) <= config.bampi_max_inline_image_size:
@@ -1591,52 +1818,72 @@ async def _handle_image_segment(
                 mime_type=mime_type,
             )
         )
-        return
+        return len(content)
 
-    saved = await save_bytes_to_inbox(workspace_dir, content, preferred_name=segment.data.get("file"), mime_type=mime_type)
+    saved = await save_bytes_to_inbox(
+        workspace_dir,
+        content,
+        preferred_name=data.get("file"),
+        mime_type=mime_type,
+    )
     logger.info(f"bampi_chat saved oversized image path={saved} size={len(content)}")
     saved_paths.append(saved)
     if from_reply:
         notes.append(f"回复引用中的图片过大，已保存到 {saved}")
     else:
         notes.append(f"图片过大，已保存到 {saved}")
+    return len(content)
 
 
 async def _handle_file_segment(
     bot: Bot,
     event: GroupMessageEvent,
-    segment: MessageSegment,
+    segment: Any,
     media: IncomingMedia,
     config: BampiChatConfig,
     workspace_dir: str,
     *,
     from_reply: bool,
-) -> None:
-    file_id = segment.data.get("id") or segment.data.get("file_id")
-    direct_url = str(segment.data.get("url", "")).strip()
-    if not file_id and not direct_url:
-        logger.warning("bampi_chat file segment missing file_id")
+    allow_group_file_lookup: bool = True,
+    max_download_bytes: int | None = None,
+) -> int:
+    data = segment_data(segment)
+    file_id = data.get("id") or data.get("file_id")
+    direct_url = str(data.get("url", "")).strip()
+    if not direct_url and (not file_id or not allow_group_file_lookup):
+        logger.warning("bampi_chat file segment missing usable download url")
         _, _, notes = _media_targets(media, from_reply=from_reply)
         if from_reply:
-            notes.append("回复引用里有文件，但缺少可下载标识。")
+            notes.append("回复引用里有文件，但缺少可下载 URL。")
         else:
-            notes.append("收到文件，但缺少 file_id。")
-        return
+            notes.append("收到文件，但缺少可下载 URL。")
+        return 0
 
     _, saved_paths, notes = _media_targets(media, from_reply=from_reply)
+    download_limit = config.bampi_max_download_size
+    if max_download_bytes is not None:
+        download_limit = min(download_limit, max_download_bytes)
+    if download_limit <= 0:
+        notes.append("文件未下载：已达到本轮合并转发媒体大小上限。")
+        return 0
+
     try:
-        if file_id:
+        if direct_url:
+            url = direct_url
+        else:
             info = await bot.call_api(
                 "get_group_file_url",
                 group_id=event.group_id,
                 file_id=file_id,
             )
             url = str(info.get("url", ""))
-        else:
-            url = direct_url
         if not url:
             raise RuntimeError("empty file url")
-        content, mime_type = await download_url(url, timeout=config.bampi_web_search_timeout, max_bytes=config.bampi_max_download_size)
+        content, mime_type = await download_url(
+            url,
+            timeout=config.bampi_web_search_timeout,
+            max_bytes=download_limit,
+        )
         preferred_name = resolve_inbox_preferred_name(
             preferred_name=extract_segment_filename(segment) or file_id,
             download_url=url,
@@ -1654,12 +1901,14 @@ async def _handle_file_segment(
             f"preferred_name={preferred_name!r} path={saved} size={len(content)}"
         )
         saved_paths.append(saved)
+        return len(content)
     except Exception as exc:
         logger.warning(f"bampi_chat failed to download group file file_id={file_id}: {exc}")
         if from_reply:
             notes.append(f"下载回复引用文件失败: {exc}")
         else:
             notes.append(f"下载群文件失败: {exc}")
+        return 0
 
 
 async def download_url(url: str, *, timeout: float, max_bytes: int) -> tuple[bytes, str]:

@@ -57,6 +57,24 @@ BAMPI_GROUP_WHITELIST=["123456789"]
 | `bampi_qq_react_tool_enabled` (`BAMPI_QQ_REACT_TOOL_ENABLED`) | `true` | 是否启用贴表情/戳一戳工具 |
 | `bampi_reaction_context_enabled` (`BAMPI_REACTION_CONTEXT_ENABLED`) | `true` | 是否把表情回应纳入上下文缓冲 |
 
+## 合并转发
+
+Bot 只在消息已经触发回复后按需调用 OneBot `get_forward_msg`，无需开启 NapCat 的全局 `parseMultMsg`。当前消息和回复引用中的合并转发都会被展开；嵌套内容保留发送者、时间、消息顺序及可读取的图片/文件。超长转录会截断预览并把完整文本保存到群 workspace 的 `inbox/`。
+
+| 字段（env） | 默认 | 说明 |
+|-------------|------|------|
+| `bampi_forward_enabled` (`BAMPI_FORWARD_ENABLED`) | `true` | 是否展开 QQ 合并转发消息 |
+| `bampi_forward_max_depth` (`BAMPI_FORWARD_MAX_DEPTH`) | `4` | 最大嵌套深度 |
+| `bampi_forward_max_nodes` (`BAMPI_FORWARD_MAX_NODES`) | `100` | 单轮最多解析的转发节点总数 |
+| `bampi_forward_max_roots` (`BAMPI_FORWARD_MAX_ROOTS`) | `4` | 当前消息和回复引用合计最多处理多少个顶层转发 |
+| `bampi_forward_max_api_calls` (`BAMPI_FORWARD_MAX_API_CALLS`) | `8` | 单轮最多调用多少次 `get_forward_msg` |
+| `bampi_forward_max_text_chars` (`BAMPI_FORWARD_MAX_TEXT_CHARS`) | `30000` | 当前消息与回复引用合计注入模型的转录预览字符上限；完整内容会另存附件 |
+| `bampi_forward_resolve_timeout_seconds` (`BAMPI_FORWARD_RESOLVE_TIMEOUT_SECONDS`) | `10` | 单次读取转发消息的超时 |
+| `bampi_forward_max_media_items` (`BAMPI_FORWARD_MAX_MEDIA_ITEMS`) | `8` | 单轮最多下载的转发内图片/文件数量；`0` 表示不下载 |
+| `bampi_forward_max_total_media_bytes` (`BAMPI_FORWARD_MAX_TOTAL_MEDIA_BYTES`) | `31457280` | 转发内媒体累计下载上限（默认 30MB） |
+
+NapCat 某些转发解析路径无法恢复真实来源群，因此实现不会使用子消息返回的 `group_id` 查询群成员或文件；转发内文件只有在消息段自带可下载 URL 时才会下载。
+
 ## 会话与回复
 
 | 字段（env） | 默认 | 说明 |
