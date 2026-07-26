@@ -65,6 +65,7 @@ BAMPI_GROUP_WHITELIST=["123456789"]
 | `bampi_session_idle_ttl_seconds` (`BAMPI_SESSION_IDLE_TTL_SECONDS`) | `1800` | 会话空闲 TTL（秒） |
 | `bampi_workspace_dir` (`BAMPI_WORKSPACE_DIR`) | `data/bampi/workspace` | workspace 根目录 |
 | `bampi_session_dir` (`BAMPI_SESSION_DIR`) | `data/bampi/sessions` | 会话持久化目录 |
+| `bampi_bot_name` (`BAMPI_BOT_NAME`) | `Ophelia` | Bot 名字；用于默认人设，只想改名时用它（设置了 `bampi_persona` 时以 persona 文本为准） |
 | `bampi_persona` (`BAMPI_PERSONA`) | 空 | 额外人设/系统提示片段 |
 | `bampi_reply_with_quote` (`BAMPI_REPLY_WITH_QUOTE`) | `true` | 回复是否引用原消息 |
 | `bampi_outbound_markup_enabled` (`BAMPI_OUTBOUND_MARKUP_ENABLED`) | `true` | 是否解析 Assistant 回复中的 `@QQ号` / `@昵称(QQ号)` / `[表情:名称]` / `[名称]` 为真实消息段 |

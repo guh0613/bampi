@@ -82,6 +82,7 @@ class BampiChatConfig(BaseModel):
     bampi_session_dir: str = DEFAULT_SESSION_DIR
     bampi_schedule_dir: str = DEFAULT_SCHEDULE_DIR
 
+    bampi_bot_name: str = "Ophelia"
     bampi_persona: str = ""
     bampi_reply_with_quote: bool = True
     bampi_outbound_markup_enabled: bool = True
@@ -240,6 +241,7 @@ class BampiChatConfig(BaseModel):
         "bampi_web_search_base_url",
         "bampi_web_search_api_key",
         "bampi_web_search_exa_api_key",
+        "bampi_bot_name",
         "bampi_persona",
         "bampi_workspace_dir",
         "bampi_session_dir",

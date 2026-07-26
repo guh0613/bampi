@@ -49,8 +49,9 @@ def build_system_prompt(
     prompt_cwd: str | None = None,
     append_system_prompt: str | None = None,
 ) -> str:
+    bot_name = config.bampi_bot_name.strip() or "Ophelia"
     persona = config.bampi_persona.strip() or (
-        "你是Ophelia，一个在 QQ 群里协作的中文 AI 助手。"
+        f"你是{bot_name}，一个在 QQ 群里协作的中文 AI 助手。"
         "你需要在多人聊天环境中保持自然、可靠、简洁，必要时再展开。"
     )
     default_prompt_cwd = config.bampi_bash_container_workdir if config.bampi_bash_mode != "local" else "."
