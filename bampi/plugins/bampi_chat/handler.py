@@ -120,7 +120,7 @@ class ProgressMessage:
     text: str
     quote: bool = False
     tool_call_id: str | None = None
-    parse_outbound_markup: bool = False
+    assistant_text: bool = False
 
 
 @dataclass(slots=True)
@@ -387,21 +387,21 @@ class LiveProgressReporter:
         self._visible_update_sent = False
         self._compaction_notice_sent = False
         self._tool_updates_sent = 0
-        self._streamed_text = ""
-        self._streamed_any_text = False
+        self._intermediate_text_sent = False
         self._last_seen_text = ""
         self._pending_text = ""
         self._tool_notices: dict[str, ToolProgressNotice] = {}
         self._recall_tasks: set[asyncio.Task[None]] = set()
-        self._last_text_flush_at = 0.0
 
     @property
-    def streamed_text(self) -> str:
-        return self._streamed_text
+    def intermediate_text_sent(self) -> bool:
+        """Whether a completed assistant tool turn reached the group."""
+        return self._intermediate_text_sent
 
     @property
-    def streamed_any_text(self) -> bool:
-        return self._streamed_any_text
+    def visible_update_sent(self) -> bool:
+        """Whether a progress message already claimed the reply quote."""
+        return self._visible_update_sent
 
     def start(self, session: AgentSession) -> None:
         if not self._enabled:
@@ -412,7 +412,10 @@ class LiveProgressReporter:
     async def prepare_final_reply(self) -> None:
         if not self._enabled:
             return
-        self._flush_pending_text(force=True)
+        # Terminal assistant text is deliberately left to the final delivery
+        # path, where complete Markdown can be rendered without racing the
+        # progress sender. Only already-enqueued intermediate updates need to
+        # drain before that reply is sent.
         await self._queue.join()
 
     async def close(self) -> None:
@@ -437,12 +440,8 @@ class LiveProgressReporter:
                 message = Message()
                 if item.quote and self._target.reply_message_id is not None:
                     message += MessageSegment.reply(self._target.reply_message_id)
-                if item.parse_outbound_markup:
-                    append_composed_text(
-                        message,
-                        item.text,
-                        options=compose_options_from_config(self._config),
-                    )
+                if item.assistant_text:
+                    await append_reply_body(message, item.text, self._config)
                 else:
                     message += MessageSegment.text(item.text)
                 response = await self._bot.call_api(
@@ -450,6 +449,8 @@ class LiveProgressReporter:
                     group_id=self._target.group_id,
                     message=message,
                 )
+                if item.assistant_text:
+                    self._intermediate_text_sent = True
                 if item.tool_call_id:
                     self._mark_tool_notice_sent(
                         item.tool_call_id,
@@ -482,10 +483,10 @@ class LiveProgressReporter:
             self._handle_tool_end(event)
             return
         if event_type == "message_start" and self._config.bampi_live_text_stream_enabled:
-            self._handle_message_start()
+            self._handle_message_start(event)
             return
         if event_type == "message_end" and self._config.bampi_live_text_stream_enabled:
-            self._handle_message_end()
+            self._handle_message_end(event)
             return
         if event_type == "message_update" and self._config.bampi_live_text_stream_enabled:
             self._handle_message_update(event)
@@ -500,11 +501,11 @@ class LiveProgressReporter:
         self._compaction_notice_sent = True
         self._enqueue(THRESHOLD_COMPACTION_NOTICE)
 
-    def _handle_message_start(self) -> None:
+    def _handle_message_start(self, event: Any) -> None:
+        if not isinstance(getattr(event, "message", None), AssistantMessage):
+            return
         self._last_seen_text = ""
         self._pending_text = ""
-        self._streamed_text = ""
-        self._streamed_any_text = False
 
     def _handle_tool_start(self, event: Any) -> None:
         if getattr(event, "tool_name", "") in SILENT_PROGRESS_TOOLS:
@@ -513,7 +514,7 @@ class LiveProgressReporter:
         if limit > 0 and self._tool_updates_sent >= limit:
             return
         if self._config.bampi_live_text_stream_enabled:
-            self._flush_pending_text(force=True)
+            self._flush_pending_text()
 
         tool_call_id = getattr(event, "tool_call_id", "")
         self._tool_updates_sent += 1
@@ -548,34 +549,34 @@ class LiveProgressReporter:
 
         self._pending_text += delta
 
-    def _handle_message_end(self) -> None:
-        self._flush_pending_text(force=True)
+    def _handle_message_end(self, event: Any) -> None:
+        message = getattr(event, "message", None)
+        if not isinstance(message, AssistantMessage):
+            return
+        if not assistant_message_has_tool_call(message):
+            # This is the terminal assistant message. Do not send it through
+            # the progress channel: the final dispatcher needs the complete
+            # text to render code, formulas and tables atomically.
+            self._pending_text = ""
+            return
 
-    def _flush_pending_text(self, *, force: bool = False) -> None:
+        # A message containing a tool call is an intermediate turn. Use the
+        # completed snapshot rather than accumulated deltas so it is emitted
+        # exactly once before tool execution starts.
+        self._pending_text = extract_text_blocks(message)
+        self._last_seen_text = self._pending_text
+        self._flush_pending_text()
+
+    def _flush_pending_text(self) -> None:
         if self._closed or not self._pending_text.strip():
             return
 
-        normalized_length = len(normalize_text(self._pending_text))
-        now = time.monotonic()
-        min_chars = max(1, self._config.bampi_live_text_stream_min_chars)
-        force_chars = max(min_chars, self._config.bampi_live_text_stream_force_chars)
-        min_interval = max(0.0, self._config.bampi_live_text_stream_min_interval_seconds)
-
-        if not force:
-            if normalized_length < min_chars:
-                return
-            if normalized_length < force_chars and now - self._last_text_flush_at < min_interval:
-                return
-
         payload = self._pending_text
         self._pending_text = ""
-        self._streamed_text += payload
-        self._streamed_any_text = True
-        self._last_text_flush_at = now
         self._enqueue(
             payload,
             preserve_whitespace=True,
-            parse_outbound_markup=True,
+            assistant_text=True,
         )
 
     def _extract_snapshot_delta(self, current_text: str) -> str:
@@ -610,7 +611,7 @@ class LiveProgressReporter:
         *,
         preserve_whitespace: bool = False,
         tool_call_id: str | None = None,
-        parse_outbound_markup: bool = False,
+        assistant_text: bool = False,
     ) -> None:
         if self._closed:
             return
@@ -625,7 +626,7 @@ class LiveProgressReporter:
                 text=payload,
                 quote=quote,
                 tool_call_id=tool_call_id,
-                parse_outbound_markup=parse_outbound_markup,
+                assistant_text=assistant_text,
             )
         )
 
@@ -1294,8 +1295,8 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
                         workspace_dir=workspace_dir,
                         assistant_message=assistant_message,
                         outbox_before=outbox_before,
-                        streamed_text=reporter.streamed_text,
-                        streamed_any_text=reporter.streamed_any_text,
+                        intermediate_text_sent=reporter.intermediate_text_sent,
+                        quote_reply=not reporter.visible_update_sent,
                     )
                 finally:
                     unsubscribe_background_origin()
@@ -2156,17 +2157,13 @@ def extract_text_blocks(message: AssistantMessage | None) -> str:
     return "\n".join(part.strip() for part in parts if part.strip()).strip()
 
 
-def strip_streamed_prefix(full_text: str, streamed_text: str) -> str:
-    if not streamed_text:
-        return full_text
-    if full_text.startswith(streamed_text):
-        return full_text[len(streamed_text) :]
-    logger.warning(
-        f"bampi_chat live text prefix mismatch "
-        f"streamed={log_preview(streamed_text)!r} "
-        f"full={log_preview(full_text)!r}"
+def assistant_message_has_tool_call(message: AssistantMessage | None) -> bool:
+    """Whether a completed assistant message continues into tool execution."""
+    if message is None or isinstance(message.content, str):
+        return False
+    return any(
+        getattr(block, "type", None) == "tool_call" for block in message.content
     )
-    return full_text
 
 
 def collect_outbox_files(
@@ -2206,9 +2203,14 @@ def build_group_reply_message(
     target: GroupReplyTarget,
     text: str,
     parse_outbound_markup: bool = False,
+    quote_reply: bool = True,
 ) -> Message:
     message = Message()
-    if config.bampi_reply_with_quote and target.reply_message_id is not None:
+    if (
+        config.bampi_reply_with_quote
+        and quote_reply
+        and target.reply_message_id is not None
+    ):
         message += MessageSegment.reply(target.reply_message_id)
     if text:
         if parse_outbound_markup:
@@ -2400,8 +2402,8 @@ async def run_poke_reply_turn(
                     workspace_dir=workspace_dir,
                     assistant_message=assistant_message,
                     outbox_before=outbox_before,
-                    streamed_text=reporter.streamed_text,
-                    streamed_any_text=reporter.streamed_any_text,
+                    intermediate_text_sent=reporter.intermediate_text_sent,
+                    quote_reply=not reporter.visible_update_sent,
                     log_label="poke",
                     failure_message_builder=build_reply_failure_message,
                     empty_reply_text=None,
@@ -2592,15 +2594,18 @@ async def send_agent_response_to_target(
     workspace_dir: str,
     assistant_message: AssistantMessage | None,
     outbox_before: dict[str, float],
-    streamed_text: str = "",
-    streamed_any_text: bool = False,
+    intermediate_text_sent: bool = False,
+    quote_reply: bool = True,
     text_prefix: str = "",
     log_label: str = "auto-resume",
     failure_message_builder: Callable[[FailureAssessment], str] = build_background_failure_message,
     empty_reply_text: str | None = "后续处理完成，无新内容可回复。可以发送新消息继续。",
 ) -> ResponseDispatchResult:
     full_text = extract_text_blocks(assistant_message)
-    text = strip_streamed_prefix(full_text, streamed_text)
+    intermediate_already_delivered = (
+        intermediate_text_sent and assistant_message_has_tool_call(assistant_message)
+    )
+    text = "" if intermediate_already_delivered else full_text
     text = text.lstrip()
     if text_prefix and text:
         text = f"{text_prefix}{text}"
@@ -2642,9 +2647,9 @@ async def send_agent_response_to_target(
                 ),
             )
             return ResponseDispatchResult(delivered=False, rollback_context=True)
-        if streamed_any_text:
+        if intermediate_already_delivered:
             logger.info(
-                f"bampi_chat {log_label} fully covered by live stream "
+                f"bampi_chat {log_label} intermediate tool turn already delivered "
                 f"group_id={target.group_id} "
                 f"reply_message_id={target.reply_message_id}"
             )
@@ -2667,7 +2672,12 @@ async def send_agent_response_to_target(
             )
         return ResponseDispatchResult(delivered=False, rollback_context=True)
 
-    message = build_group_reply_message(config=config, target=target, text="")
+    message = build_group_reply_message(
+        config=config,
+        target=target,
+        text="",
+        quote_reply=quote_reply,
+    )
     rendered_block_count = await append_reply_body(message, text, config)
 
     uploaded_files: list[Path] = []
@@ -2754,11 +2764,14 @@ async def send_agent_response(
     workspace_dir: str,
     assistant_message: AssistantMessage | None,
     outbox_before: dict[str, float],
-    streamed_text: str = "",
-    streamed_any_text: bool = False,
+    intermediate_text_sent: bool = False,
+    quote_reply: bool = True,
 ) -> ResponseDispatchResult:
     full_text = extract_text_blocks(assistant_message)
-    text = strip_streamed_prefix(full_text, streamed_text)
+    intermediate_already_delivered = (
+        intermediate_text_sent and assistant_message_has_tool_call(assistant_message)
+    )
+    text = "" if intermediate_already_delivered else full_text
     text = text.lstrip()
     files = collect_outbox_files(workspace_dir, before=outbox_before, text=full_text)
     stop_reason = getattr(assistant_message, "stop_reason", None)
@@ -2790,9 +2803,9 @@ async def send_agent_response(
             )
             await matcher.send(build_reply_failure_message(assess_failure(error_message)))
             return ResponseDispatchResult(delivered=False, rollback_context=True)
-        if streamed_any_text:
+        if intermediate_already_delivered:
             logger.info(
-                f"bampi_chat final reply fully covered by live stream "
+                f"bampi_chat final assistant tool turn already delivered "
                 f"group_id={event.group_id} "
                 f"message_id={event.message_id}"
             )
@@ -2807,7 +2820,7 @@ async def send_agent_response(
         return ResponseDispatchResult(delivered=False, rollback_context=True)
 
     message = Message()
-    if config.bampi_reply_with_quote:
+    if config.bampi_reply_with_quote and quote_reply:
         message += MessageSegment.reply(event.message_id)
     rendered_block_count = await append_reply_body(message, text, config)
 

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
-from bampy.ai import AssistantMessage, ImageContent, TextContent
+from bampy.ai import AssistantMessage, ImageContent, TextContent, ToolCall
 from bampy.ai.types import StopReason, TextDeltaEvent
 
 from bampi.plugins.bampi_chat.config import BampiChatConfig
@@ -38,7 +38,6 @@ from bampi.plugins.bampi_chat.handler import (
     reply_target_for_event,
     send_agent_response,
     should_respond,
-    strip_streamed_prefix,
 )
 from bampi.plugins.bampi_chat.message_render import FACE_ID_BY_NAME
 
@@ -412,7 +411,13 @@ async def test_live_progress_reporter_uses_text_delta_without_snapshot_desync():
             assistant_message_event=SimpleNamespace(type="toolcall_start"),
         )
     )
-    session.listener(SimpleNamespace(type="message_end", message=first_partial))
+    first_complete = AssistantMessage(
+        content=[
+            TextContent(text="让我先看看 inbox 目录里有什么文件，然后解读一下内容。"),
+            ToolCall(id="tc1", name="find", arguments={"pattern": "*", "path": "inbox"}),
+        ]
+    )
+    session.listener(SimpleNamespace(type="message_end", message=first_complete))
     session.listener(SimpleNamespace(type="tool_execution_start", tool_name="find", args={"pattern": "*", "path": "inbox"}, tool_call_id="tc1"))
     session.listener(SimpleNamespace(type="tool_execution_end", tool_name="find", tool_call_id="tc1", is_error=False, result=None))
 
@@ -443,13 +448,12 @@ async def test_live_progress_reporter_uses_text_delta_without_snapshot_desync():
     assert [str(call[1]["message"]) for call in bot.calls] == [
         "[CQ:reply,id=99]让我先看看 inbox 目录里有什么文件，然后解读一下内容。",
         "🔎 正在查找：*",
-        "实验已完成。",
     ]
-    assert reporter.streamed_text == "实验已完成。"
+    assert reporter.intermediate_text_sent is True
 
 
 @pytest.mark.asyncio
-async def test_live_progress_reporter_flushes_pending_text_on_message_end():
+async def test_live_progress_reporter_leaves_terminal_text_for_final_delivery():
     bot = FakeBot()
     event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
     config = BampiChatConfig(
@@ -479,8 +483,8 @@ async def test_live_progress_reporter_flushes_pending_text_on_message_end():
     await reporter.prepare_final_reply()
     await reporter.close()
 
-    assert len(bot.calls) == 1
-    assert str(bot.calls[0][1]["message"]) == "[CQ:reply,id=99]这是最终答案。"
+    assert bot.calls == []
+    assert reporter.intermediate_text_sent is False
 
 
 @pytest.mark.asyncio
@@ -508,7 +512,13 @@ async def test_live_progress_reporter_composes_markup_only_for_assistant_text():
             ),
         )
     )
-    session.listener(SimpleNamespace(type="message_end", message=partial))
+    complete = AssistantMessage(
+        content=[
+            TextContent(text="请 @10001 看[doge]"),
+            ToolCall(id="tc1", name="read", arguments={"path": "result.txt"}),
+        ]
+    )
+    session.listener(SimpleNamespace(type="message_end", message=complete))
     await reporter.prepare_final_reply()
     await reporter.close()
 
@@ -517,6 +527,53 @@ async def test_live_progress_reporter_composes_markup_only_for_assistant_text():
         f"[CQ:reply,id=99]请 [CQ:at,qq=10001] 看"
         f"[CQ:face,id={FACE_ID_BY_NAME['doge']}]"
     )
+
+
+@pytest.mark.asyncio
+async def test_live_progress_reporter_renders_rich_intermediate_text(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class StubRichRenderer:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def render(self, blocks):
+            self.calls.append(blocks)
+            return [b"formula-png"]
+
+    bot = FakeBot()
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
+    config = BampiChatConfig()
+    renderer = StubRichRenderer()
+    monkeypatch.setattr(handler_module, "get_rich_renderer", lambda _config: renderer)
+    reporter = LiveProgressReporter(
+        bot=bot,
+        target=reply_target_for_event(event),
+        config=config,
+    )
+    session = FakeSession()
+
+    reporter.start(session)
+    assert session.listener is not None
+    intermediate = AssistantMessage(
+        content=[
+            TextContent(text="先计算：\n$$\nx^2 + y^2\n$$"),
+            ToolCall(id="tc1", name="read", arguments={"path": "result.txt"}),
+        ]
+    )
+    session.listener(SimpleNamespace(type="message_start", message=AssistantMessage(content=[])))
+    session.listener(SimpleNamespace(type="message_end", message=intermediate))
+    await reporter.prepare_final_reply()
+    await reporter.close()
+
+    assert reporter.intermediate_text_sent is True
+    assert len(renderer.calls) == 1
+    assert len(bot.calls) == 1
+    assert [segment.type for segment in bot.calls[0][1]["message"]] == [
+        "reply",
+        "text",
+        "image",
+    ]
 
 
 @pytest.mark.asyncio
@@ -556,7 +613,7 @@ async def test_live_progress_reporter_keeps_tool_progress_markup_literal():
 
 
 @pytest.mark.asyncio
-async def test_live_progress_reporter_emits_whole_message_once_at_end():
+async def test_live_progress_reporter_emits_whole_intermediate_message_once():
     bot = FakeBot()
     event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
     config = BampiChatConfig(
@@ -594,7 +651,13 @@ async def test_live_progress_reporter_emits_whole_message_once_at_end():
             ),
         )
     )
-    session.listener(SimpleNamespace(type="message_end", message=second))
+    complete = AssistantMessage(
+        content=[
+            TextContent(text="第一句。第二句。"),
+            ToolCall(id="tc1", name="read", arguments={"path": "result.txt"}),
+        ]
+    )
+    session.listener(SimpleNamespace(type="message_end", message=complete))
     await reporter.prepare_final_reply()
     await reporter.close()
 
@@ -650,26 +713,18 @@ async def test_live_progress_reporter_ignores_snapshot_updates_after_text_delta(
             ),
         )
     )
-    session.listener(SimpleNamespace(type="message_end", message=full_partial))
+    complete = AssistantMessage(
+        content=[
+            TextContent(text="我来先读取实验要求文件看看具体内容。"),
+            ToolCall(id="tc1", name="read", arguments={"path": "requirements.txt"}),
+        ]
+    )
+    session.listener(SimpleNamespace(type="message_end", message=complete))
     await reporter.prepare_final_reply()
     await reporter.close()
 
     assert len(bot.calls) == 1
     assert str(bot.calls[0][1]["message"]) == "[CQ:reply,id=99]我来先读取实验要求文件看看具体内容。"
-
-
-def test_strip_streamed_prefix_removes_only_exact_prefix():
-    full_text = "画好了！\n\n- 主体是经典的心形参数方程\n- 配了金色线条"
-    streamed_text = "画好了！\n\n- 主体是经典的心形参数方程\n"
-
-    assert strip_streamed_prefix(full_text, streamed_text) == "- 配了金色线条"
-
-
-def test_strip_streamed_prefix_keeps_full_text_when_prefix_mismatches():
-    full_text = "完整回复内容"
-    streamed_text = "不匹配的前缀"
-
-    assert strip_streamed_prefix(full_text, streamed_text) == full_text
 
 
 def test_memory_tool_progress_hides_internal_arguments():
@@ -977,7 +1032,9 @@ async def test_send_agent_response_uploads_file_with_uri_and_cleans_up(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_send_agent_response_uses_streamed_text_prefix_without_truncation(tmp_path: Path):
+async def test_send_agent_response_skips_already_delivered_intermediate_tool_turn(
+    tmp_path: Path,
+):
     workspace = tmp_path / "workspace"
     outbox = workspace / "outbox"
     outbox.mkdir(parents=True)
@@ -991,9 +1048,8 @@ async def test_send_agent_response_uses_streamed_text_prefix_without_truncation(
     event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
     assistant_message = AssistantMessage(
         content=[
-            TextContent(
-                text="画好了！\n\n- 主体是经典的心形参数方程\n- 配了金色线条"
-            )
+            TextContent(text="我先读取文件。"),
+            ToolCall(id="tc1", name="read", arguments={"path": "result.txt"}),
         ]
     )
 
@@ -1005,13 +1061,134 @@ async def test_send_agent_response_uses_streamed_text_prefix_without_truncation(
         workspace_dir=str(workspace),
         assistant_message=assistant_message,
         outbox_before={},
-        streamed_text="画好了！\n\n- 主体是经典的心形参数方程\n",
-        streamed_any_text=True,
+        intermediate_text_sent=True,
     )
 
     assert result.delivered is True
+    assert matcher.sent == []
+
+
+@pytest.mark.asyncio
+async def test_terminal_rich_reply_bypasses_progress_sender_and_renders(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class StubRichRenderer:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def render(self, blocks):
+            self.calls.append(blocks)
+            return [b"formula-png"]
+
+    workspace = tmp_path / "workspace"
+    (workspace / "outbox").mkdir(parents=True)
+    config = BampiChatConfig(bampi_workspace_dir=str(workspace))
+    bot = FakeBot()
+    matcher = FakeMatcher()
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
+    text = "说明：\n$$\nx^2 + y^2\n$$\n结束。"
+    assistant_message = AssistantMessage(content=[TextContent(text=text)])
+    renderer = StubRichRenderer()
+    monkeypatch.setattr(handler_module, "get_rich_renderer", lambda _config: renderer)
+
+    reporter = LiveProgressReporter(
+        bot=bot,
+        target=reply_target_for_event(event),
+        config=config,
+    )
+    session = FakeSession()
+    reporter.start(session)
+    assert session.listener is not None
+    session.listener(SimpleNamespace(type="message_start", message=AssistantMessage(content=[])))
+    session.listener(
+        SimpleNamespace(
+            type="message_update",
+            message=assistant_message,
+            assistant_message_event=TextDeltaEvent(
+                content_index=0,
+                delta=text,
+                partial=assistant_message,
+            ),
+        )
+    )
+    session.listener(SimpleNamespace(type="message_end", message=assistant_message))
+    await reporter.prepare_final_reply()
+
+    result = await send_agent_response(
+        bot=bot,
+        event=event,
+        matcher=matcher,
+        config=config,
+        workspace_dir=str(workspace),
+        assistant_message=assistant_message,
+        outbox_before={},
+        intermediate_text_sent=reporter.intermediate_text_sent,
+        quote_reply=not reporter.visible_update_sent,
+    )
+    await reporter.close()
+
+    assert result.delivered is True
+    assert bot.calls == []
+    assert len(renderer.calls) == 1
     assert len(matcher.sent) == 1
-    assert str(matcher.sent[0]) == "- 配了金色线条"
+    assert [segment.type for segment in matcher.sent[0]] == [
+        "reply",
+        "text",
+        "image",
+        "text",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_final_reply_does_not_repeat_quote_after_intermediate_update(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    (workspace / "outbox").mkdir(parents=True)
+    config = BampiChatConfig(
+        bampi_workspace_dir=str(workspace),
+        bampi_rich_render_enabled=False,
+    )
+    bot = FakeBot()
+    matcher = FakeMatcher()
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
+    reporter = LiveProgressReporter(
+        bot=bot,
+        target=reply_target_for_event(event),
+        config=config,
+    )
+    session = FakeSession()
+    reporter.start(session)
+    assert session.listener is not None
+
+    intermediate = AssistantMessage(
+        content=[
+            TextContent(text="我先读取文件。"),
+            ToolCall(id="tc1", name="read", arguments={"path": "result.txt"}),
+        ]
+    )
+    session.listener(SimpleNamespace(type="message_start", message=AssistantMessage(content=[])))
+    session.listener(SimpleNamespace(type="message_end", message=intermediate))
+    await reporter.prepare_final_reply()
+
+    final_message = AssistantMessage(content=[TextContent(text="读取完成。")])
+    result = await send_agent_response(
+        bot=bot,
+        event=event,
+        matcher=matcher,
+        config=config,
+        workspace_dir=str(workspace),
+        assistant_message=final_message,
+        outbox_before={},
+        intermediate_text_sent=reporter.intermediate_text_sent,
+        quote_reply=not reporter.visible_update_sent,
+    )
+    await reporter.close()
+
+    assert result.delivered is True
+    assert str(bot.calls[0][1]["message"]) == "[CQ:reply,id=99]我先读取文件。"
+    assert len(matcher.sent) == 1
+    assert [segment.type for segment in matcher.sent[0]] == ["text"]
+    assert str(matcher.sent[0]) == "读取完成。"
 
 
 @pytest.mark.asyncio

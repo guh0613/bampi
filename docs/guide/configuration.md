@@ -124,10 +124,10 @@ NapCat 某些转发解析路径无法恢复真实来源群，因此实现不会�
 | `bampi_outbound_at_limit` (`BAMPI_OUTBOUND_AT_LIMIT`) | `5` | 单条回复最多解析多少个 at；超出保留为文本，`0` 表示不限制 |
 | `bampi_live_progress_enabled` (`BAMPI_LIVE_PROGRESS_ENABLED`) | `true` | 工具进度提示 |
 | `bampi_live_progress_max_tool_updates` (`BAMPI_LIVE_PROGRESS_MAX_TOOL_UPDATES`) | `0` | 进度更新条数上限；`0` 表示不限制 |
-| `bampi_live_text_stream_enabled` (`BAMPI_LIVE_TEXT_STREAM_ENABLED`) | `true` | 文本流式更新 |
-| `bampi_live_text_stream_min_chars` (`BAMPI_LIVE_TEXT_STREAM_MIN_CHARS`) | `80` | 流式刷新最小增量字符 |
-| `bampi_live_text_stream_force_chars` (`BAMPI_LIVE_TEXT_STREAM_FORCE_CHARS`) | `220` | 强制刷新字符阈值 |
-| `bampi_live_text_stream_min_interval_seconds` (`BAMPI_LIVE_TEXT_STREAM_MIN_INTERVAL_SECONDS`) | `1.2` | 流式刷新最小间隔（秒） |
+| `bampi_live_text_stream_enabled` (`BAMPI_LIVE_TEXT_STREAM_ENABLED`) | `true` | 是否在 tool call 前发送并渲染该轮完整的中间文字；最终回复始终等待完整生成并统一渲染 |
+| `bampi_live_text_stream_min_chars` (`BAMPI_LIVE_TEXT_STREAM_MIN_CHARS`) | `80` | 兼容保留的增量流式阈值；当前完整中间消息发送不使用 |
+| `bampi_live_text_stream_force_chars` (`BAMPI_LIVE_TEXT_STREAM_FORCE_CHARS`) | `220` | 兼容保留的增量流式阈值；当前完整中间消息发送不使用 |
+| `bampi_live_text_stream_min_interval_seconds` (`BAMPI_LIVE_TEXT_STREAM_MIN_INTERVAL_SECONDS`) | `1.2` | 兼容保留的增量流式间隔；当前完整中间消息发送不使用 |
 | `bampi_threshold_compaction_notice_enabled` (`BAMPI_THRESHOLD_COMPACTION_NOTICE_ENABLED`) | `true` | 自动压缩开始时是否提示 |
 | `bampi_workspace_cleanup_enabled` (`BAMPI_WORKSPACE_CLEANUP_ENABLED`) | `true` | 是否定期清理过期群 workspace |
 | `bampi_workspace_cleanup_ttl_seconds` (`BAMPI_WORKSPACE_CLEANUP_TTL_SECONDS`) | `259200` | 清理 TTL（默认 3 天） |

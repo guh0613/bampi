@@ -32,7 +32,7 @@ bampy AgentSession（每群一个 session）
 
 - 入口：`bot.py` 注册 OneBot v11 适配器，并从 `pyproject.toml` 加载 `bampi/plugins`。
 - 负责事件分发与出站消息（文本、图片、文件、表情回应等）。
-- 进度提示、流式片段、失败回退等「对用户可见的反馈」由插件通过 Bot API 发送。
+- 进度提示、tool call 前的中间文字、失败回退等「对用户可见的反馈」由插件通过 Bot API 发送。
 
 ### `bampi_chat`
 
