@@ -9,6 +9,7 @@
 | [配置参考](configuration.md) | `BAMPI_*` 分组说明 |
 | [架构](architecture.md) | Bot 侧架构与数据流 |
 | [开发指南](development.md) | 目录、测试、插件结构 |
+| [Pokémon Showdown 对战](showdown-battle.md) | 对战命令、引擎依赖与翻译数据更新 |
 
 Agent 框架文档：[bampy](https://github.com/guh0613/bampy)。
 

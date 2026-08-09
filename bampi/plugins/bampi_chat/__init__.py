@@ -5,6 +5,7 @@ from nonebot.plugin import PluginMetadata, get_plugin_config
 
 from .config import BampiChatConfig
 from .handler import register_handlers
+from .rich_render.service import shutdown_renderer as shutdown_rich_renderer
 from .schedule_manager import ScheduleManager
 from .session_manager import GroupSessionManager
 
@@ -63,6 +64,11 @@ else:
         f"reply_quote={plugin_config.bampi_reply_with_quote} "
         f"outbound_markup={plugin_config.bampi_outbound_markup_enabled} "
         f"outbound_at_all={plugin_config.bampi_outbound_at_all_enabled} "
+        f"rich_render={plugin_config.bampi_rich_render_enabled} "
+        f"rich_render_kinds="
+        f"{'code' if plugin_config.bampi_rich_render_code else ''}/"
+        f"{'math' if plugin_config.bampi_rich_render_math else ''}/"
+        f"{'table' if plugin_config.bampi_rich_render_table else ''} "
         f"live_progress={plugin_config.bampi_live_progress_enabled} "
         f"live_text_stream={plugin_config.bampi_live_text_stream_enabled} "
         f"compaction_notice={plugin_config.bampi_threshold_compaction_notice_enabled}"
@@ -82,6 +88,7 @@ else:
 
     @driver.on_shutdown
     async def _close_bampi_sessions() -> None:
+        await shutdown_rich_renderer()
         if group_session_manager is not None:
             logger.info("bampi_chat shutting down workspace cleanup task")
             await group_session_manager.close_workspace_cleanup_tasks()

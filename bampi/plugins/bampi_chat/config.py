@@ -6,6 +6,15 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from bampi.model_defaults import (
+    DEFAULT_MODEL_API,
+    DEFAULT_MODEL_API_KEY,
+    DEFAULT_MODEL_BASE_URL,
+    DEFAULT_MODEL_ID,
+    DEFAULT_MODEL_PROVIDER,
+    DEFAULT_MODEL_THINKING_LEVEL,
+)
+
 
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
 ModelInputType = Literal["text", "image"]
@@ -43,6 +52,7 @@ DEFAULT_WORKSPACE_DIR = "data/bampi/workspace"
 DEFAULT_SESSION_DIR = "data/bampi/sessions"
 DEFAULT_SCHEDULE_DIR = "data/bampi/schedules"
 DEFAULT_MEMORY_DB_PATH = "data/bampi/memory.db"
+DEFAULT_RICH_RENDER_DIR = "data/bampi/rich-render"
 DEFAULT_BASH_CONTAINER_NAME = "bampi-sandbox"
 DEFAULT_BASH_CONTAINER_WORKDIR = "/workspace"
 DEFAULT_BASH_CONTAINER_SHELL = "/bin/bash"
@@ -51,19 +61,21 @@ DEFAULT_BASH_CONTAINER_SHELL = "/bin/bash"
 class BampiChatConfig(BaseModel):
     bampi_enabled: bool = True
 
-    bampi_model_provider: str = "openai"
-    bampi_model_id: str = "gpt-5-mini"
-    bampi_model_api: str = "auto"
+    bampi_model_provider: str = DEFAULT_MODEL_PROVIDER
+    bampi_model_id: str = DEFAULT_MODEL_ID
+    bampi_model_api: str = DEFAULT_MODEL_API
     bampi_model_input_types: list[ModelInputType] | None = None
-    bampi_api_key: str = ""
-    bampi_base_url: str = ""
-    bampi_thinking_level: ThinkingLevel = "off"
+    bampi_api_key: str = DEFAULT_MODEL_API_KEY
+    bampi_base_url: str = DEFAULT_MODEL_BASE_URL
+    bampi_thinking_level: ThinkingLevel = DEFAULT_MODEL_THINKING_LEVEL
 
     bampi_trigger_prefix: list[str] = Field(default_factory=lambda: ["@bot"])
     bampi_trigger_keywords: list[str] = Field(default_factory=list)
     bampi_group_whitelist: list[str] = Field(default_factory=list)
     bampi_random_reply_prob: float = 0.0
     bampi_poke_reply_enabled: bool = True
+    bampi_thinking_reaction_enabled: bool = True
+    bampi_thinking_reaction_emoji: str = "仔细分析"
     bampi_reaction_context_enabled: bool = True
     bampi_qq_react_tool_enabled: bool = True
     bampi_rate_limit: int = 30
@@ -95,6 +107,22 @@ class BampiChatConfig(BaseModel):
     bampi_outbound_markup_enabled: bool = True
     bampi_outbound_at_all_enabled: bool = False
     bampi_outbound_at_limit: int = Field(default=5, ge=0)
+
+    # Rich-block rendering: QQ shows Markdown as literal characters, so blocks
+    # whose meaning is carried by layout are rendered to images and interleaved
+    # with the surrounding text.
+    bampi_rich_render_enabled: bool = True
+    bampi_rich_render_code: bool = True
+    bampi_rich_render_math: bool = True
+    bampi_rich_render_table: bool = True
+    # Above this count the reply is sent as plain text instead: a wall of
+    # images is worse to read than Markdown, and risks tripping rate limits.
+    bampi_rich_render_max_blocks: int = Field(default=6, ge=1)
+    bampi_rich_render_dir: str = DEFAULT_RICH_RENDER_DIR
+    bampi_rich_render_scale: int = Field(default=2, ge=1, le=3)
+    bampi_rich_render_idle_ttl_seconds: int = Field(default=180, ge=0)
+    bampi_rich_render_timeout: float = Field(default=25.0, gt=0)
+
     bampi_live_progress_enabled: bool = True
     bampi_live_progress_max_tool_updates: int = 0
     bampi_live_progress_error_recall_min_visible_seconds: float = 1.0
@@ -250,6 +278,7 @@ class BampiChatConfig(BaseModel):
         "bampi_web_search_exa_api_key",
         "bampi_bot_name",
         "bampi_persona",
+        "bampi_thinking_reaction_emoji",
         "bampi_workspace_dir",
         "bampi_session_dir",
         "bampi_schedule_dir",
@@ -275,6 +304,13 @@ class BampiChatConfig(BaseModel):
     @classmethod
     def _strip_text(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("bampi_thinking_reaction_emoji")
+    @classmethod
+    def _validate_thinking_reaction_emoji(cls, value: str) -> str:
+        if not value:
+            raise ValueError("bampi_thinking_reaction_emoji must not be empty")
+        return value
 
     @field_validator("bampi_model_api", "bampi_memory_model_api", mode="before")
     @classmethod

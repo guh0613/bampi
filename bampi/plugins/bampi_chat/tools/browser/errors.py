@@ -1,22 +1,8 @@
 from __future__ import annotations
 
+from bampi.browser.errors import BrowserError, BrowserLaunchError, CdpError
 
-class BrowserError(RuntimeError):
-    """Base exception exposed as a concise browser-tool failure."""
-
-
-class BrowserLaunchError(BrowserError):
-    pass
-
-
-class CdpError(BrowserError):
-    def __init__(self, method: str, message: str, code: int | None = None) -> None:
-        prefix = f"CDP {method} failed"
-        if code is not None:
-            prefix += f" ({code})"
-        super().__init__(f"{prefix}: {message}")
-        self.method = method
-        self.code = code
+__all__ = ["BrowserError", "BrowserLaunchError", "CdpError", "CommandError", "StaleRefError"]
 
 
 class CommandError(BrowserError):

@@ -86,10 +86,10 @@ Bot 侧只做「创建 session、注入工具与 system prompt、订阅事件、
 
 1. 群消息进入 NoneBot → `bampi_chat` handler。
 2. `should_respond` 判断是否应答（白名单、前缀、关键词、概率等）。
-3. 解析媒体：可下载文件写入该群 **inbox**；构造用户消息内容。
+3. 成功预占新轮次后给触发消息贴临时思考回应；解析媒体并把可下载文件写入该群 **inbox**，再构造用户消息内容。
 4. `GroupSessionManager` 取/建该群 session，装配工具与 prompt，调用 bampy。
 5. Agent 跑工具（常进 sandbox），流式事件驱动进度/文本片段。
-6. 最终回复发回群聊；若 **outbox** 根目录有新文件，一并上传后清理。
+6. 最终回复发回群聊；若 **outbox** 根目录有新文件，一并上传后清理，随后撤销临时思考回应。
 
 失败评估、撤回进度、后台 bash 退出通知等属于插件层细节，见源码 `handler.py` / `feedback.py`。
 

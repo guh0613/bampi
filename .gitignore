@@ -14,6 +14,10 @@ build/
 .venv/
 .python-version
 
+# Node.js
+node_modules/
+npm-debug.log*
+
 # env
 .env
 .env.*

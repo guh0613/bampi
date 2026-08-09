@@ -13,7 +13,7 @@ from bampi.plugins.bampi_chat.tools.browser.commands import BrowserCommandDispat
 from bampi.plugins.bampi_chat.tools.browser.config import BrowserConfig
 from bampi.plugins.bampi_chat.tools.browser.errors import BrowserLaunchError, CommandError
 from bampi.plugins.bampi_chat.tools.browser.interaction import InteractionEngine, ResolvedElement
-from bampi.plugins.bampi_chat.tools.browser.installer import (
+from bampi.browser.installer import (
     _select_download,
     chrome_binary_in,
     default_cache_dir,

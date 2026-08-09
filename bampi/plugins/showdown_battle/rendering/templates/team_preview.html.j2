@@ -1,0 +1,142 @@
+{% extends "base.html.j2" %}
+
+{% block extra_css %}
+.teams {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.team-panel {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--cream);
+  border: 4px solid var(--ink);
+  box-shadow:
+    inset 0 0 0 3px var(--cream-hi),
+    inset 0 0 0 5px var(--cream-lo),
+    0 5px 0 rgba(0, 0, 0, 0.4);
+  padding: 14px;
+  color: var(--text-on-cream);
+}
+
+.team-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 3px solid var(--ink);
+  padding: 4px 12px;
+  margin-bottom: 12px;
+  color: #fff;
+  font-size: 24px;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.3);
+}
+
+.team-title .team-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-panel.side-p1 .team-title { background: linear-gradient(180deg, var(--p1) 0%, var(--p1-deep) 100%); }
+.team-panel.side-p2 .team-title { background: linear-gradient(180deg, var(--p2) 0%, var(--p2-deep) 100%); }
+
+.team-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.preview-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  border: 3px solid var(--ink);
+  background: var(--cream-hi);
+  box-shadow: inset 0 0 0 2px var(--cream-lo);
+  padding: 12px 8px 8px;
+}
+
+.slot-num {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  color: #fff;
+  border: 2px solid var(--ink);
+}
+
+.team-panel.side-p1 .slot-num { background: var(--p1); }
+.team-panel.side-p2 .slot-num { background: var(--p2); }
+
+.preview-card img.sprite,
+.preview-card .sprite-missing {
+  width: 96px;
+  height: 96px;
+}
+
+.preview-name {
+  margin-top: 2px;
+  font-size: 24px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-meta {
+  font-size: 18px;
+  color: var(--muted-on-cream);
+  min-height: 27px;
+}
+
+.gender-m { color: #3878d8; }
+.gender-f { color: #e05878; }
+{% endblock %}
+
+{% block content %}
+<header class="scoreboard">
+  <div class="plate p1"><span class="plate-name">{{ p1_name }}</span></div>
+  <div class="vs">VS</div>
+  <div class="plate p2"><span class="plate-name">{{ p2_name }}</span></div>
+</header>
+<div class="subhead">
+  <span class="format">{{ format_name }}</span>
+  <span class="doc-title">队伍预览</span>
+  <span class="spacer"></span>
+</div>
+
+<div class="teams">
+  {% for team in teams %}
+  <div class="team-panel side-{{ team.key }}">
+    <div class="team-title"><span class="team-name">{{ team.player_name }}</span></div>
+    <div class="team-grid">
+      {% for entry in team.entries %}
+      <div class="preview-card">
+        <span class="slot-num">{{ loop.index }}</span>
+        {% if entry.sprite %}
+        <img class="sprite" src="{{ entry.sprite }}" alt="">
+        {% else %}
+        <div class="sprite-missing">?</div>
+        {% endif %}
+        <div class="preview-name">{{ entry.name }}</div>
+        <div class="preview-meta">
+          {%- if entry.level %}Lv.{{ entry.level }}{% endif -%}
+          {%- if entry.gender_symbol %} <span class="gender-{{ entry.gender_class }}">{{ entry.gender_symbol }}</span>{% endif -%}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="footer">{{ format_name }}{% if format_id %} · {{ format_id }}{% endif %}</div>
+{% endblock %}

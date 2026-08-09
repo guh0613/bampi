@@ -7,7 +7,8 @@
 | 项 | 要求 |
 |----|------|
 | Python | ≥ 3.12 |
-| 包管理 | [uv](https://docs.astral.sh/uv/) |
+| Python 包管理 | [uv](https://docs.astral.sh/uv/) |
+| Node.js | ≥ 20，供 Pokémon Showdown 本地模拟器使用 |
 | Docker | 用于 NapCat 与 `bampi-sandbox` |
 | QQ 协议端 | NapCat（本仓库 `docker compose` 提供） |
 
@@ -17,9 +18,10 @@
 git clone <本仓库地址>
 cd bampi
 uv sync
+npm ci --omit=optional --ignore-scripts
 ```
 
-`bampy` 是本仓库的 **uv workspace member**（见根目录 `pyproject.toml`），`uv sync` 会一并以 editable 方式装好，无需单独安装。
+`bampy` 是本仓库的 **uv workspace member**（见根目录 `pyproject.toml`），`uv sync` 会一并以 editable 方式装好，无需单独安装。`npm ci --omit=optional --ignore-scripts` 只安装锁定版本的 Pokémon Showdown 模拟器所需依赖，跳过本插件不会使用的服务器可选组件。
 
 ## 3. 配置 `.env`
 

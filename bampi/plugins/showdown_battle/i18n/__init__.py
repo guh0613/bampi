@@ -1,0 +1,1 @@
+"""Translation catalog generation utilities."""

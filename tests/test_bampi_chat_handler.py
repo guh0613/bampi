@@ -1586,6 +1586,7 @@ async def test_register_handlers_allows_owner_to_steer_when_trigger_matches(monk
 
     assert len(session_manager.managed.session.steer_calls) == 1
     assert matcher.sent == []
+    assert bot.calls == []
 
 
 @pytest.mark.asyncio
@@ -1677,6 +1678,16 @@ async def test_register_handlers_clears_owner_after_successful_turn(monkeypatch:
     assert session_manager.active_user_id is None
     assert session_manager.complete_calls == 1
     assert first_matcher.sent == []
+    assert bot.calls == [
+        (
+            "set_msg_emoji_like",
+            {"message_id": 99, "emoji_id": 314, "set": True},
+        ),
+        (
+            "set_msg_emoji_like",
+            {"message_id": 99, "emoji_id": 314, "set": False},
+        ),
+    ]
 
     second_event = FakeGroupEvent(group_id=1001, user_id=42, message_id=100, message=Message("第二条"))
     second_event.to_me = True
@@ -1685,6 +1696,16 @@ async def test_register_handlers_clears_owner_after_successful_turn(monkeypatch:
 
     assert session_manager.complete_calls == 2
     assert second_matcher.sent == []
+    assert bot.calls[-2:] == [
+        (
+            "set_msg_emoji_like",
+            {"message_id": 100, "emoji_id": 314, "set": True},
+        ),
+        (
+            "set_msg_emoji_like",
+            {"message_id": 100, "emoji_id": 314, "set": False},
+        ),
+    ]
 
 
 @pytest.mark.asyncio
@@ -1961,6 +1982,58 @@ def test_group_reaction_buffer_expires_notes(monkeypatch: pytest.MonkeyPatch):
     buffer.add("g", dedupe_key="m1:u1", note="会过期")
     now += 61.0
     assert buffer.drain("g") == []
+
+
+@pytest.mark.asyncio
+async def test_thinking_reaction_indicator_adds_and_removes_reaction():
+    bot = FakeBot()
+    indicator = handler_module.ThinkingReactionIndicator(
+        bot=bot,
+        group_id="1001",
+        message_id=555,
+        emoji_id=314,
+    )
+
+    await indicator.show()
+    await indicator.close()
+    await indicator.close()
+
+    assert bot.calls == [
+        (
+            "set_msg_emoji_like",
+            {"message_id": 555, "emoji_id": 314, "set": True},
+        ),
+        (
+            "set_msg_emoji_like",
+            {"message_id": 555, "emoji_id": 314, "set": False},
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_thinking_reaction_indicator_still_cleans_up_after_show_failure():
+    attempts = 0
+
+    async def responder(action: str, params: dict[str, object]):
+        nonlocal attempts
+        del action, params
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("response lost")
+        return {}
+
+    bot = FakeBot(responder)
+    indicator = handler_module.ThinkingReactionIndicator(
+        bot=bot,
+        group_id="1001",
+        message_id=555,
+        emoji_id=314,
+    )
+
+    await indicator.show()
+    await indicator.close()
+
+    assert [params["set"] for _, params in bot.calls] == [True, False]
 
 
 def test_build_poke_user_message_includes_action_and_reactions():
@@ -2335,6 +2408,50 @@ async def test_reaction_notice_ignores_removed_reactions(tmp_path: Path, monkeyp
     await reaction_handler(bot, event)
 
     assert buffer.added == []
+
+
+@pytest.mark.asyncio
+async def test_reaction_notice_ignores_bot_status_reactions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = BampiChatConfig()
+    session_manager = FakePokeSessionManager(str(tmp_path))
+
+    class RecordingReactionBuffer:
+        instances: list["RecordingReactionBuffer"] = []
+
+        def __init__(self, **kwargs) -> None:
+            self.added: list[tuple[str, str, str]] = []
+            RecordingReactionBuffer.instances.append(self)
+
+        def add(self, group_id: str, *, dedupe_key: str, note: str) -> None:
+            self.added.append((group_id, dedupe_key, note))
+
+        def drain(self, group_id: str) -> list[str]:
+            return []
+
+    monkeypatch.setattr(handler_module, "GroupReactionBuffer", RecordingReactionBuffer)
+    _, reaction_handler = _register_with_captured_notices(monkeypatch, config, session_manager)
+    buffer = RecordingReactionBuffer.instances[-1]
+
+    bot = FakeReactionBot(
+        self_id=99,
+        msg_sender_id=42,
+        message_segments=[{"type": "text", "data": {"text": "用户触发消息"}}],
+    )
+    event = SimpleNamespace(
+        notice_type="group_msg_emoji_like",
+        group_id=1001,
+        user_id=99,
+        message_id=555,
+        likes=[{"emoji_id": "314", "count": 1}],
+        is_add=True,
+    )
+    await reaction_handler(bot, event)
+
+    assert buffer.added == []
+    assert bot.api_calls == []
 
 
 @pytest.mark.asyncio

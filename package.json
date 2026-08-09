@@ -1,0 +1,13 @@
+{
+  "name": "bampi-runtime",
+  "private": true,
+  "description": "Node.js runtime dependencies for bampi plugins",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "pokemon-showdown": "0.11.11",
+    "source-map-support": "0.5.21"
+  }
+}

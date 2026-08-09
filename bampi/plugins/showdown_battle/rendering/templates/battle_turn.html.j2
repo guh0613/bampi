@@ -1,0 +1,380 @@
+{% extends "base.html.j2" %}
+
+{% block extra_css %}
+/* ----------------------------------------------------------- scene --- */
+
+.scene {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 380px;
+  border: 4px solid var(--ink);
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.4);
+  background: linear-gradient(180deg, var(--sky-a) 0%, var(--sky-b) 100%);
+  padding: 16px 20px 20px;
+}
+
+.scene-ground {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 42%;
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.06) 0 4px, transparent 4px 12px),
+    linear-gradient(180deg, var(--ground) 0%, var(--ground-deep) 100%);
+  border-top: 3px solid rgba(0, 0, 0, 0.18);
+}
+
+/* weather variants */
+.scene.weather-rain { --sky-a: #3c4c7c; --sky-b: #5c6c9c; --ground: #4a8a58; --ground-deep: #35673f; }
+.scene.weather-rain::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    115deg,
+    transparent 0 10px,
+    rgba(205, 225, 255, 0.35) 10px 12px,
+    transparent 12px 26px
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+.scene.weather-sun { --sky-a: #ffcf7a; --sky-b: #ffe9b0; --ground: #8cc45e; --ground-deep: #6aa044; }
+.scene.weather-sand { --sky-a: #d8b478; --sky-b: #e8cf9d; --ground: #c09858; --ground-deep: #9a7840; }
+.scene.weather-sand::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    75deg,
+    transparent 0 14px,
+    rgba(120, 90, 40, 0.22) 14px 16px,
+    transparent 16px 34px
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+.scene.weather-hail { --sky-a: #a8c8e2; --sky-b: #ddeef8; --ground: #cfe2ee; --ground-deep: #a8c2d6; }
+.scene.weather-hail::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.85) 2px, transparent 2px);
+  background-size: 42px 34px;
+  pointer-events: none;
+  z-index: 1;
+}
+.scene.weather-wind { --sky-a: #7a9ab8; --sky-b: #a8c0d0; --ground: #7aa886; --ground-deep: #5c8868; }
+
+/* terrain variants tint the ground */
+.scene.terrain-electric { --ground: #d8cc50; --ground-deep: #b0a234; }
+.scene.terrain-grassy { --ground: #58c86a; --ground-deep: #3da452; }
+.scene.terrain-misty { --ground: #e8b8dd; --ground-deep: #c490b8; }
+.scene.terrain-psychic { --ground: #c890e8; --ground-deep: #a066c8; }
+
+.field-chips {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+/* battle rows */
+
+.battle-row {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+}
+
+.battle-row.foe-row { justify-content: space-between; margin-bottom: 6px; }
+.battle-row.ally-row { justify-content: space-between; margin-top: auto; }
+
+.hpbox.empty {
+  font-size: 18px;
+  color: var(--muted-on-cream);
+  padding: 10px 14px;
+}
+
+.hp-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+  max-width: 400px;
+}
+
+.foe-row .hp-stack { align-self: flex-start; margin-top: 6px; }
+.ally-row .hp-stack { align-self: flex-end; margin-bottom: 10px; }
+
+.mon-stack {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.mon {
+  position: relative;
+  width: 216px;
+  display: flex;
+  justify-content: center;
+  padding-bottom: 22px;
+}
+
+.mon .platform {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 196px;
+  height: 46px;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(0, 0, 0, 0.32) 0%,
+    rgba(0, 0, 0, 0.22) 55%,
+    transparent 72%
+  );
+}
+
+.mon img.sprite,
+.mon .sprite-missing {
+  position: relative;
+  z-index: 1;
+  width: 192px;
+  height: 192px;
+}
+
+.mon .sprite-missing { font-size: 60px; }
+
+.mon.fainted img.sprite,
+.mon.fainted .sprite-missing {
+  filter: grayscale(1) brightness(0.65);
+  opacity: 0.55;
+  transform: translateY(8px);
+}
+
+/* HP boxes */
+
+.hpbox {
+  background: var(--cream);
+  border: 3px solid var(--ink);
+  box-shadow:
+    inset 0 0 0 2px var(--cream-hi),
+    inset 0 0 0 4px var(--cream-lo),
+    0 4px 0 rgba(0, 0, 0, 0.4);
+  color: var(--text-on-cream);
+  padding: 8px 14px 10px;
+  min-width: 0;
+}
+
+.hpbox.side-p1 { border-left: 8px solid var(--p1); }
+.hpbox.side-p2 { border-left: 8px solid var(--p2); }
+
+.hpbox.fainted { background: #d8d2c4; }
+
+.hpbox-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.hpbox-top .mon-name {
+  font-size: 24px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hpbox .hp-value {
+  text-align: right;
+  font-size: 18px;
+  color: var(--ink-soft);
+  margin-top: 2px;
+}
+
+.hpbox-extra {
+  font-size: 18px;
+  color: var(--muted-on-cream);
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.hpbox-extra .extra-mark { color: #b08830; }
+
+.cond-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cond-chip {
+  display: inline-block;
+  border: 2px solid var(--ink);
+  background: rgba(42, 36, 56, 0.78);
+  color: #f0e8ff;
+  font-size: 18px;
+  line-height: 1.5;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+/* -------------------------------------------------------------- log --- */
+
+.log-dialog { margin-top: 16px; }
+
+.banner {
+  margin: -4px -6px 12px;
+  padding: 4px 12px;
+  text-align: center;
+  background: var(--ink);
+  color: var(--gold);
+  border: 2px solid var(--ink);
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.3);
+  font-size: 24px;
+}
+
+.log-line {
+  display: flex;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 24px;
+}
+
+.log-line + .log-line { border-top: 2px dotted rgba(74, 68, 98, 0.25); }
+
+.log-line .cursor {
+  flex: 0 0 auto;
+  color: var(--p2-deep);
+  transform: translateY(1px);
+}
+
+.log-line .log-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+{% endblock %}
+
+{% macro hpbox(mon, side_key, show_position) %}
+<div class="hpbox side-{{ side_key }}{% if mon.fainted %} fainted{% endif %}">
+  <div class="hpbox-top">
+    {% if show_position and mon.position_label %}<span class="pos-badge">{{ mon.position_label }}</span>{% endif %}
+    <span class="mon-name">{{ mon.name }}</span>
+    {% if mon.item_icon %}<img class="item-icon" src="{{ mon.item_icon }}" alt="{{ mon.item }}">{% endif %}
+    {% if mon.status %}<span class="status-chip st-{{ mon.status_class }}">{{ mon.status }}</span>{% endif %}
+    {% if mon.tera %}<span class="tera-chip">太晶·{{ mon.tera }}</span>{% endif %}
+  </div>
+  <div class="hp-row">
+    <span class="hp-tag">HP</span>
+    <div class="hp-bar">
+      <div class="hp-fill {% if mon.fainted or mon.hp_percent <= 0 %}hp-empty{% else %}{{ mon.hp_class }}{% endif %}"
+           style="width: {{ mon.hp_percent }}%"></div>
+    </div>
+  </div>
+  <div class="hp-value">{{ mon.hp_text }}</div>
+  {% if mon.boosts %}<div class="hpbox-extra"><span class="extra-mark">↕</span> {{ mon.boosts }}</div>{% endif %}
+  {% if mon.volatiles %}<div class="hpbox-extra"><span class="extra-mark">◆</span> {{ mon.volatiles }}</div>{% endif %}
+  {% if mon.item and not mon.item_icon %}<div class="hpbox-extra"><span class="extra-mark">◎</span> 道具 {{ mon.item }}</div>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro mon_sprite(mon, back) %}
+<div class="mon{% if mon.fainted %} fainted{% endif %}">
+  {% if mon.sprite %}
+  <img class="sprite{% if back %} back{% endif %}" src="{{ mon.sprite }}" alt="">
+  {% else %}
+  <div class="sprite-missing">?</div>
+  {% endif %}
+  <div class="platform"></div>
+</div>
+{% endmacro %}
+
+{% block content %}
+<header class="scoreboard">
+  <div class="plate-col">
+    <div class="plate p1"><span class="plate-name">{{ p1_name }}</span></div>
+    {% if ball_rows and ball_rows.p1 %}
+    <div class="ball-row p1">
+      {% for ball in ball_rows.p1 %}<span class="ball {{ ball }}"></span>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  <div class="vs">VS</div>
+  <div class="plate-col">
+    <div class="plate p2"><span class="plate-name">{{ p2_name }}</span></div>
+    {% if ball_rows and ball_rows.p2 %}
+    <div class="ball-row p2">
+      {% for ball in ball_rows.p2 %}<span class="ball {{ ball }}"></span>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</header>
+<div class="subhead">
+  <span class="format">{{ format_name }}</span>
+  <span class="doc-title">战况</span>
+  <span class="spacer"></span>
+  {% if turn_number %}<span class="turn-chip">回合 {{ turn_number }}</span>{% endif %}
+</div>
+
+<div class="{{ scene_classes }}">
+  <div class="scene-ground"></div>
+  {% if field_chips %}
+  <div class="field-chips">
+    {% for chip in field_chips %}
+    <span class="chip"><span class="chip-label">{{ chip.label }}</span>{{ chip.value }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="battle-row foe-row">
+    <div class="hp-stack">
+      {% for mon in sides.p2.active %}{{ hpbox(mon, "p2", sides.p2.active | length > 1) }}{% endfor %}
+      {% if not sides.p2.active %}<div class="hpbox side-p2 empty">暂无在场宝可梦</div>{% endif %}
+      {% if sides.p2.conditions %}
+      <div class="cond-chips">
+        {% for cond in sides.p2.conditions %}<span class="cond-chip">{{ cond }}</span>{% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    <div class="mon-stack">
+      {% for mon in sides.p2.active %}{{ mon_sprite(mon, false) }}{% endfor %}
+    </div>
+  </div>
+
+  <div class="battle-row ally-row">
+    <div class="mon-stack">
+      {% for mon in sides.p1.active %}{{ mon_sprite(mon, true) }}{% endfor %}
+    </div>
+    <div class="hp-stack">
+      {% for mon in sides.p1.active %}{{ hpbox(mon, "p1", sides.p1.active | length > 1) }}{% endfor %}
+      {% if not sides.p1.active %}<div class="hpbox side-p1 empty">暂无在场宝可梦</div>{% endif %}
+      {% if sides.p1.conditions %}
+      <div class="cond-chips">
+        {% for cond in sides.p1.conditions %}<span class="cond-chip">{{ cond }}</span>{% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="dialog log-dialog">
+  {% if banner %}<div class="banner">{{ banner }}</div>{% endif %}
+  {% for line in log_lines %}
+  <div class="log-line"><span class="cursor">▶</span><span class="log-text">{{ line }}</span></div>
+  {% endfor %}
+</div>
+
+<div class="footer">{{ format_name }}{% if format_id %} · {{ format_id }}{% endif %}</div>
+{% endblock %}

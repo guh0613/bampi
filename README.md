@@ -11,6 +11,7 @@
 - **服务**：在沙箱中拉起临时 HTTP 等服务，并映射端口供访问。
 - **Skills**：以 `SKILL.md` 能力包扩展行为；仓库可带内置 skills，启动时同步到 workspace，并由 Agent 按自然语言任务自行选用。
 - **QQ 互动**：支持戳一戳、表情回应等群内互动（可配置开关）。
+- **Pokémon 对战**：内置本地 Pokémon Showdown 引擎，支持 Gen9 单/双打、随机对战、Pokémon Champions VGC，以及上下文隔离的 Bot 对手。
 
 ## 架构简图
 
@@ -28,14 +29,15 @@ flowchart LR
 
 ## 快速开始
 
-要求：Python ≥ 3.12、[uv](https://docs.astral.sh/uv/)、Docker。
+要求：Python ≥ 3.12、Node.js ≥ 20、[uv](https://docs.astral.sh/uv/)、Docker。
 
-1. 安装依赖：`uv sync`
-2. 复制环境文件：`cp .env.example .env`
-3. 填写关键 `BAMPI_*`（模型与 API 等），详见 [快速开始](docs/guide/getting-started.md)
-4. 启动 Docker：`docker compose up -d`（NapCat + 沙箱）
-5. 按 OneBot v11 原则对接 NapCat ↔ NoneBot（`ACCESS_TOKEN` 一致等）
-6. 启动 Bot：`uv run python bot.py`
+1. 安装 Python 依赖：`uv sync`
+2. 安装 Node.js 运行时依赖：`npm ci --omit=optional --ignore-scripts`
+3. 复制环境文件：`cp .env.example .env`
+4. 填写关键 `BAMPI_*`（模型与 API 等），详见 [快速开始](docs/guide/getting-started.md)
+5. 启动 Docker：`docker compose up -d`（NapCat + 沙箱）
+6. 按 OneBot v11 原则对接 NapCat ↔ NoneBot（`ACCESS_TOKEN` 一致等）
+7. 启动 Bot：`uv run python bot.py`
 
 完整步骤、冒烟与排错见 [docs/guide/getting-started.md](docs/guide/getting-started.md)。
 
@@ -50,4 +52,5 @@ flowchart LR
 | [配置参考](docs/guide/configuration.md) | `BAMPI_*` 配置分组与完整面 |
 | [架构](docs/guide/architecture.md) | Bot 侧架构与数据流 |
 | [开发指南](docs/guide/development.md) | 目录、流程、测试、插件结构 |
+| [Pokémon Showdown 对战](docs/guide/showdown-battle.md) | 对战命令、引擎依赖、翻译数据与更新流程 |
 | [bampy](https://github.com/guh0613/bampy) | Agent 框架（机制细节见其文档，本仓库不复述） |

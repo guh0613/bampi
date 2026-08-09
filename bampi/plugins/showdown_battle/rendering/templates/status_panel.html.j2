@@ -1,0 +1,288 @@
+{% extends "base.html.j2" %}
+
+{% block extra_css %}
+.field-strip {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.status-cols {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.status-col {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--cream);
+  border: 4px solid var(--ink);
+  box-shadow:
+    inset 0 0 0 3px var(--cream-hi),
+    inset 0 0 0 5px var(--cream-lo),
+    0 5px 0 rgba(0, 0, 0, 0.4);
+  padding: 14px;
+  color: var(--text-on-cream);
+}
+
+.col-title {
+  display: flex;
+  align-items: center;
+  border: 3px solid var(--ink);
+  padding: 4px 12px;
+  margin-bottom: 12px;
+  color: #fff;
+  font-size: 24px;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.3);
+}
+
+.col-title .col-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.col-title .ball-row { margin-left: auto; padding-left: 10px; }
+
+.bench-item {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 18px;
+  color: var(--muted-on-cream);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-col.side-p1 .col-title { background: linear-gradient(180deg, var(--p1) 0%, var(--p1-deep) 100%); }
+.status-col.side-p2 .col-title { background: linear-gradient(180deg, var(--p2) 0%, var(--p2-deep) 100%); }
+
+.col-sub {
+  font-size: 18px;
+  color: var(--muted-on-cream);
+  margin: 10px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.col-sub::after {
+  content: "";
+  flex: 1 1 auto;
+  border-top: 2px dotted rgba(74, 68, 98, 0.3);
+}
+
+.active-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  border: 3px solid var(--ink);
+  background: var(--cream-hi);
+  box-shadow: inset 0 0 0 2px var(--cream-lo);
+  padding: 8px 10px;
+}
+
+.active-card + .active-card { margin-top: 8px; }
+
+.active-card.fainted { background: #ded8ca; }
+
+.active-card img.sprite,
+.active-card .sprite-missing {
+  width: 96px;
+  height: 96px;
+  flex: 0 0 auto;
+}
+
+.active-card.fainted img.sprite {
+  filter: grayscale(1) brightness(0.65);
+  opacity: 0.55;
+}
+
+.active-info { flex: 1 1 auto; min-width: 0; }
+
+.active-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.active-top .mon-name {
+  font-size: 24px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.active-info .hp-value {
+  text-align: right;
+  font-size: 18px;
+  color: var(--ink-soft);
+  margin-top: 2px;
+}
+
+.active-extra {
+  font-size: 18px;
+  color: var(--muted-on-cream);
+  overflow-wrap: anywhere;
+}
+
+.bench-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 2px;
+  font-size: 24px;
+}
+
+.bench-row + .bench-row { border-top: 2px dotted rgba(74, 68, 98, 0.2); }
+
+.bench-row .bench-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bench-row.fainted .bench-name { color: #a09a8c; text-decoration: line-through; }
+
+.bench-row .hp-bar { max-width: 130px; }
+
+.bench-row .bench-hp {
+  flex: 0 0 auto;
+  font-size: 18px;
+  color: var(--ink-soft);
+}
+
+.bench-row .spacer { flex: 1 1 auto; }
+
+.cond-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cond-chip {
+  display: inline-block;
+  border: 2px solid var(--ink);
+  background: var(--ink-soft);
+  color: #f0e8ff;
+  font-size: 18px;
+  line-height: 1.5;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.empty-note {
+  font-size: 18px;
+  color: var(--muted-on-cream);
+  padding: 4px 2px;
+}
+{% endblock %}
+
+{% block content %}
+<header class="scoreboard">
+  <div class="plate p1"><span class="plate-name">{{ p1_name }}</span></div>
+  <div class="vs">VS</div>
+  <div class="plate p2"><span class="plate-name">{{ p2_name }}</span></div>
+</header>
+<div class="subhead">
+  <span class="format">{{ format_name }}</span>
+  <span class="doc-title">对战状态</span>
+  <span class="spacer"></span>
+  {% if turn_number %}<span class="turn-chip">回合 {{ turn_number }}</span>{% endif %}
+</div>
+
+{% if field_chips %}
+<div class="field-strip">
+  {% for chip in field_chips %}
+  <span class="chip"><span class="chip-label">{{ chip.label }}</span>{{ chip.value }}</span>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="status-cols">
+  {% for side in sides %}
+  <div class="status-col side-{{ side.key }}">
+    <div class="col-title">
+      <span class="col-name">{{ side.player_name }}</span>
+      {% if side.balls %}
+      <div class="ball-row">
+        {% for ball in side.balls %}<span class="ball {{ ball }}"></span>{% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="col-sub">在场</div>
+    {% for mon in side.active %}
+    <div class="active-card{% if mon.fainted %} fainted{% endif %}">
+      {% if mon.sprite %}
+      <img class="sprite" src="{{ mon.sprite }}" alt="">
+      {% else %}
+      <div class="sprite-missing">?</div>
+      {% endif %}
+      <div class="active-info">
+        <div class="active-top">
+          {% if side.active | length > 1 and mon.position_label %}<span class="pos-badge">{{ mon.position_label }}</span>{% endif %}
+          <span class="mon-name">{{ mon.name }}</span>
+          {% if mon.item_icon %}<img class="item-icon" src="{{ mon.item_icon }}" alt="{{ mon.item }}">{% endif %}
+          {% if mon.status %}<span class="status-chip st-{{ mon.status_class }}">{{ mon.status }}</span>{% endif %}
+          {% if mon.tera %}<span class="tera-chip">太晶·{{ mon.tera }}</span>{% endif %}
+        </div>
+        <div class="hp-row">
+          <span class="hp-tag">HP</span>
+          <div class="hp-bar">
+            <div class="hp-fill {% if mon.fainted or mon.hp_percent <= 0 %}hp-empty{% else %}{{ mon.hp_class }}{% endif %}"
+                 style="width: {{ mon.hp_percent }}%"></div>
+          </div>
+        </div>
+        <div class="hp-value">{{ mon.hp_text }}</div>
+        {% if mon.boosts %}<div class="active-extra">↕ {{ mon.boosts }}</div>{% endif %}
+        {% if mon.volatiles %}<div class="active-extra">◆ {{ mon.volatiles }}</div>{% endif %}
+        {% if mon.item and not mon.item_icon %}<div class="active-extra">◎ 道具 {{ mon.item }}</div>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+    {% if not side.active %}<div class="empty-note">暂无在场宝可梦</div>{% endif %}
+
+    {% if side.bench %}
+    <div class="col-sub">后备</div>
+    {% for mon in side.bench %}
+    <div class="bench-row{% if mon.fainted %} fainted{% endif %}">
+      <span class="bench-name">{{ mon.name }}</span>
+      {% if mon.item_icon %}<img class="item-icon" src="{{ mon.item_icon }}" alt="{{ mon.item }}">
+      {% elif mon.item %}<span class="bench-item">◎{{ mon.item }}</span>{% endif %}
+      {% if mon.status and not mon.fainted %}<span class="status-chip st-{{ mon.status_class }}">{{ mon.status }}</span>{% endif %}
+      <span class="spacer"></span>
+      {% if mon.fainted %}
+      <span class="status-chip st-fnt">倒下</span>
+      {% else %}
+      <div class="hp-bar">
+        <div class="hp-fill {% if mon.hp_percent <= 0 %}hp-empty{% else %}{{ mon.hp_class }}{% endif %}"
+             style="width: {{ mon.hp_percent }}%"></div>
+      </div>
+      <span class="bench-hp">{{ mon.hp_text }}</span>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    {% if side.conditions %}
+    <div class="col-sub">场上状态</div>
+    <div class="cond-chips">
+      {% for cond in side.conditions %}<span class="cond-chip">{{ cond }}</span>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<div class="footer">{{ format_name }}{% if format_id %} · {{ format_id }}{% endif %}</div>
+{% endblock %}

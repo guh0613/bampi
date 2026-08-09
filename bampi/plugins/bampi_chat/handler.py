@@ -42,6 +42,13 @@ from .message_compose import (
     append_composed_text,
     compose_options_from_config,
 )
+from .rich_render import (
+    ImagePart,
+    TextPart,
+    build_delivery_plan,
+    rich_render_options_from_config,
+)
+from .rich_render.service import get_renderer as get_rich_renderer
 from .message_render import (
     MentionNameCache,
     NameResolver,
@@ -52,6 +59,7 @@ from .message_render import (
     message_mentions_user,
     render_event_text,
     render_message_text,
+    resolve_reaction_emoji_id,
     resolve_member_display_name,
     segment_data,
     segment_type,
@@ -182,6 +190,57 @@ class GroupReplyTarget:
     group_id: int
     user_id: int | None = None
     reply_message_id: int | None = None
+
+
+class ThinkingReactionIndicator:
+    """A best-effort transient reaction shown while one message turn is running."""
+
+    def __init__(
+        self,
+        *,
+        bot: Bot,
+        group_id: str,
+        message_id: int,
+        emoji_id: int,
+    ) -> None:
+        self._bot = bot
+        self._group_id = group_id
+        self._message_id = message_id
+        self._emoji_id = emoji_id
+        self._cleanup_required = False
+
+    async def show(self) -> None:
+        # Mark cleanup necessary before the request: if the API applies the
+        # reaction but the response is lost, the finally path still removes it.
+        self._cleanup_required = True
+        try:
+            await self._set_reaction(set_reaction=True)
+        except Exception as exc:
+            logger.warning(
+                f"bampi_chat failed to show thinking reaction group_id={self._group_id} "
+                f"message_id={self._message_id} emoji_id={self._emoji_id} error={exc}"
+            )
+
+    async def close(self) -> None:
+        if not self._cleanup_required:
+            return
+        try:
+            await self._set_reaction(set_reaction=False)
+        except Exception as exc:
+            logger.warning(
+                f"bampi_chat failed to clear thinking reaction group_id={self._group_id} "
+                f"message_id={self._message_id} emoji_id={self._emoji_id} error={exc}"
+            )
+        else:
+            self._cleanup_required = False
+
+    async def _set_reaction(self, *, set_reaction: bool) -> None:
+        await self._bot.call_api(
+            "set_msg_emoji_like",
+            message_id=self._message_id,
+            emoji_id=self._emoji_id,
+            set=set_reaction,
+        )
 
 
 def reply_target_for_event(event: GroupMessageEvent) -> GroupReplyTarget:
@@ -871,6 +930,16 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
     )
     mention_cache = MentionNameCache()
     reaction_buffer = GroupReactionBuffer()
+    thinking_reaction_emoji_id = None
+    if config.bampi_thinking_reaction_enabled:
+        thinking_reaction_emoji_id = resolve_reaction_emoji_id(
+            config.bampi_thinking_reaction_emoji
+        )
+        if thinking_reaction_emoji_id is None:
+            logger.warning(
+                "bampi_chat thinking reaction disabled because emoji could not be resolved "
+                f"emoji={config.bampi_thinking_reaction_emoji!r}"
+            )
     set_background_notify_handler = getattr(session_manager, "set_background_notify_handler", None)
     if callable(set_background_notify_handler):
         set_background_notify_handler(create_background_exit_handler(config, session_manager))
@@ -1109,7 +1178,19 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
             return
 
         managed = reservation.managed
+        thinking_indicator = (
+            ThinkingReactionIndicator(
+                bot=bot,
+                group_id=group_id,
+                message_id=int(event.message_id),
+                emoji_id=thinking_reaction_emoji_id,
+            )
+            if reservation.action == "start" and thinking_reaction_emoji_id is not None
+            else None
+        )
         try:
+            if thinking_indicator is not None:
+                await thinking_indicator.show()
             media, forwards = await collect_incoming_context(
                 bot,
                 event,
@@ -1225,7 +1306,11 @@ def register_handlers(config: BampiChatConfig, session_manager: GroupSessionMana
             return
         finally:
             if reservation.action == "start":
-                await session_manager.complete_interaction(group_id)
+                try:
+                    if thinking_indicator is not None:
+                        await thinking_indicator.close()
+                finally:
+                    await session_manager.complete_interaction(group_id)
 
     poke_matcher = on_notice(priority=10, block=False)
 
@@ -2137,6 +2222,38 @@ def build_group_reply_message(
     return message
 
 
+async def append_reply_body(
+    message: Message,
+    text: str,
+    config: BampiChatConfig,
+) -> int:
+    """Append *text* to *message*, rendering layout-bearing blocks as images.
+
+    Code, formulas and tables become image segments placed where they appeared
+    in the reply; everything else goes through the normal outbound markup
+    parser. Returns the number of rendered blocks.
+
+    If rendering is disabled or fails, the reply is appended as plain Markdown
+    text, so no path here can lose content.
+    """
+    if not text:
+        return 0
+
+    options = rich_render_options_from_config(config)
+    renderer = get_rich_renderer(config) if options.enabled else None
+    plan = await build_delivery_plan(text, renderer=renderer, options=options)
+
+    compose_options = compose_options_from_config(config)
+    rendered = 0
+    for part in plan:
+        if isinstance(part, TextPart):
+            append_composed_text(message, part.text, options=compose_options)
+        elif isinstance(part, ImagePart):
+            message += MessageSegment.image(part.png)
+            rendered += 1
+    return rendered
+
+
 async def _send_group_message_via_bot(
     *,
     bot: Bot,
@@ -2550,12 +2667,8 @@ async def send_agent_response_to_target(
             )
         return ResponseDispatchResult(delivered=False, rollback_context=True)
 
-    message = build_group_reply_message(
-        config=config,
-        target=target,
-        text=text,
-        parse_outbound_markup=True,
-    )
+    message = build_group_reply_message(config=config, target=target, text="")
+    rendered_block_count = await append_reply_body(message, text, config)
 
     uploaded_files: list[Path] = []
     staged_upload_files: list[Path] = []
@@ -2584,6 +2697,7 @@ async def send_agent_response_to_target(
                 f"bampi_chat {log_label} reply sent group_id={target.group_id} "
                 f"reply_message_id={target.reply_message_id} "
                 f"has_text={bool(text)} "
+                f"rich_block_count={rendered_block_count} "
                 f"image_count={sent_image_count}"
             )
 
@@ -2695,12 +2809,7 @@ async def send_agent_response(
     message = Message()
     if config.bampi_reply_with_quote:
         message += MessageSegment.reply(event.message_id)
-    if text:
-        append_composed_text(
-            message,
-            text,
-            options=compose_options_from_config(config),
-        )
+    rendered_block_count = await append_reply_body(message, text, config)
 
     uploaded_files: list[Path] = []
     staged_upload_files: list[Path] = []
@@ -2725,6 +2834,7 @@ async def send_agent_response(
                 f"bampi_chat reply sent group_id={event.group_id} "
                 f"message_id={event.message_id} "
                 f"has_text={bool(text)} "
+                f"rich_block_count={rendered_block_count} "
                 f"image_count={sent_image_count}"
             )
         else:

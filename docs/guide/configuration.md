@@ -52,10 +52,43 @@ BAMPI_GROUP_WHITELIST=["123456789"]
 | `bampi_group_whitelist` (`BAMPI_GROUP_WHITELIST`) | `[]` | 群白名单；空=不限制 |
 | `bampi_random_reply_prob` (`BAMPI_RANDOM_REPLY_PROB`) | `0.0` | 无前缀/@ 时的随机接话概率（0–1） |
 | `bampi_poke_reply_enabled` (`BAMPI_POKE_REPLY_ENABLED`) | `true` | 戳一戳是否触发回复 |
+| `bampi_thinking_reaction_enabled` (`BAMPI_THINKING_REACTION_ENABLED`) | `true` | 新消息轮次处理期间是否给触发消息贴临时思考表情 |
+| `bampi_thinking_reaction_emoji` (`BAMPI_THINKING_REACTION_EMOJI`) | `仔细分析` | 临时思考表情；默认使用 QQ 原生表情 ID 314，也可配置其他表情名或 QQ 表情 ID |
 | `bampi_rate_limit` (`BAMPI_RATE_LIMIT`) | `30` | 限流次数 |
 | `bampi_rate_limit_window_seconds` (`BAMPI_RATE_LIMIT_WINDOW_SECONDS`) | `60` | 限流窗口（秒） |
 | `bampi_qq_react_tool_enabled` (`BAMPI_QQ_REACT_TOOL_ENABLED`) | `true` | 是否启用贴表情/戳一戳工具 |
 | `bampi_reaction_context_enabled` (`BAMPI_REACTION_CONTEXT_ENABLED`) | `true` | 是否把表情回应纳入上下文缓冲 |
+
+## Pokémon Showdown 对战
+
+该插件使用独立的 `SHOWDOWN_BATTLE_*` 配置；完整说明见 [showdown-battle.md](showdown-battle.md)。
+
+| 字段（env） | 默认 | 说明 |
+|-------------|------|------|
+| `showdown_battle_enabled` (`SHOWDOWN_BATTLE_ENABLED`) | `true` | 对战插件总开关 |
+| `showdown_battle_node_bin` (`SHOWDOWN_BATTLE_NODE_BIN`) | 自动查找 `node` | Node.js 可执行文件 |
+| `showdown_battle_package_dir` (`SHOWDOWN_BATTLE_PACKAGE_DIR`) | `node_modules/pokemon-showdown` | 锁定版本的 Showdown npm 包目录 |
+| `showdown_battle_data_dir` (`SHOWDOWN_BATTLE_DATA_DIR`) | `data/showdown_battle` | 队伍仓库和立绘缓存目录 |
+| `showdown_battle_i18n_file` (`SHOWDOWN_BATTLE_I18N_FILE`) | 插件内 `zh_hans.json` | 生成后的分类翻译目录 |
+| `showdown_battle_group_whitelist` (`SHOWDOWN_BATTLE_GROUP_WHITELIST`) | `[]` | 对战群白名单；空=不限制 |
+| `showdown_battle_sprite_download_timeout_seconds` | `6` | 下载立绘的超时 |
+| `showdown_battle_max_render_concurrency` | `2` | 图片渲染线程并发上限 |
+| `showdown_battle_team_source_timeout_seconds` | `10` | 在线队伍与推荐配招请求超时 |
+| `showdown_battle_team_source_max_bytes` | `1048576` | 在线队伍数据的响应大小上限 |
+| `showdown_battle_team_source_cache_ttl_seconds` | `900` | 样例队伍和配招数据缓存时间 |
+| `showdown_battle_team_guide_ttl_seconds` | `900` | 私聊组队向导的空闲超时 |
+| `showdown_battle_ai_enabled` (`SHOWDOWN_BATTLE_AI_ENABLED`) | `true` | 是否允许通过 `<规则命令> <BAMPI_BOT_NAME>` 挑战聊天 Bot；旧 `bot` 参数仅作兼容 |
+| `showdown_battle_ai_model_provider` / `model_id` | 空 | 空时继承 `bampi_chat` 主模型；非空时独立覆盖 |
+| `showdown_battle_ai_model_api` | `auto` | 对战模型 API；未覆盖模型身份时继承主模型的显式 API |
+| `showdown_battle_ai_api_key` / `base_url` | 空 | 空时继承主模型配置，之后再按 provider/API 查找环境变量 |
+| `showdown_battle_ai_thinking_level` | 空 | 空时继承 `BAMPI_THINKING_LEVEL` |
+| `showdown_battle_ai_decision_timeout_seconds` | `60` | 单次 Bot 决策超时，超时后执行本地默认行动 |
+| `showdown_battle_ai_max_output_tokens` | `2048` | 对战模型单次决策最大输出 token |
+| `showdown_battle_ai_max_attempts` | `2` | 模型未调用行动工具时的最大决策轮数（含首次） |
+| `showdown_battle_ai_commentary_enabled` | `true` | 是否把 AI 的自然语言对战发言延迟发送到群里 |
+| `showdown_battle_ai_commentary_max_chars` | `500` | 单次 AI 对战发言最大字符数 |
+| `showdown_battle_ai_persona` | 空 | 空时继承 `BAMPI_PERSONA` 和 `BAMPI_BOT_NAME`；设置后仅覆盖对战人格 |
+| `showdown_battle_ai_public_history_events` | `80` | 每轮自动上下文附带的近期公开事件上限 |
 
 ## 合并转发
 
