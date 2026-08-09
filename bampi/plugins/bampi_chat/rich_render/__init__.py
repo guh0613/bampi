@@ -14,6 +14,7 @@ from .delivery import (
     plan_segments,
     rich_render_options_from_config,
 )
+from .inline import render_inline
 from .renderer import (
     CODE_FRAME_WIDTH,
     PAPER_FRAME_WIDTH,
@@ -49,6 +50,7 @@ __all__ = [
     "normalize_language",
     "parse_table",
     "plan_segments",
+    "render_inline",
     "rich_render_options_from_config",
     "split_segments",
 ]

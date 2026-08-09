@@ -16,10 +16,12 @@ from pathlib import Path
 import json
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup
 from nonebot import logger
 
 from bampi.browser import BrowserError, HtmlImageRenderer
 
+from .inline import render_inline
 from .segments import BlockKind, RichBlock, parse_table
 
 _ASSETS_DIR = (Path(__file__).resolve().parent / "assets").resolve()
@@ -35,9 +37,14 @@ PAPER_FRAME_WIDTH = 560
 CODE_FONT_SIZE = 13.0
 GUTTER_WIDTH = 24
 
-# A bare display formula is roughly 5:1, past the ratio at which QQ
-# centre-crops an image preview. Vertical padding buys the ratio back.
-MATH_FRAME_PADDING = 72
+# A formula sheet shrink-wraps its content instead of filling the paper width:
+# a short formula centred in a wide box reads as an empty page with a typo in
+# it. The minimum keeps a two-symbol formula from arriving as a stamp, and the
+# maximum is the page width, past which the formula is scaled down to fit.
+MATH_MIN_WIDTH = 300
+MATH_MAX_WIDTH = CODE_FRAME_WIDTH
+MATH_PADDING_Y = 26
+MATH_PADDING_X = 34
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,8 +121,13 @@ class RichBlockRenderer:
             }
             if block.kind is BlockKind.TABLE:
                 header, rows = parse_table(block.content)
-                entry["header"] = header
-                entry["rows"] = rows
+                # Cells carry inline Markdown of their own; the converter
+                # escapes whatever it does not recognise, so the result is
+                # already safe to drop into the autoescaping template.
+                entry["header"] = [Markup(render_inline(cell)) for cell in header]
+                entry["rows"] = [
+                    [Markup(render_inline(cell)) for cell in row] for row in rows
+                ]
             view.append(entry)
             # Code and TeX go through JSON rather than the template so that
             # neither Jinja escaping nor HTML parsing can touch the source.
@@ -142,7 +154,10 @@ class RichBlockRenderer:
             paper_width=PAPER_FRAME_WIDTH,
             code_font_size=CODE_FONT_SIZE,
             gutter_width=GUTTER_WIDTH,
-            math_padding=MATH_FRAME_PADDING,
+            math_min_width=MATH_MIN_WIDTH,
+            math_max_width=MATH_MAX_WIDTH,
+            math_padding_y=MATH_PADDING_Y,
+            math_padding_x=MATH_PADDING_X,
         )
 
 

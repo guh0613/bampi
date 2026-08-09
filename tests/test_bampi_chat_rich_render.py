@@ -14,6 +14,7 @@ from bampi.plugins.bampi_chat.rich_render import (
     normalize_language,
     parse_table,
     plan_segments,
+    render_inline,
     rich_render_options_from_config,
     split_segments,
 )
@@ -124,6 +125,60 @@ def test_parse_table_respects_escaped_pipe():
     header, rows = parse_table("| a | b |\n|---|---|\n| x \\| y | 2 |")
     assert header == ["a", "b"]
     assert rows == [["x | y", "2"]]
+
+
+# --------------------------------------------------------------------------- #
+# Inline Markdown inside cells
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("cell", "expected"),
+    [
+        ("**粗体**", "<strong>粗体</strong>"),
+        ("__粗体__", "<strong>粗体</strong>"),
+        ("*斜体*", "<em>斜体</em>"),
+        ("_斜体_", "<em>斜体</em>"),
+        ("~~划掉~~", "<s>划掉</s>"),
+        ("普通 **粗** 尾", "普通 <strong>粗</strong> 尾"),
+        ("**外 *内* 层**", "<strong>外 <em>内</em> 层</strong>"),
+        ("`code`", "<code>code</code>"),
+        ("`` a`b ``", "<code>a`b</code>"),
+        ("**不闭合", "**不闭合"),
+        ("2 * 3 * 4", "2 * 3 * 4"),
+        ("snake_case_name", "snake_case_name"),
+        ("[标签](https://example.com)", '<span class="link">标签</span>'),
+        ("<b>不是标签</b>", "&lt;b&gt;不是标签&lt;/b&gt;"),
+        ("a<br>b", "a<br>b"),
+        (r"\*字面星号\*", "*字面星号*"),
+        (r"\alpha 不是转义", r"\alpha 不是转义"),
+    ],
+)
+def test_render_inline(cell: str, expected: str):
+    assert render_inline(cell) == expected
+
+
+def test_render_inline_math_becomes_katex_placeholder():
+    assert render_inline("$x^2$") == '<span class="tex" data-tex="x^2"></span>'
+    assert render_inline(r"\(x^2\)") == '<span class="tex" data-tex="x^2"></span>'
+
+
+def test_render_inline_leaves_currency_alone():
+    """A price is not a formula; ``$`` alone must not open math."""
+    assert render_inline("$5 到 $10") == "$5 到 $10"
+    assert render_inline("$ 空格 $") == "$ 空格 $"
+
+
+def test_render_inline_escapes_inside_every_construct():
+    assert render_inline("**<x>**") == "<strong>&lt;x&gt;</strong>"
+    assert render_inline("`<x>`") == "<code>&lt;x&gt;</code>"
+    assert render_inline('$a<"b$') == '<span class="tex" data-tex="a&lt;&quot;b"></span>'
+
+
+def test_render_inline_never_drops_text():
+    """Unrecognised markup degrades to literal text rather than vanishing."""
+    for cell in ("*", "**", "`", "$", "[", "[a](", "~~a", "a * b _ c"):
+        assert render_inline(cell).replace("&lt;", "<") != ""
 
 
 # --------------------------------------------------------------------------- #

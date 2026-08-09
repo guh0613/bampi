@@ -69,7 +69,11 @@ body{width:{{ code_width }}px}
    through and swallow the ink. */
 .frame-paper{width:{{ paper_width }}px;background:#faf9f6;padding:30px 30px 26px;
   color:#1c1f26;font-family:'Maple Mono','PingFang SC',sans-serif}
-.frame-math{padding:{{ math_padding }}px 30px}
+/* Shrink-wrapped: a formula centred in a fixed-width sheet is mostly margin,
+   which QQ then scales down as if the image were mostly empty — because it is. */
+.frame-math{width:max-content;min-width:{{ math_min_width }}px;
+  max-width:{{ math_max_width }}px;
+  padding:{{ math_padding_y }}px {{ math_padding_x }}px}
 
 table{border-collapse:collapse;width:100%;font-size:12.5px}
 th,td{text-align:left;vertical-align:top;padding:9px 14px 9px 0}
@@ -79,6 +83,18 @@ th{color:#8a8578;font-weight:400;font-size:10px;letter-spacing:.11em;
 td{border-bottom:1px solid #e7e3d9;line-height:1.5}
 tbody tr:last-child td{border-bottom:none}
 td:first-child{font-weight:700}
+
+/* Inline Markdown inside cells. Emphasis has to stay legible against the
+   first column's blanket bold, so it leans on colour and weight contrast
+   rather than weight alone. */
+th strong,td strong{font-weight:700;color:#101318}
+th em,td em{font-style:italic}
+th s,td s{opacity:.55;text-decoration:line-through;text-decoration-thickness:1.5px}
+th code,td code{font-family:'Maple Mono',monospace;font-size:.9em;
+  background:#efece1;border:1px solid #e3ded0;border-radius:4px;
+  padding:1px 5px;white-space:pre-wrap}
+.link{color:#2f5fbf;text-decoration:underline;text-underline-offset:2px}
+th .katex,td .katex{font-size:1em;color:inherit}
 
 .math-body{text-align:center}
 .katex{font-size:1.32em;color:#1c1f26}
@@ -217,16 +233,62 @@ window.__theme = {{ theme_json | safe }};
     }));
   });
 
+  // The sheet shrink-wraps the formula, so anything wider than the page would
+  // be cropped by the element capture rather than merely overflowing. Scaling
+  // the type down is the only fit that keeps the whole expression visible.
+  // KaTeX's own boxes are blocks that inherit the container's width, so they
+  // report a fit even while their contents hang outside. A range over the
+  // typeset spans measures what is actually on the page, in both directions.
+  function typesetWidth(node) {
+    const html = node.querySelector('.katex-html');
+    if (!html) return 0;
+    const range = document.createRange();
+    range.selectNodeContents(html);
+    return range.getBoundingClientRect().width;
+  }
+
+  function fitToPage(node) {
+    const available = node.clientWidth;
+    const scalable = node.querySelector('.katex');
+    if (!available || !scalable) return;
+    for (let pass = 0; pass < 3; pass++) {
+      const used = typesetWidth(node);
+      if (!used || used <= available) return;
+      const base = parseFloat(getComputedStyle(scalable).fontSize);
+      scalable.style.fontSize =
+        (base * Math.max((available / used) * 0.995, 0.45)) + 'px';
+    }
+  }
+
+  const mathNodes = [];
   document.querySelectorAll('[data-tex-index]').forEach(function (node) {
     const item = payload[Number(node.getAttribute('data-tex-index'))];
     try {
       katex.render(item.content, node, { displayMode: true, throwOnError: false });
+      mathNodes.push(node);
     } catch (err) {
       failures.push('math#' + item.index + ': ' + (err && err.message || err));
     }
   });
 
+  // Inline math inside table cells: the converter leaves the TeX in an
+  // attribute so no stage between Python and KaTeX can reinterpret it.
+  document.querySelectorAll('span.tex[data-tex]').forEach(function (node) {
+    const tex = node.getAttribute('data-tex');
+    try {
+      katex.render(tex, node, { displayMode: false, throwOnError: false });
+    } catch (err) {
+      failures.push('inline-math: ' + (err && err.message || err));
+    }
+  });
+
   await Promise.all(jobs);
+  // Measuring before the KaTeX faces land would size the formula from fallback
+  // metrics, which is how a wide formula slips through the fit and gets cropped.
+  if (document.fonts && document.fonts.ready) {
+    await document.fonts.ready;
+  }
+  mathNodes.forEach(fitToPage);
   if (failures.length) {
     document.body.setAttribute('data-error', failures.join(' | '));
   }
