@@ -21,6 +21,8 @@ const LANGS = [
   import('@shikijs/langs/sql'),
   import('@shikijs/langs/go'),
   import('@shikijs/langs/rust'),
+  import('@shikijs/langs/haskell'),
+  import('@shikijs/langs/lean'),
   import('@shikijs/langs/java'),
   import('@shikijs/langs/c'),
   import('@shikijs/langs/cpp'),

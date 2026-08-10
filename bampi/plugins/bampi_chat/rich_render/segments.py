@@ -82,6 +82,8 @@ _LANGUAGE_ALIASES = {
     "c++": "cpp",
     "rs": "rust",
     "golang": "go",
+    "hs": "haskell",
+    "lean4": "lean",
     "": "",
 }
 
@@ -102,6 +104,8 @@ SUPPORTED_LANGUAGES = frozenset(
         "sql",
         "go",
         "rust",
+        "haskell",
+        "lean",
         "java",
         "c",
         "cpp",

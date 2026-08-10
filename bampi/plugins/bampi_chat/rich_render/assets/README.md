@@ -23,8 +23,8 @@ render page is loaded from `file://` with no network.
 
 ```bash
 mkdir shiki-build && cd shiki-build
-npm init -y && npm i shiki esbuild
-# write entry.js (see below), then:
+npm init -y && npm i shiki@4.4.2 esbuild@0.28.2
+# copy shiki.entry.js from this directory to entry.js, then:
 ./node_modules/.bin/esbuild entry.js --bundle --format=iife --minify \
     --outfile=shiki.min.js
 ```

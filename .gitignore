@@ -69,5 +69,6 @@ scripts/
 
 builtin_skills/
 .agents/
+.cursor/
 
 .env
