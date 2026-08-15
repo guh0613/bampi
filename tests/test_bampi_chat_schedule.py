@@ -11,12 +11,11 @@ import pytest
 from bampy.ai import AssistantMessage, TextContent
 
 from bampi.plugins.bampi_chat.config import BampiChatConfig
-from bampi.plugins.bampi_chat.handler import ResponseDispatchResult
+from bampi.plugins.bampi_chat.pipeline.outbound import ResponseDispatchResult
 from bampi.plugins.bampi_chat.prompt import build_system_prompt
 from bampi.plugins.bampi_chat.schedule_manager import ScheduleManager
 from bampi.plugins.bampi_chat.tools import create_agent_tools
 
-handler_module = importlib.import_module("bampi.plugins.bampi_chat.handler")
 schedule_manager_module = importlib.import_module("bampi.plugins.bampi_chat.schedule_manager")
 
 
@@ -100,7 +99,7 @@ async def test_schedule_manager_runs_task_in_shared_session_and_marks_completed(
 
     monkeypatch.setattr(schedule_manager_module, "get_bots", lambda: {"bot": FakeBot()})
     monkeypatch.setattr(
-        handler_module,
+        schedule_manager_module,
         "send_agent_response_to_target",
         fake_send_agent_response_to_target,
     )
@@ -167,7 +166,7 @@ async def test_schedule_manager_list_hides_completed_one_time_tasks_by_default(
 
     monkeypatch.setattr(schedule_manager_module, "get_bots", lambda: {"bot": FakeBot()})
     monkeypatch.setattr(
-        handler_module,
+        schedule_manager_module,
         "send_agent_response_to_target",
         fake_send_agent_response_to_target,
     )

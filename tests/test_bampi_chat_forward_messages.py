@@ -17,8 +17,9 @@ from bampi.plugins.bampi_chat.forward_messages import (
     collect_forward_context,
     iter_forward_nodes,
 )
-from bampi.plugins.bampi_chat import handler as handler_module
-from bampi.plugins.bampi_chat.handler import (
+from bampi.plugins.bampi_chat.pipeline import inbound as inbound_module
+from bampi.plugins.bampi_chat.pipeline.inbound import (
+    IncomingMedia,
     build_user_message,
     collect_incoming_context,
 )
@@ -453,7 +454,7 @@ async def test_collect_incoming_context_downloads_forward_image_and_injects_tran
         assert max_bytes <= 1024
         return b"forward-image", "image/png"
 
-    monkeypatch.setattr(handler_module, "download_url", fake_download)
+    monkeypatch.setattr(inbound_module, "download_url", fake_download)
     bot = FakeForwardBot(
         {
             "root": {
@@ -628,7 +629,7 @@ def test_build_user_message_marks_reply_forward_context():
     message = build_user_message(
         event,  # type: ignore[arg-type]
         "",
-        handler_module.IncomingMedia(),
+        IncomingMedia(),
         forwards=forwards,
     )
 

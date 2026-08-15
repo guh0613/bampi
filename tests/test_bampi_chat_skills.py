@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from bampi.plugins.bampi_chat.config import BampiChatConfig
-from bampi.plugins.bampi_chat.handler import should_respond
+from bampi.plugins.bampi_chat.pipeline.trigger import should_respond
 from bampi.plugins.bampi_chat.skills import (
     builtin_skill_source_root,
     load_chat_skills,

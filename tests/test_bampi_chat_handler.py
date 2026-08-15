@@ -14,32 +14,52 @@ from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from bampy.ai import AssistantMessage, ImageContent, TextContent, ToolCall
 from bampy.ai.types import StopReason, TextDeltaEvent
 
-from bampi.plugins.bampi_chat.config import BampiChatConfig
 from bampi.plugins.bampi_chat import handler as handler_module
-from bampi.plugins.bampi_chat.handler import (
+from bampi.plugins.bampi_chat.config import BampiChatConfig
+from bampi.plugins.bampi_chat.message_render import FACE_ID_BY_NAME, MentionNameCache
+from bampi.plugins.bampi_chat.pipeline import background as background_module
+from bampi.plugins.bampi_chat.pipeline import inbound as inbound_module
+from bampi.plugins.bampi_chat.pipeline import outbound as outbound_module
+from bampi.plugins.bampi_chat.pipeline.background import (
+    BackgroundTaskOrigin,
+    create_background_exit_handler,
+)
+from bampi.plugins.bampi_chat.pipeline.inbound import (
+    IncomingMedia,
+    build_user_message,
+    collect_incoming_media,
+)
+from bampi.plugins.bampi_chat.pipeline.outbound import (
+    ResponseDispatchResult,
+    prepare_group_file_upload,
+    reply_target_for_event,
+    send_agent_response,
+)
+from bampi.plugins.bampi_chat.pipeline.poke import (
+    ThinkingReactionIndicator,
+    build_poke_user_message,
+    build_reaction_note,
+    run_poke_reply_turn,
+)
+from bampi.plugins.bampi_chat.pipeline.progress import (
+    LiveProgressReporter,
+    describe_tool_progress,
+    format_tool_progress_message,
+)
+from bampi.plugins.bampi_chat.pipeline.trigger import (
     CLEAR_NO_CONTEXT_MESSAGE,
     CLEARED_SESSION_MESSAGE,
     COMPACT_FORBIDDEN_MESSAGE,
-    IncomingMedia,
-    LiveProgressReporter,
-    ResponseDispatchResult,
     STOPPED_BACKGROUND_SESSION_MESSAGE,
     STOPPED_SESSION_MESSAGE,
+    GroupReactionBuffer,
     TriggerDecision,
-    build_user_message,
-    collect_incoming_media,
-    describe_tool_progress,
-    format_tool_progress_message,
     is_clear_command,
     is_compact_command,
     is_stop_command,
     matched_prefix,
-    prepare_group_file_upload,
-    reply_target_for_event,
-    send_agent_response,
     should_respond,
 )
-from bampi.plugins.bampi_chat.message_render import FACE_ID_BY_NAME
 
 
 @dataclass
@@ -545,7 +565,7 @@ async def test_live_progress_reporter_renders_rich_intermediate_text(
     event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
     config = BampiChatConfig()
     renderer = StubRichRenderer()
-    monkeypatch.setattr(handler_module, "get_rich_renderer", lambda _config: renderer)
+    monkeypatch.setattr(outbound_module, "get_rich_renderer", lambda _config: renderer)
     reporter = LiveProgressReporter(
         bot=bot,
         target=reply_target_for_event(event),
@@ -875,7 +895,7 @@ async def test_collect_incoming_media_includes_reply_image_and_file(tmp_path: Pa
             return b"reply-file", "text/plain"
         raise AssertionError(f"unexpected url: {url}")
 
-    monkeypatch.setattr(handler_module, "download_url", fake_download)
+    monkeypatch.setattr(inbound_module, "download_url", fake_download)
 
     def responder(action: str, params: dict[str, object]) -> dict[str, object]:
         assert action == "get_group_file_url"
@@ -935,7 +955,7 @@ async def test_collect_incoming_media_preserves_zip_name_from_segment_file_field
         assert url == "https://example.com/archive"
         return b"PK\x03\x04zip-bytes", "application/octet-stream"
 
-    monkeypatch.setattr(handler_module, "download_url", fake_download)
+    monkeypatch.setattr(inbound_module, "download_url", fake_download)
 
     def responder(action: str, params: dict[str, object]) -> dict[str, object]:
         assert action == "get_group_file_url"
@@ -1090,7 +1110,7 @@ async def test_terminal_rich_reply_bypasses_progress_sender_and_renders(
     text = "说明：\n$$\nx^2 + y^2\n$$\n结束。"
     assistant_message = AssistantMessage(content=[TextContent(text=text)])
     renderer = StubRichRenderer()
-    monkeypatch.setattr(handler_module, "get_rich_renderer", lambda _config: renderer)
+    monkeypatch.setattr(outbound_module, "get_rich_renderer", lambda _config: renderer)
 
     reporter = LiveProgressReporter(
         bot=bot,
@@ -1645,7 +1665,7 @@ async def test_register_handlers_does_not_steer_owner_without_trigger(monkeypatc
 
     monkeypatch.setattr(handler_module, "on_message", lambda **kwargs: CapturingMatcherRegistration())
     monkeypatch.setattr(handler_module, "GroupMessageEvent", FakeGroupEvent)
-    monkeypatch.setattr(handler_module, "collect_incoming_media", unexpected_collect_incoming_media)
+    monkeypatch.setattr(inbound_module, "collect_incoming_media", unexpected_collect_incoming_media)
 
     class FakeManagedSessionRuntime:
         def __init__(self) -> None:
@@ -1712,7 +1732,7 @@ async def test_register_handlers_allows_owner_to_steer_when_trigger_matches(monk
 
     monkeypatch.setattr(handler_module, "on_message", lambda **kwargs: CapturingMatcherRegistration())
     monkeypatch.setattr(handler_module, "GroupMessageEvent", FakeGroupEvent)
-    monkeypatch.setattr(handler_module, "collect_incoming_media", lambda *args, **kwargs: asyncio.sleep(0, result=IncomingMedia()))
+    monkeypatch.setattr(inbound_module, "collect_incoming_media", lambda *args, **kwargs: asyncio.sleep(0, result=IncomingMedia()))
 
     class FakeManagedSessionRuntime:
         def __init__(self) -> None:
@@ -1780,7 +1800,7 @@ async def test_register_handlers_clears_owner_after_successful_turn(monkeypatch:
 
     monkeypatch.setattr(handler_module, "on_message", lambda **kwargs: CapturingMatcherRegistration())
     monkeypatch.setattr(handler_module, "GroupMessageEvent", FakeGroupEvent)
-    monkeypatch.setattr(handler_module, "collect_incoming_media", lambda *args, **kwargs: asyncio.sleep(0, result=IncomingMedia()))
+    monkeypatch.setattr(inbound_module, "collect_incoming_media", lambda *args, **kwargs: asyncio.sleep(0, result=IncomingMedia()))
     monkeypatch.setattr(handler_module, "snapshot_outbox", lambda workspace_dir: {})
     monkeypatch.setattr(
         handler_module,
@@ -1952,7 +1972,7 @@ async def test_register_handlers_accepts_group_inside_whitelist(monkeypatch: pyt
 
     monkeypatch.setattr(handler_module, "on_message", lambda **kwargs: CapturingMatcherRegistration())
     monkeypatch.setattr(handler_module, "GroupMessageEvent", FakeGroupEvent)
-    monkeypatch.setattr(handler_module, "collect_incoming_media", lambda *args, **kwargs: asyncio.sleep(0, result=IncomingMedia()))
+    monkeypatch.setattr(inbound_module, "collect_incoming_media", lambda *args, **kwargs: asyncio.sleep(0, result=IncomingMedia()))
     monkeypatch.setattr(handler_module, "snapshot_outbox", lambda workspace_dir: {})
     monkeypatch.setattr(
         handler_module,
@@ -2084,7 +2104,7 @@ async def test_background_exit_handler_steers_into_active_turn(tmp_path: Path):
     )
     session_manager = SimpleNamespace(workspace_dir_for_group=lambda group_id: str(tmp_path))
 
-    handler = handler_module.create_background_exit_handler(BampiChatConfig(), session_manager)
+    handler = create_background_exit_handler(BampiChatConfig(), session_manager)
     await handler(managed, _make_background_exit_event())
 
     assert len(session.steered) == 1
@@ -2100,7 +2120,7 @@ async def test_background_exit_handler_runs_resume_turn_when_idle(
     monkeypatch: pytest.MonkeyPatch,
 ):
     session = FakeAgentSessionForBackgroundExit(processing=False)
-    origin = handler_module.BackgroundTaskOrigin(bot_self_id="42", user_id=7, reply_message_id=99)
+    origin = BackgroundTaskOrigin(bot_self_id="42", user_id=7, reply_message_id=99)
     managed = SimpleNamespace(
         group_id="1001",
         session=session,
@@ -2110,7 +2130,7 @@ async def test_background_exit_handler_runs_resume_turn_when_idle(
     )
     session_manager = SimpleNamespace(workspace_dir_for_group=lambda group_id: str(tmp_path))
     fake_bot = SimpleNamespace(self_id=42)
-    monkeypatch.setattr(handler_module, "get_bot", lambda *args, **kwargs: fake_bot)
+    monkeypatch.setattr(background_module, "get_bot", lambda *args, **kwargs: fake_bot)
     sent: list[dict[str, object]] = []
 
     async def fake_send_agent_response_to_target(**kwargs):  # noqa: ANN003
@@ -2118,12 +2138,12 @@ async def test_background_exit_handler_runs_resume_turn_when_idle(
         return ResponseDispatchResult(delivered=True)
 
     monkeypatch.setattr(
-        handler_module,
+        background_module,
         "send_agent_response_to_target",
         fake_send_agent_response_to_target,
     )
 
-    handler = handler_module.create_background_exit_handler(BampiChatConfig(), session_manager)
+    handler = create_background_exit_handler(BampiChatConfig(), session_manager)
     await handler(managed, _make_background_exit_event())
 
     assert len(session.followed_up) == 1
@@ -2141,7 +2161,7 @@ async def test_background_exit_handler_runs_resume_turn_when_idle(
 def test_group_reaction_buffer_dedupes_and_caps(monkeypatch: pytest.MonkeyPatch):
     now = 1000.0
     monkeypatch.setattr(handler_module.time, "monotonic", lambda: now)
-    buffer = handler_module.GroupReactionBuffer(ttl_seconds=60.0, max_per_group=2)
+    buffer = GroupReactionBuffer(ttl_seconds=60.0, max_per_group=2)
 
     buffer.add("g", dedupe_key="m1:u1", note="旧的")
     buffer.add("g", dedupe_key="m1:u1", note="新的")
@@ -2155,7 +2175,7 @@ def test_group_reaction_buffer_dedupes_and_caps(monkeypatch: pytest.MonkeyPatch)
 def test_group_reaction_buffer_expires_notes(monkeypatch: pytest.MonkeyPatch):
     now = 1000.0
     monkeypatch.setattr(handler_module.time, "monotonic", lambda: now)
-    buffer = handler_module.GroupReactionBuffer(ttl_seconds=60.0)
+    buffer = GroupReactionBuffer(ttl_seconds=60.0)
     buffer.add("g", dedupe_key="m1:u1", note="会过期")
     now += 61.0
     assert buffer.drain("g") == []
@@ -2164,7 +2184,7 @@ def test_group_reaction_buffer_expires_notes(monkeypatch: pytest.MonkeyPatch):
 @pytest.mark.asyncio
 async def test_thinking_reaction_indicator_adds_and_removes_reaction():
     bot = FakeBot()
-    indicator = handler_module.ThinkingReactionIndicator(
+    indicator = ThinkingReactionIndicator(
         bot=bot,
         group_id="1001",
         message_id=555,
@@ -2200,7 +2220,7 @@ async def test_thinking_reaction_indicator_still_cleans_up_after_show_failure():
         return {}
 
     bot = FakeBot(responder)
-    indicator = handler_module.ThinkingReactionIndicator(
+    indicator = ThinkingReactionIndicator(
         bot=bot,
         group_id="1001",
         message_id=555,
@@ -2214,7 +2234,7 @@ async def test_thinking_reaction_indicator_still_cleans_up_after_show_failure():
 
 
 def test_build_poke_user_message_includes_action_and_reactions():
-    message = handler_module.build_poke_user_message(
+    message = build_poke_user_message(
         sender_name="张三",
         user_id="10001",
         action="拍了拍",
@@ -2270,13 +2290,13 @@ async def test_build_reaction_note_for_bot_message():
         msg_sender_id=99,
         message_segments=[{"type": "text", "data": {"text": "这是 bot 的回复内容"}}],
     )
-    note = await handler_module.build_reaction_note(
+    note = await build_reaction_note(
         bot=bot,
         group_id="1001",
         user_id="42",
         message_id=555,
         likes=[{"emoji_id": "76", "count": 1}],
-        cache=handler_module.MentionNameCache(),
+        cache=MentionNameCache(),
     )
     assert note == "张三(42) 给你的消息「这是 bot 的回复内容」贴了表情 [表情:赞]"
 
@@ -2288,13 +2308,13 @@ async def test_build_reaction_note_ignores_non_bot_message():
         msg_sender_id=7,
         message_segments=[{"type": "text", "data": {"text": "群友的消息"}}],
     )
-    note = await handler_module.build_reaction_note(
+    note = await build_reaction_note(
         bot=bot,
         group_id="1001",
         user_id="42",
         message_id=555,
         likes=[{"emoji_id": "76", "count": 1}],
-        cache=handler_module.MentionNameCache(),
+        cache=MentionNameCache(),
     )
     assert note is None
 
@@ -2361,7 +2381,7 @@ async def test_run_poke_reply_turn_prompts_and_replies(tmp_path: Path):
     bot = FakeBot()
     bot.self_id = 99
 
-    await handler_module.run_poke_reply_turn(
+    await run_poke_reply_turn(
         bot=bot,
         config=config,
         session_manager=session_manager,
@@ -2401,7 +2421,7 @@ async def test_run_poke_reply_turn_stays_silent_on_empty_reply(tmp_path: Path):
     bot = FakeBot()
     bot.self_id = 99
 
-    await handler_module.run_poke_reply_turn(
+    await run_poke_reply_turn(
         bot=bot,
         config=config,
         session_manager=session_manager,

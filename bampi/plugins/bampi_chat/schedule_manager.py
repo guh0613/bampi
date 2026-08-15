@@ -19,6 +19,16 @@ from nonebot import get_bots, logger
 from bampy.ai import TextContent, UserMessage
 
 from .config import BampiChatConfig
+from .pipeline.outbound import (
+    GroupReplyTarget,
+    _send_group_message_via_bot,
+    build_group_reply_message,
+    extract_text_blocks,
+    find_last_assistant_message,
+    send_agent_response_to_target,
+    snapshot_outbox,
+)
+from .pipeline.utils import log_preview, normalize_text
 
 if TYPE_CHECKING:
     from .session_manager import GroupSessionManager
@@ -546,17 +556,6 @@ class ScheduleManager:
         task_id = pending.task_id
         task_name = task_id
         try:
-            from .handler import (
-                GroupReplyTarget,
-                _send_group_message_via_bot,
-                build_group_reply_message,
-                extract_text_blocks,
-                find_last_assistant_message,
-                log_preview,
-                send_agent_response_to_target,
-                snapshot_outbox,
-            )
-
             async with self._lock:
                 record = self._tasks.get(task_id)
                 if record is None:
@@ -641,8 +640,6 @@ class ScheduleManager:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            from .handler import normalize_text
-
             error_message = normalize_text(str(exc)) or exc.__class__.__name__
             logger.exception(
                 f"bampi_chat scheduled task failed task_id={task_id} "
@@ -692,12 +689,6 @@ class ScheduleManager:
         task_name: str,
         error_message: str,
     ) -> None:
-        from .handler import (
-            GroupReplyTarget,
-            _send_group_message_via_bot,
-            build_group_reply_message,
-        )
-
         async with self._lock:
             record = self._tasks.get(task_id)
             if record is None:
@@ -731,12 +722,6 @@ class ScheduleManager:
         *,
         task_name: str,
     ) -> None:
-        from .handler import (
-            GroupReplyTarget,
-            _send_group_message_via_bot,
-            build_group_reply_message,
-        )
-
         async with self._lock:
             record = self._tasks.get(task_id)
             if record is None:
