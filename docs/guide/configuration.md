@@ -203,7 +203,8 @@ NapCat 某些转发解析路径无法恢复真实来源群，因此实现不会�
 | `bampi_memory_archive_llm_summary` (`BAMPI_MEMORY_ARCHIVE_LLM_SUMMARY`) | `true` | 归档是否用 LLM 摘要 |
 | `bampi_memory_search_max_results` (`BAMPI_MEMORY_SEARCH_MAX_RESULTS`) | `10` | 检索条数上限 |
 | `bampi_memory_embedding_enabled` (`BAMPI_MEMORY_EMBEDDING_ENABLED`) | `false` | 是否启用向量检索 |
-| `bampi_memory_model_provider` / `bampi_memory_model_id` / `bampi_memory_api_key` 等 | 空 / `auto` | 记忆专用模型；空则回落到主模型配置 |
+| `bampi_memory_model_provider` / `bampi_memory_model_id` / `bampi_memory_api_key` 等 | 空 / `auto` | 记忆专用模型（归档摘要等）；空则回落到主模型配置 |
+| `bampi_memory_profile_model_provider` / `bampi_memory_profile_model_id` / `bampi_memory_profile_api_key` 等 | 空 / `auto` | 用户画像生成专用模型；空则回落到 `bampi_memory_model_*`，再回落到主模型配置 |
 | `bampi_memory_profile_cron` (`BAMPI_MEMORY_PROFILE_CRON`) | `0 4 * * *` | 用户画像刷新 cron |
 
 embedding、摘要 token、profile 阈值等细节见 `config.py`。

@@ -172,7 +172,17 @@ class GroupSessionManager:
             model.provider,
             configured_api=model.api,
         )
-        self._memory_manager.start_background_tasks(model=model, api_key=api_key)
+        profile_model = self._build_memory_profile_model()
+        profile_api_key = await self._resolve_memory_profile_api_key(
+            profile_model.provider,
+            configured_api=profile_model.api,
+        )
+        self._memory_manager.start_background_tasks(
+            model=model,
+            api_key=api_key,
+            profile_model=profile_model,
+            profile_api_key=profile_api_key,
+        )
 
     def close_memory_tasks(self) -> None:
         if self._memory_manager is None:
@@ -1167,24 +1177,56 @@ class GroupSessionManager:
 
     def _build_memory_model(self) -> Model:
         cfg = self._config
-        provider = cfg.bampi_memory_model_provider or cfg.bampi_model_provider
-        model_id = cfg.bampi_memory_model_id or cfg.bampi_model_id
-        base_url = cfg.bampi_memory_base_url or cfg.bampi_base_url
-        memory_identity_overridden = bool(
-            cfg.bampi_memory_model_provider or cfg.bampi_memory_model_id
+        return self._build_layered_memory_model(
+            provider=cfg.bampi_memory_model_provider,
+            model_id=cfg.bampi_memory_model_id,
+            model_api=cfg.bampi_memory_model_api,
+            base_url=cfg.bampi_memory_base_url,
         )
-        if cfg.bampi_memory_model_api != "auto":
+
+    def _build_memory_profile_model(self) -> Model:
+        cfg = self._config
+        identity_overridden = bool(
+            cfg.bampi_memory_profile_model_provider
+            or cfg.bampi_memory_profile_model_id
+        )
+        model_api = cfg.bampi_memory_profile_model_api
+        if model_api == "auto" and not identity_overridden:
+            # Profile model falls back to the shared memory model; inherit its
+            # API choice so both stay on the same endpoint.
             model_api = cfg.bampi_memory_model_api
-        elif memory_identity_overridden:
-            # Independent memory model: infer API from its own provider/registry.
-            model_api = "auto"
-        else:
-            model_api = cfg.bampi_model_api
-        return self._build_model_from_spec(
-            provider=provider,
-            model_id=model_id,
+        return self._build_layered_memory_model(
+            provider=(
+                cfg.bampi_memory_profile_model_provider
+                or cfg.bampi_memory_model_provider
+            ),
+            model_id=cfg.bampi_memory_profile_model_id or cfg.bampi_memory_model_id,
             model_api=model_api,
-            base_url=base_url,
+            base_url=cfg.bampi_memory_profile_base_url or cfg.bampi_memory_base_url,
+        )
+
+    def _build_layered_memory_model(
+        self,
+        *,
+        provider: str,
+        model_id: str,
+        model_api: str,
+        base_url: str,
+    ) -> Model:
+        cfg = self._config
+        identity_overridden = bool(provider or model_id)
+        if model_api != "auto":
+            resolved_api = model_api
+        elif identity_overridden:
+            # Independent memory model: infer API from its own provider/registry.
+            resolved_api = "auto"
+        else:
+            resolved_api = cfg.bampi_model_api
+        return self._build_model_from_spec(
+            provider=provider or cfg.bampi_model_provider,
+            model_id=model_id or cfg.bampi_model_id,
+            model_api=resolved_api,
+            base_url=base_url or cfg.bampi_base_url,
         )
 
     def _build_model_from_spec(
@@ -1309,6 +1351,20 @@ class GroupSessionManager:
             )
             return self._config.bampi_memory_api_key
         return await self._resolve_api_key(provider, configured_api=configured_api)
+
+    async def _resolve_memory_profile_api_key(
+        self,
+        provider: str,
+        *,
+        configured_api: str | None = None,
+    ) -> str | None:
+        if self._config.bampi_memory_profile_api_key:
+            logger.info(
+                f"bampi_chat resolved memory profile api key provider={provider} "
+                f"source=memory_profile_config"
+            )
+            return self._config.bampi_memory_profile_api_key
+        return await self._resolve_memory_api_key(provider, configured_api=configured_api)
 
     async def _resolve_api_key(
         self,

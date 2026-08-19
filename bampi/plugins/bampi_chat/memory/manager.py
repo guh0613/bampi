@@ -144,6 +144,8 @@ class MemoryManager:
         *,
         model: Any | None = None,
         api_key: str | None = None,
+        profile_model: Any | None = None,
+        profile_api_key: str | None = None,
     ) -> None:
         if self._scheduler is not None:
             return
@@ -155,9 +157,18 @@ class MemoryManager:
                 f"cron={self._profile_cron} timezone={self._local_timezone}"
             )
             return
+        if profile_model is None:
+            profile_model = model
+        if profile_api_key is None:
+            profile_api_key = api_key
         scheduler = AsyncIOScheduler(timezone=self._local_timezone)
         async def _maintenance_job() -> None:
-            await self.run_memory_maintenance_async(model=model, api_key=api_key)
+            await self.run_memory_maintenance_async(
+                model=model,
+                api_key=api_key,
+                profile_model=profile_model,
+                profile_api_key=profile_api_key,
+            )
 
         scheduler.add_job(
             _maintenance_job,
@@ -418,8 +429,13 @@ class MemoryManager:
         *,
         model: Any | None = None,
         api_key: str | None = None,
+        profile_model: Any | None = None,
+        profile_api_key: str | None = None,
     ) -> dict[str, int]:
-        generated = await self.run_profile_generation_scan_async(model=model, api_key=api_key)
+        generated = await self.run_profile_generation_scan_async(
+            model=model if profile_model is None else profile_model,
+            api_key=api_key if profile_api_key is None else profile_api_key,
+        )
         deleted = self.cleanup_old_data()
         return {"profiles_generated": generated, "archives_deleted": deleted}
 

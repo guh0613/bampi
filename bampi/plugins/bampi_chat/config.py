@@ -202,6 +202,12 @@ class BampiChatConfig(BaseModel):
     bampi_memory_model_api: str = "auto"
     bampi_memory_api_key: str = ""
     bampi_memory_base_url: str = ""
+    # 用户画像生成专用模型；留空则回落到 bampi_memory_model_*，再回落到主模型。
+    bampi_memory_profile_model_provider: str = ""
+    bampi_memory_profile_model_id: str = ""
+    bampi_memory_profile_model_api: str = "auto"
+    bampi_memory_profile_api_key: str = ""
+    bampi_memory_profile_base_url: str = ""
     bampi_memory_profile_session_threshold: int = 5
     bampi_memory_profile_max_staleness_days: int = 7
     bampi_memory_profile_cron: str = "0 4 * * *"
@@ -296,6 +302,10 @@ class BampiChatConfig(BaseModel):
         "bampi_memory_model_id",
         "bampi_memory_model_api",
         "bampi_memory_base_url",
+        "bampi_memory_profile_model_provider",
+        "bampi_memory_profile_model_id",
+        "bampi_memory_profile_model_api",
+        "bampi_memory_profile_base_url",
         "bampi_memory_profile_cron",
         "bampi_bash_container_name",
         "bampi_bash_container_workdir",
