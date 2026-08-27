@@ -115,6 +115,10 @@ class BampiChatConfig(BaseModel):
     bampi_rich_render_code: bool = True
     bampi_rich_render_math: bool = True
     bampi_rich_render_table: bool = True
+    # Inline ``$...$`` spans in outgoing text are rewritten as plain Unicode
+    # when the whole formula can be expressed faithfully (∇·E = ρ/ε₀);
+    # anything more is left verbatim for the reader.
+    bampi_rich_render_math_unicode: bool = True
     # Above this count the reply is sent as plain text instead: a wall of
     # images is worse to read than Markdown, and risks tripping rate limits.
     bampi_rich_render_max_blocks: int = Field(default=6, ge=1)

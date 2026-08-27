@@ -130,7 +130,7 @@ def compose_outbound_message(
     message = Message()
     at_count = 0
     pos = 0
-    for protected_start, protected_end in _find_markdown_protected_ranges(text):
+    for protected_start, protected_end in find_markdown_protected_ranges(text):
         if pos < protected_start:
             at_count = _compose_plain_range(
                 message,
@@ -245,7 +245,7 @@ def _append_literal_text(message: Message, text: str) -> None:
     message.append(MessageSegment.text(text))
 
 
-def _find_markdown_protected_ranges(text: str) -> list[tuple[int, int]]:
+def find_markdown_protected_ranges(text: str) -> list[tuple[int, int]]:
     """线性扫描需要绕过 QQ 标记解析的 Markdown 区间。
 
     这里只识别会与本模块语法发生实际冲突的结构，不承担完整 Markdown

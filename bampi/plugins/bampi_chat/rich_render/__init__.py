@@ -15,6 +15,7 @@ from .delivery import (
     rich_render_options_from_config,
 )
 from .inline import render_inline
+from .mathtext import convert_inline_math, normalize_math_delimiters
 from .renderer import (
     CODE_FRAME_WIDTH,
     PAPER_FRAME_WIDTH,
@@ -46,8 +47,10 @@ __all__ = [
     "TextPart",
     "TextSegment",
     "build_delivery_plan",
+    "convert_inline_math",
     "missing_assets",
     "normalize_language",
+    "normalize_math_delimiters",
     "parse_table",
     "plan_segments",
     "render_inline",

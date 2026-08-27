@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from nonebot import logger
 
+from .mathtext import convert_inline_math, normalize_math_delimiters
 from .renderer import RichBlockRenderer
 from .segments import BlockKind, RichBlock, Segment, TextSegment, split_segments
 
@@ -39,6 +40,8 @@ class RichRenderOptions:
     code: bool = True
     math: bool = True
     table: bool = True
+    # Rewrite inline ``$...$`` spans as Unicode text where that is faithful.
+    math_unicode: bool = True
     max_blocks: int = 6
 
     def wants(self, kind: BlockKind) -> bool:
@@ -55,6 +58,7 @@ def rich_render_options_from_config(config: object) -> RichRenderOptions:
         code=bool(getattr(config, "bampi_rich_render_code", True)),
         math=bool(getattr(config, "bampi_rich_render_math", True)),
         table=bool(getattr(config, "bampi_rich_render_table", True)),
+        math_unicode=bool(getattr(config, "bampi_rich_render_math_unicode", True)),
         max_blocks=int(getattr(config, "bampi_rich_render_max_blocks", 6) or 6),
     )
 
@@ -101,16 +105,28 @@ async def build_delivery_plan(
 ) -> list[DeliveryPart]:
     """Render the rich blocks in *text* and return the interleaved plan.
 
-    On any rendering failure the whole reply falls back to a single text part
-    holding the original Markdown, so the content still reaches the chat.
+    Math delimiters are normalised first, so every display-math dialect the
+    model may emit reaches the block scanner in the one form it recognises;
+    inline ``$...$`` spans in outgoing text are rewritten as Unicode where
+    that can be done faithfully. On any rendering failure the whole reply
+    falls back to a single text part holding the Markdown, so the content
+    still reaches the chat.
     """
     if not text:
         return []
 
+    if options.enabled:
+        text = normalize_math_delimiters(text)
+
+    def finish(value: str) -> str:
+        if options.enabled and options.math_unicode:
+            return convert_inline_math(value)
+        return value
+
     segments = plan_segments(text, options)
     blocks = [segment for segment in segments if isinstance(segment, RichBlock)]
     if not blocks or renderer is None:
-        return [TextPart(text)]
+        return [TextPart(finish(text))]
 
     try:
         pngs = await renderer.render(blocks)
@@ -118,14 +134,14 @@ async def build_delivery_plan(
         logger.exception(
             "bampi_chat rich block rendering failed; falling back to Markdown text"
         )
-        return [TextPart(text)]
+        return [TextPart(finish(text))]
 
     if len(pngs) != len(blocks):
         logger.error(
             f"bampi_chat rich render returned {len(pngs)} images for "
             f"{len(blocks)} blocks; falling back to Markdown text"
         )
-        return [TextPart(text)]
+        return [TextPart(finish(text))]
 
     parts: list[DeliveryPart] = []
     rendered = iter(pngs)
@@ -137,7 +153,7 @@ async def build_delivery_plan(
         # around images, which QQ already spaces out on its own.
         if segment.is_blank:
             continue
-        parts.append(TextPart(segment.source.strip("\n")))
+        parts.append(TextPart(finish(segment.source.strip("\n"))))
 
     return [
         part

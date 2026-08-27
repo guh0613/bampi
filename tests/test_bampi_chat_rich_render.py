@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from bampi.plugins.bampi_chat.config import BampiChatConfig
+from bampi.plugins.bampi_chat.prompt import build_system_prompt
 from bampi.plugins.bampi_chat.rich_render import (
     BlockKind,
     ImagePart,
@@ -11,13 +12,16 @@ from bampi.plugins.bampi_chat.rich_render import (
     TextPart,
     TextSegment,
     build_delivery_plan,
+    convert_inline_math,
     normalize_language,
+    normalize_math_delimiters,
     parse_table,
     plan_segments,
     render_inline,
     rich_render_options_from_config,
     split_segments,
 )
+from bampi.plugins.bampi_chat.rich_render.tex_unicode import tex_to_unicode
 
 CODE_REPLY = "看这段：\n\n```python\nprint(1)\n```\n\n就这样。"
 
@@ -186,6 +190,101 @@ def test_render_inline_never_drops_text():
 
 
 # --------------------------------------------------------------------------- #
+# Math delimiter normalization
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # \(...\) becomes $...$, wrapped spans are re-joined.
+        (r"能量 \(E=mc^2\) 守恒", "能量 $E=mc^2$ 守恒"),
+        ("\\(a\n+ b\\)", "$a + b$"),
+        # \[...\] becomes a $$ block owning its lines.
+        (r"设 \[x=1\] 那么", "设\n$$x=1$$\n那么"),
+        ("\\[\na + b\n\\]", "$$a + b$$"),
+        ("\\[\nx=1\\\\\ny=2\n\\]", "$$\nx=1\\\\\ny=2\n$$"),
+        # $$ glued to prose is re-anchored onto its own lines.
+        ("前面 $$x^2$$ 后面", "前面\n$$x^2$$\n后面"),
+        ("$$\n\\alpha\n$$ 尾巴", "$$\\alpha$$\n尾巴"),
+        # Already-canonical forms pass through untouched.
+        ("a\n$$x^2$$\nb", "a\n$$x^2$$\nb"),
+        ("$$\n\\sum_i x_i\n$$", "$$\n\\sum_i x_i\n$$"),
+        # Code is sacrosanct.
+        ("```\n\\(x\\)\n```", "```\n\\(x\\)\n```"),
+        (r"`\[x=1\]`", r"`\[x=1\]`"),
+        # Unpaired, empty or paragraph-spanning delimiters stay verbatim.
+        (r"只有 \( 开头", r"只有 \( 开头"),
+        ("钱 $$ 多", "钱 $$ 多"),
+        ("$$$$", "$$$$"),
+        ("\\(a\n\nb\\)", "\\(a\n\nb\\)"),
+        # Inline single dollars are not this pass's business.
+        ("$5 到 $10", "$5 到 $10"),
+        ("", ""),
+    ],
+)
+def test_normalize_math_delimiters(text: str, expected: str):
+    assert normalize_math_delimiters(text) == expected
+
+
+def test_normalized_bracket_math_is_scannable():
+    """The whole point: after normalization the block scanner finds the math."""
+    segments = split_segments(normalize_math_delimiters(r"设 \[x=1\] 那么"))
+    assert _kinds(segments) == ["text", "math", "text"]
+    assert segments[1].content == "x=1"
+
+
+# --------------------------------------------------------------------------- #
+# Inline math to Unicode
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("tex", "expected"),
+    [
+        ("E=mc^2", "E=mc²"),
+        (r"\alpha", "α"),
+        (r"\frac{1}{2}", "1/2"),
+        (r"\sqrt{2}", "√2"),
+        (r"\sum_{i=1}^n x_i", "∑ᵢ₌₁ⁿ xᵢ"),
+        (r"\nabla \cdot \mathbf{E}", "∇·E"),
+        # Genuinely two-dimensional structure is refused, not approximated.
+        (r"\begin{matrix}a\end{matrix}", None),
+        ("", None),
+    ],
+)
+def test_tex_to_unicode(tex: str, expected: str | None):
+    assert tex_to_unicode(tex) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("能量 $E=mc^2$ 对吧", "能量 E=mc² 对吧"),
+        (r"$\alpha \to \beta$", "α→β"),
+        (r"比率 $\frac{a+b}{c}$", "比率 (a+b)/c"),
+        # An inexpressible formula keeps its source whole, delimiters and all.
+        (
+            r"看 $\begin{matrix}a\end{matrix}$ 吧",
+            r"看 $\begin{matrix}a\end{matrix}$ 吧",
+        ),
+        # Currency never converts.
+        ("$5 到 $10", "$5 到 $10"),
+        ("$ 空格 $", "$ 空格 $"),
+        (r"\$5 不是公式", r"\$5 不是公式"),
+        # A span may not cross a line break.
+        ("$a\nb$", "$a\nb$"),
+        # Display math and code are not this pass's business.
+        ("$$x^2$$", "$$x^2$$"),
+        ("`$x$`", "`$x$`"),
+        ("", ""),
+    ],
+)
+def test_convert_inline_math(text: str, expected: str):
+    assert convert_inline_math(text) == expected
+
+
+# --------------------------------------------------------------------------- #
 # Delivery planning
 # --------------------------------------------------------------------------- #
 
@@ -217,6 +316,7 @@ def test_rich_render_options_from_config_defaults():
     assert options.code is True
     assert options.math is True
     assert options.table is True
+    assert options.math_unicode is True
 
 
 class _StubRenderer:
@@ -291,3 +391,98 @@ async def test_build_delivery_plan_drops_blank_runs_between_blocks():
         text, renderer=renderer, options=RichRenderOptions()
     )
     assert [type(part).__name__ for part in plan] == ["ImagePart", "ImagePart"]
+
+
+async def test_build_delivery_plan_normalizes_bracket_display_math():
+    renderer = _StubRenderer()
+    plan = await build_delivery_plan(
+        r"设 \[x=1\] 那么", renderer=renderer, options=RichRenderOptions()
+    )
+    assert [type(part).__name__ for part in plan] == [
+        "TextPart",
+        "ImagePart",
+        "TextPart",
+    ]
+    assert plan[0] == TextPart("设")
+    assert plan[1].kind is BlockKind.MATH
+    assert plan[2] == TextPart("那么")
+    assert renderer.calls[0][0].content == "x=1"
+
+
+async def test_build_delivery_plan_recovers_glued_display_math():
+    renderer = _StubRenderer()
+    plan = await build_delivery_plan(
+        "$$\n\\alpha\n$$ 结论如上。", renderer=renderer, options=RichRenderOptions()
+    )
+    assert [type(part).__name__ for part in plan] == ["ImagePart", "TextPart"]
+    assert plan[1] == TextPart("结论如上。")
+
+
+async def test_build_delivery_plan_converts_inline_math():
+    plan = await build_delivery_plan(
+        "能量 $E=mc^2$ 对吧", renderer=_StubRenderer(), options=RichRenderOptions()
+    )
+    assert plan == [TextPart("能量 E=mc² 对吧")]
+
+
+async def test_build_delivery_plan_paren_math_becomes_unicode():
+    plan = await build_delivery_plan(
+        r"速度 \(v = s/t\) 很快", renderer=_StubRenderer(), options=RichRenderOptions()
+    )
+    assert plan == [TextPart("速度 v = s/t 很快")]
+
+
+async def test_build_delivery_plan_converts_inline_math_around_blocks():
+    renderer = _StubRenderer()
+    text = "先看 $x^2$：\n\n```python\nprint(1)\n```\n\n完毕"
+    plan = await build_delivery_plan(
+        text, renderer=renderer, options=RichRenderOptions()
+    )
+    assert plan[0] == TextPart("先看 x²：")
+    assert isinstance(plan[1], ImagePart)
+    assert plan[2] == TextPart("完毕")
+
+
+async def test_build_delivery_plan_keeps_unconvertible_inline_math():
+    plan = await build_delivery_plan(
+        r"看 $\begin{matrix}a\end{matrix}$ 吧",
+        renderer=_StubRenderer(),
+        options=RichRenderOptions(),
+    )
+    assert plan == [TextPart(r"看 $\begin{matrix}a\end{matrix}$ 吧")]
+
+
+async def test_build_delivery_plan_math_unicode_can_be_disabled():
+    plan = await build_delivery_plan(
+        "能量 $E=mc^2$ 对吧",
+        renderer=_StubRenderer(),
+        options=RichRenderOptions(math_unicode=False),
+    )
+    assert plan == [TextPart("能量 $E=mc^2$ 对吧")]
+
+
+async def test_build_delivery_plan_disabled_leaves_math_text_untouched():
+    text = r"设 \[x=1\] 那么 $E=mc^2$"
+    plan = await build_delivery_plan(
+        text, renderer=None, options=RichRenderOptions(enabled=False)
+    )
+    assert plan == [TextPart(text)]
+
+
+# --------------------------------------------------------------------------- #
+# System prompt conventions
+# --------------------------------------------------------------------------- #
+
+
+def test_system_prompt_math_conventions_follow_rich_render():
+    rich = build_system_prompt(BampiChatConfig(), [])
+    assert "## 排版" in rich
+    assert "$$" in rich
+    assert "\\[...\\]" in rich
+
+    plain = build_system_prompt(
+        BampiChatConfig(bampi_rich_render_enabled=False), []
+    )
+    assert "## 排版" in plain
+    assert "$$" not in plain
+    assert "Unicode" in plain

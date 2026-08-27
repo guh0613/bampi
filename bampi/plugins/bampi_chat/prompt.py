@@ -41,6 +41,25 @@ def _group_chat_markup_section(config: BampiChatConfig) -> str:
     )
 
 
+def _formatting_section(config: BampiChatConfig) -> str:
+    """排版章节：代码/表格/公式的书写约定，取决于富渲染是否开启。"""
+    if config.bampi_rich_render_enabled:
+        return (
+            "## 排版\n"
+            "- QQ 不渲染 Markdown，正文以纯文本发出；但围栏代码块、Markdown 表格、"
+            "独占成行的 `$$...$$` 公式这三类会自动渲染成清晰图片发出，可以放心使用。\n"
+            "- 展示公式一律写成 `$$` 块并让定界符独占成行；"
+            "不要使用 `\\[...\\]` 或 `\\(...\\)` 定界符。\n"
+            "- 行内小公式优先直接写 Unicode 字符（如 ∇·E = ρ/ε₀、x²、α → β），"
+            "其次写 `$...$`；Unicode 写不清楚的复杂公式请独立成 `$$` 块，不要挤在行内。\n\n"
+        )
+    return (
+        "## 排版\n"
+        "- 回复以纯文本发出，Markdown 与 LaTeX 都不会被渲染；"
+        "数学内容尽量直接用 Unicode 字符书写（如 ∇·E = ρ/ε₀、x²、α → β），避免 LaTeX 语法。\n\n"
+    )
+
+
 def build_system_prompt(
     config: BampiChatConfig,
     tool_names: list[str],
@@ -180,6 +199,7 @@ def build_system_prompt(
         "需要按某个群成员限定记忆检索时，可把括号里的 `user_id` 传给 memory search 工具；普通全群回忆不要传 `user_id`。\n"
         "区分谁在说话很重要——必要时点名回应。包含附件时会出现文件路径（指向 workspace 中的文件）或 image block。\n"
         "可用 skills 会列在系统提示末尾；任务与描述匹配时按需读取并使用。\n\n"
+        f"{_formatting_section(config)}"
         "## 行为\n"
         "- 以自然、简洁的方式回应，像群友对话。\n"
         "- 只引用通过工具实际获取到的内容，不要编造图片、文件或搜索结果。\n"
