@@ -487,13 +487,13 @@ async def test_build_delivery_plan_renders_many_math_blocks():
 
 def test_system_prompt_math_conventions_follow_rich_render():
     rich = build_system_prompt(BampiChatConfig(), [])
-    assert "## 排版" in rich
+    assert "## 数学记法" in rich
     assert "$$" in rich
     assert "\\[...\\]" in rich
 
     plain = build_system_prompt(
         BampiChatConfig(bampi_rich_render_enabled=False), []
     )
-    assert "## 排版" in plain
+    assert "## 数学记法" in plain
     assert "$$" not in plain
     assert "Unicode" in plain
