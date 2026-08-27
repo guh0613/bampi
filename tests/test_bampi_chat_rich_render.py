@@ -317,6 +317,7 @@ def test_rich_render_options_from_config_defaults():
     assert options.math is True
     assert options.table is True
     assert options.math_unicode is True
+    assert options.max_blocks == 20
 
 
 class _StubRenderer:
@@ -467,6 +468,16 @@ async def test_build_delivery_plan_disabled_leaves_math_text_untouched():
         text, renderer=None, options=RichRenderOptions(enabled=False)
     )
     assert plan == [TextPart(text)]
+
+
+async def test_build_delivery_plan_renders_many_math_blocks():
+    """A math-heavy derivation must not lose rendering to the block fuse."""
+    renderer = _StubRenderer()
+    text = "\n\n".join(f"$$x^{index}$$" for index in range(9))
+    plan = await build_delivery_plan(
+        text, renderer=renderer, options=RichRenderOptions()
+    )
+    assert [type(part).__name__ for part in plan] == ["ImagePart"] * 9
 
 
 # --------------------------------------------------------------------------- #

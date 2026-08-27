@@ -42,7 +42,10 @@ class RichRenderOptions:
     table: bool = True
     # Rewrite inline ``$...$`` spans as Unicode text where that is faithful.
     math_unicode: bool = True
-    max_blocks: int = 6
+    # All parts go into a single QQ message, so this cap is only a fuse
+    # against pathological replies, not a taste judgement: a math-heavy
+    # derivation legitimately carries a dozen display formulas.
+    max_blocks: int = 20
 
     def wants(self, kind: BlockKind) -> bool:
         if kind is BlockKind.CODE:
@@ -59,7 +62,7 @@ def rich_render_options_from_config(config: object) -> RichRenderOptions:
         math=bool(getattr(config, "bampi_rich_render_math", True)),
         table=bool(getattr(config, "bampi_rich_render_table", True)),
         math_unicode=bool(getattr(config, "bampi_rich_render_math_unicode", True)),
-        max_blocks=int(getattr(config, "bampi_rich_render_max_blocks", 6) or 6),
+        max_blocks=int(getattr(config, "bampi_rich_render_max_blocks", 20) or 20),
     )
 
 

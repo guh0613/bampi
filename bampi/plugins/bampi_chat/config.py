@@ -119,9 +119,11 @@ class BampiChatConfig(BaseModel):
     # when the whole formula can be expressed faithfully (∇·E = ρ/ε₀);
     # anything more is left verbatim for the reader.
     bampi_rich_render_math_unicode: bool = True
-    # Above this count the reply is sent as plain text instead: a wall of
-    # images is worse to read than Markdown, and risks tripping rate limits.
-    bampi_rich_render_max_blocks: int = Field(default=6, ge=1)
+    # Above this count the reply is sent as plain text instead. All rendered
+    # blocks travel in one QQ message, so this is only a fuse against
+    # pathological replies; a math-heavy derivation easily holds a dozen
+    # display formulas and should still render.
+    bampi_rich_render_max_blocks: int = Field(default=20, ge=1)
     bampi_rich_render_dir: str = DEFAULT_RICH_RENDER_DIR
     bampi_rich_render_scale: int = Field(default=2, ge=1, le=3)
     bampi_rich_render_idle_ttl_seconds: int = Field(default=180, ge=0)
