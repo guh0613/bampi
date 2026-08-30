@@ -132,6 +132,11 @@ class BampiChatConfig(BaseModel):
     bampi_live_progress_enabled: bool = True
     bampi_live_progress_max_tool_updates: int = 0
     bampi_live_progress_error_recall_min_visible_seconds: float = 1.0
+    # After this many visible progress messages in one turn, further progress
+    # is batched into periodic digest summaries instead of per-event messages.
+    # 0 keeps the legacy behaviour of sending every update individually.
+    bampi_live_progress_digest_after_updates: int = Field(default=3, ge=0)
+    bampi_live_progress_digest_interval_seconds: float = Field(default=45.0, gt=0)
     # Kept under its historical name for configuration compatibility. The
     # current QQ delivery model rich-renders complete assistant text before
     # tool execution, while terminal text waits for final delivery.

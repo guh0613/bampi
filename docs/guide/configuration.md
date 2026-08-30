@@ -123,7 +123,9 @@ NapCat 某些转发解析路径无法恢复真实来源群，因此实现不会�
 | `bampi_outbound_at_all_enabled` (`BAMPI_OUTBOUND_AT_ALL_ENABLED`) | `false` | 是否允许 `@全体成员` 转为 at all |
 | `bampi_outbound_at_limit` (`BAMPI_OUTBOUND_AT_LIMIT`) | `5` | 单条回复最多解析多少个 at；超出保留为文本，`0` 表示不限制 |
 | `bampi_live_progress_enabled` (`BAMPI_LIVE_PROGRESS_ENABLED`) | `true` | 工具进度提示 |
-| `bampi_live_progress_max_tool_updates` (`BAMPI_LIVE_PROGRESS_MAX_TOOL_UPDATES`) | `0` | 进度更新条数上限；`0` 表示不限制 |
+| `bampi_live_progress_max_tool_updates` (`BAMPI_LIVE_PROGRESS_MAX_TOOL_UPDATES`) | `0` | 逐条进度更新条数上限；`0` 表示不限制 |
+| `bampi_live_progress_digest_after_updates` (`BAMPI_LIVE_PROGRESS_DIGEST_AFTER_UPDATES`) | `3` | 单轮发出这么多条进度消息后，切换为定期合并播报；`0` 表示始终逐条发送 |
+| `bampi_live_progress_digest_interval_seconds` (`BAMPI_LIVE_PROGRESS_DIGEST_INTERVAL_SECONDS`) | `45.0` | 合并播报的发送间隔（秒） |
 | `bampi_live_text_stream_enabled` (`BAMPI_LIVE_TEXT_STREAM_ENABLED`) | `true` | 是否在 tool call 前发送并渲染该轮完整的中间文字；最终回复始终等待完整生成并统一渲染 |
 | `bampi_live_text_stream_min_chars` (`BAMPI_LIVE_TEXT_STREAM_MIN_CHARS`) | `80` | 兼容保留的增量流式阈值；当前完整中间消息发送不使用 |
 | `bampi_live_text_stream_force_chars` (`BAMPI_LIVE_TEXT_STREAM_FORCE_CHARS`) | `220` | 兼容保留的增量流式阈值；当前完整中间消息发送不使用 |

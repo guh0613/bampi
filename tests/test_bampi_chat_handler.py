@@ -42,9 +42,12 @@ from bampi.plugins.bampi_chat.pipeline.poke import (
     run_poke_reply_turn,
 )
 from bampi.plugins.bampi_chat.pipeline.progress import (
+    DigestEntry,
     LiveProgressReporter,
+    build_digest_text,
     describe_tool_progress,
     format_tool_progress_message,
+    make_tool_digest_entry,
 )
 from bampi.plugins.bampi_chat.pipeline.trigger import (
     CLEAR_NO_CONTEXT_MESSAGE,
@@ -360,6 +363,247 @@ async def test_live_progress_reporter_allows_unlimited_tool_updates_when_limit_z
 
     assert len(bot.calls) == 3
     assert [call[0] for call in bot.calls] == ["send_group_msg", "send_group_msg", "send_group_msg"]
+
+
+def _tool_events(index: int, name: str, args: dict[str, object], *, is_error: bool = False):
+    start = SimpleNamespace(
+        type="tool_execution_start", tool_name=name, args=args, tool_call_id=f"tc{index}"
+    )
+    end = SimpleNamespace(
+        type="tool_execution_end", tool_name=name, tool_call_id=f"tc{index}", is_error=is_error, result=None
+    )
+    return start, end
+
+
+@pytest.mark.asyncio
+async def test_live_progress_reporter_switches_to_digest_after_threshold():
+    bot = FakeBot()
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
+    config = BampiChatConfig(
+        bampi_live_progress_enabled=True,
+        bampi_live_progress_digest_after_updates=2,
+        bampi_live_progress_digest_interval_seconds=0.05,
+    )
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
+    session = FakeSession()
+
+    reporter.start(session)
+    assert session.listener is not None
+    tools = [
+        ("read", {"path": "a.py"}),
+        ("read", {"path": "b.py"}),
+        ("grep", {"pattern": "TODO"}),
+        ("bash", {"command": "make test"}),
+    ]
+    for index, (name, args) in enumerate(tools):
+        start, end = _tool_events(index, name, args)
+        session.listener(start)
+        session.listener(end)
+    await asyncio.sleep(0.1)
+    await reporter.prepare_final_reply()
+    await reporter.close()
+
+    assert [action for action, _ in bot.calls] == ["send_group_msg"] * 3
+    assert str(bot.calls[0][1]["message"]) == "[CQ:reply,id=99]📖 正在读取：a.py"
+    assert str(bot.calls[1][1]["message"]) == "📖 正在读取：b.py"
+    digest = str(bot.calls[2][1]["message"])
+    assert digest.startswith("⏳ 仍在处理中：")
+    assert "🔍 正在搜索：TODO" in digest
+    assert "💻 正在执行命令：make test" in digest
+
+
+@pytest.mark.asyncio
+async def test_live_progress_reporter_discards_pending_digest_on_final_reply():
+    bot = FakeBot()
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
+    config = BampiChatConfig(
+        bampi_live_progress_enabled=True,
+        bampi_live_progress_digest_after_updates=1,
+        bampi_live_progress_digest_interval_seconds=30.0,
+    )
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
+    session = FakeSession()
+
+    reporter.start(session)
+    assert session.listener is not None
+    for index, (name, args) in enumerate([
+        ("read", {"path": "a.py"}),
+        ("grep", {"pattern": "TODO"}),
+    ]):
+        start, end = _tool_events(index, name, args)
+        session.listener(start)
+        session.listener(end)
+    await reporter.prepare_final_reply()
+    await reporter.close()
+
+    assert len(bot.calls) == 1
+    assert "正在读取：a.py" in str(bot.calls[0][1]["message"])
+
+
+@pytest.mark.asyncio
+async def test_live_progress_reporter_drops_failed_tool_from_pending_digest():
+    bot = FakeBot()
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
+    config = BampiChatConfig(
+        bampi_live_progress_enabled=True,
+        bampi_live_progress_digest_after_updates=1,
+        bampi_live_progress_digest_interval_seconds=0.05,
+    )
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
+    session = FakeSession()
+
+    reporter.start(session)
+    assert session.listener is not None
+    for index, (name, args, is_error) in enumerate([
+        ("read", {"path": "a.py"}, False),
+        ("bash", {"command": "make broken"}, True),
+        ("grep", {"pattern": "TODO"}, False),
+    ]):
+        start, end = _tool_events(index, name, args, is_error=is_error)
+        session.listener(start)
+        session.listener(end)
+    await asyncio.sleep(0.1)
+    await reporter.prepare_final_reply()
+    await reporter.close()
+
+    assert len(bot.calls) == 2
+    digest = str(bot.calls[1][1]["message"])
+    assert "🔍 正在搜索：TODO" in digest
+    assert "make broken" not in digest
+
+
+@pytest.mark.asyncio
+async def test_live_progress_reporter_sends_intermediate_text_directly_in_digest_mode():
+    bot = FakeBot()
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
+    config = BampiChatConfig(
+        bampi_live_progress_enabled=True,
+        bampi_live_text_stream_enabled=True,
+        bampi_live_progress_digest_after_updates=1,
+        bampi_live_progress_digest_interval_seconds=0.05,
+    )
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
+    session = FakeSession()
+
+    reporter.start(session)
+    assert session.listener is not None
+    start, end = _tool_events(0, "read", {"path": "a.py"})
+    session.listener(start)
+    session.listener(end)
+    session.listener(SimpleNamespace(type="message_start", message=AssistantMessage(content=[])))
+    intermediate = AssistantMessage(
+        content=[
+            TextContent(text="接下来我看看测试结果。"),
+            ToolCall(id="tc1", name="bash", arguments={"command": "make test"}),
+        ]
+    )
+    session.listener(SimpleNamespace(type="message_end", message=intermediate))
+    await asyncio.sleep(0.1)
+    await reporter.prepare_final_reply()
+    await reporter.close()
+
+    # Tool update first, then the intermediate text in full; no digest was
+    # produced because assistant text never enters the buffer.
+    assert len(bot.calls) == 2
+    assert str(bot.calls[1][1]["message"]) == "接下来我看看测试结果。"
+    assert reporter.intermediate_text_sent is True
+
+
+@pytest.mark.asyncio
+async def test_live_progress_reporter_intermediate_text_does_not_count_toward_digest_switch():
+    bot = FakeBot()
+    event = FakeGroupEvent(group_id=1001, user_id=42, message_id=99)
+    config = BampiChatConfig(
+        bampi_live_progress_enabled=True,
+        bampi_live_text_stream_enabled=True,
+        bampi_live_progress_digest_after_updates=2,
+        bampi_live_progress_digest_interval_seconds=30.0,
+    )
+    reporter = LiveProgressReporter(bot=bot, target=reply_target_for_event(event), config=config)
+    session = FakeSession()
+
+    reporter.start(session)
+    assert session.listener is not None
+    session.listener(SimpleNamespace(type="message_start", message=AssistantMessage(content=[])))
+    intermediate = AssistantMessage(
+        content=[
+            TextContent(text="我先看看文件。"),
+            ToolCall(id="tc0", name="read", arguments={"path": "a.py"}),
+        ]
+    )
+    session.listener(SimpleNamespace(type="message_end", message=intermediate))
+    start, end = _tool_events(0, "read", {"path": "a.py"})
+    session.listener(start)
+    session.listener(end)
+    start, end = _tool_events(1, "grep", {"pattern": "TODO"})
+    session.listener(start)
+    session.listener(end)
+    await reporter.prepare_final_reply()
+    await reporter.close()
+
+    # Text + two tool updates all delivered directly: only the two tool
+    # updates count toward the threshold, and the switch happens after them.
+    assert len(bot.calls) == 3
+    assert "我先看看文件。" in str(bot.calls[0][1]["message"])
+    assert "正在读取：a.py" in str(bot.calls[1][1]["message"])
+    assert "正在搜索：TODO" in str(bot.calls[2][1]["message"])
+
+
+def test_make_tool_digest_entry_splits_label_and_detail():
+    entry = make_tool_digest_entry("📖 正在读取：a.py", tool_call_id="tc1")
+    assert entry == DigestEntry(label="📖 正在读取", detail="a.py", tool_call_id="tc1")
+
+    label_only = make_tool_digest_entry("🧠 正在搜索记忆")
+    assert label_only == DigestEntry(label="🧠 正在搜索记忆")
+
+
+def test_build_digest_text_aggregates_consecutive_same_action():
+    entries = [
+        make_tool_digest_entry(f"📖 正在读取：f{i}.py") for i in range(5)
+    ] + [
+        make_tool_digest_entry("💻 正在执行命令：make test"),
+        make_tool_digest_entry("💻 正在执行命令：make test"),
+        make_tool_digest_entry("🧠 正在搜索记忆"),
+        make_tool_digest_entry("🧠 正在搜索记忆"),
+        make_tool_digest_entry("🧠 正在搜索记忆"),
+    ]
+
+    text = build_digest_text(entries)
+
+    assert text.splitlines() == [
+        "⏳ 仍在处理中：",
+        "📖 正在读取：f0.py、f1.py、f2.py 等 5 项",
+        "💻 正在执行命令：make test ×2",
+        "🧠 正在搜索记忆 ×3",
+    ]
+
+
+def test_build_digest_text_does_not_merge_non_consecutive_groups():
+    entries = [
+        make_tool_digest_entry("📖 正在读取：a.py"),
+        make_tool_digest_entry("💻 正在执行命令：make test"),
+        make_tool_digest_entry("📖 正在读取：b.py"),
+    ]
+
+    text = build_digest_text(entries)
+
+    assert text.splitlines() == [
+        "⏳ 仍在处理中：",
+        "📖 正在读取：a.py",
+        "💻 正在执行命令：make test",
+        "📖 正在读取：b.py",
+    ]
+
+
+def test_build_digest_text_caps_total_lines():
+    entries = [make_tool_digest_entry(f"🛠️ 步骤{i}") for i in range(9)]
+
+    text = build_digest_text(entries)
+
+    lines = text.splitlines()
+    assert lines[0] == "⏳ 仍在处理中："
+    assert lines[-1] == "……以及另外 3 项"
+    assert len(lines) == 8
 
 
 @pytest.mark.asyncio

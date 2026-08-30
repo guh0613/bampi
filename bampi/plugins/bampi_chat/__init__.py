@@ -70,6 +70,8 @@ else:
         f"{'math' if plugin_config.bampi_rich_render_math else ''}/"
         f"{'table' if plugin_config.bampi_rich_render_table else ''} "
         f"live_progress={plugin_config.bampi_live_progress_enabled} "
+        f"live_progress_digest_after={plugin_config.bampi_live_progress_digest_after_updates} "
+        f"live_progress_digest_interval={plugin_config.bampi_live_progress_digest_interval_seconds} "
         f"live_text_stream={plugin_config.bampi_live_text_stream_enabled} "
         f"compaction_notice={plugin_config.bampi_threshold_compaction_notice_enabled}"
     )

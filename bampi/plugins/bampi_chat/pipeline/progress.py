@@ -42,6 +42,22 @@ class ToolProgressNotice:
     send_failed: bool = False
 
 
+@dataclass(slots=True)
+class DigestEntry:
+    """A buffered progress step: ``label`` names the action (emoji included),
+    ``detail`` carries its argument preview. Entries sharing a label are
+    aggregated into one digest line with their details joined."""
+
+    label: str
+    detail: str = ""
+    tool_call_id: str | None = None
+
+
+DIGEST_HEADER = "⏳ 仍在处理中："
+DIGEST_MAX_LINES = 6
+DIGEST_MAX_GROUP_DETAILS = 3
+
+
 TOOL_PROGRESS_EMOJIS: dict[str, str] = {
     "skill": "🧩",
     "read": "📖",
@@ -92,6 +108,10 @@ class LiveProgressReporter:
         self._pending_text = ""
         self._tool_notices: dict[str, ToolProgressNotice] = {}
         self._recall_tasks: set[asyncio.Task[None]] = set()
+        self._digest_mode = False
+        self._visible_progress_count = 0
+        self._digest_buffer: list[DigestEntry] = []
+        self._digest_task: asyncio.Task[None] | None = None
 
     @property
     def intermediate_text_sent(self) -> bool:
@@ -112,6 +132,9 @@ class LiveProgressReporter:
     async def prepare_final_reply(self) -> None:
         if not self._enabled:
             return
+        # The final reply supersedes any progress still waiting in the digest
+        # buffer, so pending digest updates are discarded rather than flushed.
+        self._discard_pending_digest()
         # Terminal assistant text is deliberately left to the final delivery
         # path, where complete Markdown can be rendered without racing the
         # progress sender. Only already-enqueued intermediate updates need to
@@ -122,6 +145,7 @@ class LiveProgressReporter:
         if self._closed:
             return
         self._closed = True
+        self._discard_pending_digest()
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None
@@ -210,13 +234,26 @@ class LiveProgressReporter:
     def _handle_tool_start(self, event: Any) -> None:
         if getattr(event, "tool_name", "") in SILENT_PROGRESS_TOOLS:
             return
+        tool_call_id = getattr(event, "tool_call_id", "")
+        if self._digest_mode:
+            if self._config.bampi_live_text_stream_enabled:
+                self._flush_pending_text()
+            self._append_digest_entry(
+                make_tool_digest_entry(
+                    format_tool_progress_message(
+                        getattr(event, "tool_name", ""),
+                        getattr(event, "args", None),
+                    ),
+                    tool_call_id=tool_call_id or None,
+                )
+            )
+            return
         limit = self._config.bampi_live_progress_max_tool_updates
         if limit > 0 and self._tool_updates_sent >= limit:
             return
         if self._config.bampi_live_text_stream_enabled:
             self._flush_pending_text()
 
-        tool_call_id = getattr(event, "tool_call_id", "")
         self._tool_updates_sent += 1
         progress_msg = format_tool_progress_message(
             getattr(event, "tool_name", ""),
@@ -232,6 +269,10 @@ class LiveProgressReporter:
             return
         notice = self._tool_notices.get(tool_call_id)
         if notice is None:
+            # Digest entries mirror the recall-on-failure behaviour of live
+            # updates: failed steps buffered but not yet flushed are dropped.
+            if bool(getattr(event, "is_error", False)):
+                self._drop_digest_entries(tool_call_id)
             return
         notice.finished = True
         notice.should_recall = bool(getattr(event, "is_error", False))
@@ -273,6 +314,8 @@ class LiveProgressReporter:
 
         payload = self._pending_text
         self._pending_text = ""
+        # Intermediate assistant text reads as ordinary conversation, so it
+        # always goes out directly and never enters the digest buffer.
         self._enqueue(
             payload,
             preserve_whitespace=True,
@@ -329,6 +372,76 @@ class LiveProgressReporter:
                 assistant_text=assistant_text,
             )
         )
+        # Assistant text is ordinary conversation rather than a progress
+        # notice, so it does not count toward the digest-mode switch.
+        if not assistant_text:
+            self._register_visible_progress()
+
+    def _register_visible_progress(self) -> None:
+        if self._digest_mode:
+            return
+        threshold = self._config.bampi_live_progress_digest_after_updates
+        if threshold <= 0:
+            return
+        self._visible_progress_count += 1
+        if self._visible_progress_count >= threshold:
+            self._digest_mode = True
+            logger.info(
+                f"bampi_chat live progress switched to digest mode "
+                f"group_id={self._target.group_id} "
+                f"message_id={self._target.reply_message_id} "
+                f"after_updates={self._visible_progress_count}"
+            )
+
+    def _append_digest_entry(self, entry: DigestEntry) -> None:
+        if self._closed:
+            return
+        self._digest_buffer.append(entry)
+        self._schedule_digest_flush()
+
+    def _drop_digest_entries(self, tool_call_id: str) -> None:
+        if not self._digest_buffer:
+            return
+        self._digest_buffer = [
+            entry for entry in self._digest_buffer if entry.tool_call_id != tool_call_id
+        ]
+
+    def _schedule_digest_flush(self) -> None:
+        if self._digest_task is not None and not self._digest_task.done():
+            return
+        task = asyncio.create_task(self._flush_digest_after_interval())
+        self._digest_task = task
+
+        def _cleanup(done: asyncio.Task[None]) -> None:
+            if self._digest_task is done:
+                self._digest_task = None
+            if done.cancelled():
+                return
+            exc = done.exception()
+            if exc is not None:
+                logger.error(
+                    f"bampi_chat digest flush task failed "
+                    f"group_id={self._target.group_id} "
+                    f"message_id={self._target.reply_message_id} "
+                    f"error={exc!r}"
+                )
+
+        task.add_done_callback(_cleanup)
+
+    async def _flush_digest_after_interval(self) -> None:
+        await asyncio.sleep(self._config.bampi_live_progress_digest_interval_seconds)
+        if self._closed or not self._digest_buffer:
+            return
+        entries = list(self._digest_buffer)
+        self._digest_buffer.clear()
+        self._enqueue(build_digest_text(entries))
+
+    def _discard_pending_digest(self) -> None:
+        self._digest_buffer.clear()
+        task = self._digest_task
+        self._digest_task = None
+        if task is not None and not task.done():
+            task.cancel()
 
     def _mark_tool_notice_sent(self, tool_call_id: str, message_id: int | None) -> None:
         notice = self._tool_notices.get(tool_call_id)
@@ -420,6 +533,48 @@ class LiveProgressReporter:
             f"tool_call_id={tool_call_id} "
             f"recalled_message_id={message_id}"
         )
+
+
+def make_tool_digest_entry(message: str, *, tool_call_id: str | None = None) -> DigestEntry:
+    # Tool progress messages follow the "emoji label：detail" convention, so
+    # the first full-width colon splits action from argument. Messages without
+    # a detail part ("正在搜索记忆") become label-only entries.
+    label, sep, detail = message.partition("：")
+    if not sep:
+        return DigestEntry(label=message, tool_call_id=tool_call_id)
+    return DigestEntry(label=label, detail=detail, tool_call_id=tool_call_id)
+
+
+def build_digest_text(entries: list[DigestEntry]) -> str:
+    groups: list[tuple[str, list[str], int]] = []
+    for entry in entries:
+        if groups and groups[-1][0] == entry.label:
+            _, details, count = groups[-1]
+            if entry.detail and entry.detail not in details:
+                details.append(entry.detail)
+            groups[-1] = (entry.label, details, count + 1)
+        else:
+            details = [entry.detail] if entry.detail else []
+            groups.append((entry.label, details, 1))
+    lines = [_render_digest_group(label, details, count) for label, details, count in groups]
+    hidden = len(lines) - DIGEST_MAX_LINES
+    if hidden > 0:
+        lines = lines[:DIGEST_MAX_LINES]
+        lines.append(f"……以及另外 {hidden} 项")
+    return "\n".join([DIGEST_HEADER, *lines])
+
+
+def _render_digest_group(label: str, details: list[str], count: int) -> str:
+    if not details:
+        return f"{label} ×{count}" if count > 1 else label
+    if len(details) == 1:
+        line = f"{label}：{details[0]}"
+        return f"{line} ×{count}" if count > 1 else line
+    shown = details[:DIGEST_MAX_GROUP_DETAILS]
+    line = f"{label}：{'、'.join(shown)}"
+    if len(details) > DIGEST_MAX_GROUP_DETAILS:
+        line += f" 等 {len(details)} 项"
+    return line
 
 
 def format_tool_progress_message(tool_name: str, args: Any) -> str:
