@@ -27,6 +27,7 @@ SUPPORTED_MODEL_APIS = {
     "openai-responses",
     "openai-completions",
     "google-genai",
+    "google-vertex",
 }
 
 MODEL_API_ALIASES = {
@@ -38,6 +39,10 @@ MODEL_API_ALIASES = {
     "google": "google-genai",
     "gemini": "google-genai",
     "google-genai": "google-genai",
+    "google-vertex": "google-vertex",
+    "vertex": "google-vertex",
+    "vertex-ai": "google-vertex",
+    "vertexai": "google-vertex",
     "openai": "openai-responses",
     "responses": "openai-responses",
     "openai-responses": "openai-responses",

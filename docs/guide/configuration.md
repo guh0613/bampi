@@ -22,10 +22,10 @@ BAMPI_API_KEY=sk-your-key
 # BAMPI_BASE_URL=https://api.example.com/v1   # 兼容网关时再填
 
 # 建议先限制群，避免误进无关群
-BAMPI_GROUP_WHITELIST=["123456789"]
+BAMPI_GROUP_WHITELIST='["123456789"]'
 
 # 触发（默认前缀已是 @bot，可按需改）
-# BAMPI_TRIGGER_PREFIX=["@bot","小帮"]
+# BAMPI_TRIGGER_PREFIX='["@bot","小帮"]'
 ```
 
 ## 模型
@@ -34,13 +34,51 @@ BAMPI_GROUP_WHITELIST=["123456789"]
 |-------------|------|------|
 | `bampi_model_provider` (`BAMPI_MODEL_PROVIDER`) | `openai` | 模型供应商标识 |
 | `bampi_model_id` (`BAMPI_MODEL_ID`) | `gpt-5-mini` | 模型名 |
-| `bampi_model_api` (`BAMPI_MODEL_API`) | `auto` | 协议：`auto` / `anthropic-messages` / `openai-responses` / `openai-completions` / `google-genai`（及常见别名） |
+| `bampi_model_api` (`BAMPI_MODEL_API`) | `auto` | 协议：`auto` / `anthropic-messages` / `openai-responses` / `openai-completions` / `google-genai` / `google-vertex`（及常见别名） |
 | `bampi_api_key` (`BAMPI_API_KEY`) | 空 | API Key |
 | `bampi_base_url` (`BAMPI_BASE_URL`) | 空 | 自定义 API Base URL |
 | `bampi_model_input_types` (`BAMPI_MODEL_INPUT_TYPES`) | 未设则按模型能力 | 覆盖输入类型：`text` / `image`（须含 `text`） |
 | `bampi_thinking_level` (`BAMPI_THINKING_LEVEL`) | `off` | 思考强度：`off` / `minimal` / `low` / `medium` / `high` / `xhigh` |
 
 更多 provider 行为见 [bampy providers](https://github.com/guh0613/bampy/blob/main/docs/providers.md)。
+
+### Vertex AI / Gemini 4 Argon
+
+模型和认证信息可以统一写进 `.env`。以下示例使用服务账号 JSON（Google ADC 也支持其他凭据来源）：
+
+```dotenv
+BAMPI_MODEL_PROVIDER=google-vertex
+BAMPI_MODEL_ID=gemini-4-argon
+BAMPI_MODEL_API=google-vertex
+BAMPI_THINKING_LEVEL=medium
+BAMPI_API_KEY=""
+BAMPI_BASE_URL=""
+
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_LOCATION=global
+GOOGLE_APPLICATION_CREDENTIALS=/etc/bampi/vertex-service-account.json
+```
+
+从项目根目录启动：
+
+```bash
+uv sync
+uv run --env-file .env python bot.py
+```
+
+`--env-file` 将文件里的变量传入 Bot 进程，Google SDK 就能读取项目、区域和凭据路径。NoneBot 自身的 dotenv 读取只构造配置对象，不会替 SDK 设置进程环境，因此这里需要保留启动参数。若使用 `.env.prod` 覆盖，可运行 `uv run --env-file .env --env-file .env.prod python bot.py`；后一个文件覆盖前一个，已经导出的进程环境变量优先于文件。
+
+使用 `--env-file` 时，已有的 JSON 数组需要整体加单引号，例如 `BAMPI_GROUP_WHITELIST='["123456789"]'`、`BAMPI_TRIGGER_PREFIX='["@bot"]'`，避免 uv 去除数组内部的双引号。也可以把本节 Vertex 配置单独放入 `.env.vertex`，运行 `uv run --env-file .env.vertex python bot.py`；其他配置仍由 NoneBot 从原有 `.env` 读取。
+
+`BAMPI_MODEL_API=auto` 也能通过内置模型识别 Vertex。显式 API 的别名包括 `vertex`、`vertex-ai`、`vertexai`；provider 使用 `google-vertex`。区域先用 `global`，凭据路径是 Bot 所在机器上的路径，不是沙箱容器内路径。使用服务器绑定身份或本地 ADC 时，可省略 `GOOGLE_APPLICATION_CREDENTIALS`。
+
+切换 Flash 系列时，仅需把 `BAMPI_MODEL_ID` 改为 `gemini-3.8-flash`、`gemini-3.6-flash` 或 `gemini-3.5-flash-lite`，其余 Vertex 配置保持一致。3.8 / 3.7 Flash 的 thinking 支持 `low` / `medium` / `high`，`minimal` 会映射到 `low`；3.6 Flash 和 3.5 Flash-Lite 还支持 `minimal`。这些型号已注册图文输入、思考和工具调用能力。
+
+如果使用 Vertex Express API key，将 `BAMPI_API_KEY` 填为该 key，并省略上述三个 `GOOGLE_*` 字段。Vertex 还会读取独立的 `GOOGLE_VERTEX_API_KEY`，不会把 `GOOGLE_API_KEY` 当作 bampi 层的 Vertex key 回退来源。ADC 方式保持这两个 Vertex key 字段为空即可。
+
+同样的进程环境也适用于记忆模型和继承主模型的 Showdown AI，无需重复导出变量。服务账号应具有目标项目的模型调用权限。
+
+参考：[uv 环境文件](https://docs.astral.sh/uv/concepts/configuration-files/)、[Google Gemini 4 接入](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/start/get-started-with-gemini-4)。
 
 ## 触发与限流
 

@@ -40,6 +40,7 @@ from .translations import TranslationService
 _API_KEY_ENV_BY_API: dict[str, str] = {
     "anthropic-messages": "ANTHROPIC_API_KEY",
     "google-genai": "GOOGLE_API_KEY",
+    "google-vertex": "GOOGLE_VERTEX_API_KEY",
     "openai-completions": "OPENAI_API_KEY",
     "openai-responses": "OPENAI_API_KEY",
 }
@@ -50,6 +51,9 @@ _MODEL_API_ALIASES: dict[str, str] = {
     "anthropic": "anthropic-messages",
     "google": "google-genai",
     "gemini": "google-genai",
+    "vertex": "google-vertex",
+    "vertex-ai": "google-vertex",
+    "vertexai": "google-vertex",
     "openai": "openai-responses",
     "responses": "openai-responses",
     "chat-completions": "openai-completions",
@@ -171,6 +175,8 @@ def _resolve_model_api_name(provider: str, *, configured_api: str) -> str:
     provider_key = provider.strip().lower().replace("_", "-")
     if provider_key in _API_KEY_ENV_BY_API:
         return provider_key
+    if provider_key in {"vertex", "vertex-ai", "vertexai"}:
+        return "google-vertex"
     if provider_key in {"anthropic", "claude"} or "anthropic" in provider_key:
         return "anthropic-messages"
     if (
@@ -829,6 +835,9 @@ class BattleAIOpponent:
             value = os.environ.get(env_key, "").strip()
             if value:
                 return value
+        if _resolve_model_api_name(settings.provider, configured_api=settings.model_api) == "google-vertex":
+            logger.info("showdown AI using Vertex AI SDK credential discovery")
+            return None
         logger.warning(
             "showdown AI API key missing "
             f"provider={settings.provider} candidates={candidates}"

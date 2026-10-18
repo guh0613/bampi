@@ -41,6 +41,7 @@ BackgroundNotifyHandler = Callable[
 _API_KEY_ENV_BY_API: dict[str, str] = {
     "anthropic-messages": "ANTHROPIC_API_KEY",
     "google-genai": "GOOGLE_API_KEY",
+    "google-vertex": "GOOGLE_VERTEX_API_KEY",
     "openai-completions": "OPENAI_API_KEY",
     "openai-responses": "OPENAI_API_KEY",
 }
@@ -1327,6 +1328,8 @@ class GroupSessionManager:
         provider_key = provider.strip().lower().replace("_", "-")
         if provider_key in _API_KEY_ENV_BY_API:
             return provider_key
+        if provider_key in {"vertex", "vertex-ai", "vertexai"}:
+            return "google-vertex"
         if provider_key in {"anthropic", "claude"} or "anthropic" in provider_key:
             return "anthropic-messages"
         if (
@@ -1395,6 +1398,10 @@ class GroupSessionManager:
                     f"source=env env={env_key}"
                 )
                 return env_value
+
+        if self._resolve_model_api(provider, configured_api=configured_api) == "google-vertex":
+            logger.info(f"bampi_chat using Vertex AI SDK credential discovery provider={provider}")
+            return None
 
         logger.warning(
             f"bampi_chat api key missing provider={provider} "
