@@ -30,7 +30,7 @@ def _manager(tmp_path: Path, *, model_id: str = "gemini-4-argon", **values) -> G
 
 @pytest.mark.parametrize("api", ["auto", "google-vertex"])
 @pytest.mark.parametrize("model_id", [
-    "gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash",
+    "gemini-4-carbon", "gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash",
     "gemini-3.6-flash", "gemini-3.5-flash-lite",
 ])
 def test_vertex_main_and_memory_models_use_vertex_channel(tmp_path: Path, api: str, model_id: str):
@@ -67,7 +67,7 @@ async def test_vertex_express_uses_its_own_key(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.parametrize("model_id", [
-    "gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash",
+    "gemini-4-carbon", "gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash",
     "gemini-3.6-flash", "gemini-3.5-flash-lite",
 ])
 def test_showdown_inherits_vertex_model_without_developer_key(monkeypatch, model_id):

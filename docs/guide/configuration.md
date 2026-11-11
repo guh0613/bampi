@@ -70,6 +70,8 @@ uv run --env-file .env python bot.py
 
 使用 `--env-file` 时，已有的 JSON 数组需要整体加单引号，例如 `BAMPI_GROUP_WHITELIST='["123456789"]'`、`BAMPI_TRIGGER_PREFIX='["@bot"]'`，避免 uv 去除数组内部的双引号。也可以把本节 Vertex 配置单独放入 `.env.vertex`，运行 `uv run --env-file .env.vertex python bot.py`；其他配置仍由 NoneBot 从原有 `.env` 读取。
 
+切换 Gemini 4 Carbon 时，把 `BAMPI_MODEL_ID` 改为 `gemini-4-carbon`，其余配置不变。Carbon 的 thinking 支持 `low` / `medium` / `high`，`minimal` 会映射到 `low`；项目需要已获得该模型的访问权限。
+
 `BAMPI_MODEL_API=auto` 也能通过内置模型识别 Vertex。显式 API 的别名包括 `vertex`、`vertex-ai`、`vertexai`；provider 使用 `google-vertex`。区域先用 `global`，凭据路径是 Bot 所在机器上的路径，不是沙箱容器内路径。使用服务器绑定身份或本地 ADC 时，可省略 `GOOGLE_APPLICATION_CREDENTIALS`。
 
 切换 Flash 系列时，仅需把 `BAMPI_MODEL_ID` 改为 `gemini-3.8-flash`、`gemini-3.6-flash` 或 `gemini-3.5-flash-lite`，其余 Vertex 配置保持一致。3.8 / 3.7 Flash 的 thinking 支持 `low` / `medium` / `high`，`minimal` 会映射到 `low`；3.6 Flash 和 3.5 Flash-Lite 还支持 `minimal`。这些型号已注册图文输入、思考和工具调用能力。
